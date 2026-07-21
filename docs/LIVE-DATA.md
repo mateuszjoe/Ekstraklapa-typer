@@ -1,47 +1,50 @@
-# Wyniki LIVE — rozwiązanie całosezonowe za 0 zł
+# Wyniki LIVE bez klucza API
 
 Stan weryfikacji: 21 lipca 2026.
 
-## Dostawca
+## Źródło
 
-API-Football obejmuje Ekstraklasę jako ligę `106`. Darmowy plan ma limit 100 zapytań dziennie i według aktualnej oferty pozostaje darmowy bezterminowo. Projekt świadomie korzysta wyłącznie z terminarza, statusu, minuty oraz wyniku.
+Aplikacja korzysta z publicznego API oficjalnego Centrum Meczowego Ekstraklasy:
 
-Dokumentacja: https://api-sports.io/documentation/football/v3
+- `GET https://api.centrum-meczowe.ekstraklasa.org/v1/seasons/current`
+- `GET https://api.centrum-meczowe.ekstraklasa.org/v1/matches`
 
-Cennik i limity: https://www.api-football.com/
+To ten sam kanał, którego używa oficjalna strona `ekstraklasa.org`. Zwraca 306 meczów sezonu 2026/27 oraz statusy `fixture`, `playing`, `played`, `postponed`, `suspended`, `cancelled` i `awarded`. Nie wymaga klucza, konta ani płatnego planu. Nie jest jednak udokumentowaną usługą z gwarancją SLA, dlatego cała integracja jest zamknięta w adapterze i może zostać później wymieniona.
 
-## Jak mieścimy się w 100 zapytaniach
+Projekt pobiera tylko dane potrzebne typerowi: termin, status i wynik. Nie pobiera zdarzeń, składów, strzelców, kartek ani zmian.
 
-1. Serwer rezerwuje pięć wywołań i wykorzystuje maksymalnie 95 dziennie.
-2. Jedno zapytanie pobiera wszystkie spotkania Ekstraklasy z danego dnia.
-3. Polling działa co 6 minut wyłącznie w oknie meczu: od 10 minut przed kickoffem do maksymalnie 180 minut po nim.
-4. Mecze zakończone nie otwierają kolejnych okien pollingu.
-5. Pełny terminarz jest odświeżany maksymalnie raz na 7 dni.
-6. Cache i historia wykorzystania limitu są zapisywane w `.cache/api-football-state.json`.
-7. `/api/live` nigdy nie wykonuje zewnętrznego zapytania. Zwraca tylko ostatni cache, dlatego ruch użytkowników nie zużywa limitu.
+## Ograniczanie ruchu
 
-Przy paśmie spotkań trwającym około 8 godzin polling co 6 minut zużywa około 80 wywołań. Pozostaje margines na synchronizację terminarza, opóźnienia oraz zapytanie końcowe.
+1. `/api/live` składa odpowiedź z historycznych wyników, bieżącej kolejki oraz ewentualnych meczów ze statusem `playing`.
+2. Zakończone wyniki są cache'owane przez 5 minut; świeża bieżąca i poprzednia kolejka oraz mecze LIVE są nakładane na ten zapis.
+3. Podczas okna meczowego wynik odpowiedzi jest współdzielony przez 45 sekund, a poza nim przez 5 minut.
+4. Nagłówek `s-maxage` pozwala cache'owi produkcyjnemu obsłużyć wielu graczy jedną kopią odpowiedzi.
+5. Równoczesne odświeżenia w tej samej instancji są łączone w jedno zapytanie.
+6. Po chwilowej awarii przez maksymalnie 5 minut może zostać zwrócony ostatni poprawny zapis. Potem stary status `LIVE` zmienia się na `SUSP`, aby mecz nie wisiał jako trwający bez końca.
+7. Przeglądarka odpytuje wyłącznie własne `/api/live`, nigdy zewnętrzne API bezpośrednio.
 
-## Zachowanie przy awarii
+## Mapowanie statusów
 
-- Bez klucza działają terminarz, typowanie i wyniki wpisane ręcznie.
-- Po błędzie API serwer zachowuje ostatni poprawny cache i ponawia próbę dopiero po upływie interwału.
-- Po wykorzystaniu lokalnego budżetu nie wykonuje kolejnych wywołań tego dnia.
-- `manual-results.json` nadpisuje wynik API i pozwala administratorowi zatwierdzić rezultat.
-- Chroniony endpoint `POST /api/admin/result` działa tylko po ustawieniu `ADMIN_RESULT_TOKEN`.
+- `fixture` → `NS`
+- `playing` → `LIVE`
+- `played` → `FT`
+- `awarded` → `AWD`
+- `postponed` → `PST`
+- `suspended` → `SUSP`
+- `cancelled` → `CANC`
+
+Blok LIVE na stronie głównej pojawia się tylko wtedy, gdy co najmniej jeden mecz ma status `LIVE`. Poza meczem nie jest wyświetlany pusty ekran ani komunikat techniczny.
 
 ## Dlaczego nie ESPN
 
-21 lipca 2026 bezpośredni test `site.api.espn.com/apis/site/v2/sports/soccer/pol.1/scoreboard` zwrócił HTTP 400, a endpoint drużyn HTTP 404. Kontrolny endpoint Premier League `eng.1` zwrócił HTTP 200. ESPN nie udostępnia więc obecnie Ekstraklasy pod deklarowanym wcześniej slugiem `pol.1`.
+W bezpośrednim teście endpoint `site.api.espn.com/apis/site/v2/sports/soccer/pol.1/scoreboard` zwracał HTTP 400. Katalog lig ESPN nie zawierał Ekstraklasy, a zbiorczy feed nie zawierał meczów pierwszej kolejki sezonu 2026/27. ESPN nie jest więc obecnie źródłem danych tej aplikacji.
 
 ## Kontrakt `/api/live`
 
 Odpowiedź zawiera:
 
-- `fixtures` — zapisany terminarz i ostatnie wyniki;
-- `mode` — `not-configured`, `waiting`, `live-polling` albo `quota-exhausted`;
-- `quota.usedToday` i `quota.localBudget`;
-- `updatedAt`, `scheduleUpdatedAt` oraz `nextPollAt`;
-- ostatni błąd dostawcy, jeśli wystąpił.
-
-Warstwa dostawcy jest zamknięta w `server.mjs`, więc w przyszłości można ją wymienić bez przebudowy typowania i interfejsu.
+- `fixtures` — zakończone mecze sezonu, bieżąca kolejka i wszystkie aktualnie trwające spotkania;
+- `mode` — `waiting`, `live-polling`, `stale` albo `degraded`;
+- `provider` — `ekstraklasa-match-center`;
+- `updatedAt`, `nextPollAt` i `pollIntervalSeconds`;
+- neutralny kod błędu w razie czasowej niedostępności źródła.

@@ -32,7 +32,6 @@ export default function Home() {
         <nav className="main-nav" aria-label="Główna nawigacja">
           <button className="nav-link is-active" data-view="matches">Mecze</button>
           <button className="nav-link" data-view="ranking">Ranking</button>
-          <button className="nav-link" data-view="live">Centrum live <i className="live-dot" /></button>
           <button className="nav-link" data-view="rules">Zasady</button>
         </nav>
         <button id="authButton" className="auth-button"><span className="user-icon">◉</span><span>Zaloguj się</span></button>
@@ -43,7 +42,7 @@ export default function Home() {
 
       <footer>
         <div className="footer-brand"><img src="/assets/brand/logo-compact.png" alt="Ekstraklasa Typer" /></div>
-        <p>Prywatna zabawa na punkty. Bez zakładów i prawdziwych pieniędzy.</p>
+        <p>Typowanie 1X2 · Runda 1 i Runda 2</p>
         <span>Sezon 2026/27</span>
       </footer>
 

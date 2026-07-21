@@ -6,22 +6,25 @@ const app = document.querySelector("#app");
 const STORAGE_KEY = "ekstraklasa-typer-state-v1";
 const FINAL = new Set(["FT", "AET", "PEN", "AWD", "WO", "FINISHED", "AWARDED"]);
 const LIVE = new Set(["1H", "HT", "2H", "ET", "BT", "P", "LIVE", "IN_PLAY", "PAUSED"]);
+const VIEWS = new Set(["matches", "ranking", "rules"]);
 
 const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+const requestedView = location.hash.slice(1);
 const state = {
-  view: location.hash.replace("#", "") || "matches",
+  view: VIEWS.has(requestedView) ? requestedView : "matches",
   leg: Number(saved.leg || 1),
   matchday: Number(saved.matchday || 1),
   predictions: saved.predictions || {},
   user: saved.user || null,
   matches: baseMatches.map((match) => ({ ...match })),
-  liveConfigured: false,
-  liveUpdatedAt: null,
-  liveMeta: null,
   liveSignature: "",
   auth: null,
   db: null
 };
+
+if (location.hash && !VIEWS.has(requestedView)) {
+  history.replaceState(null, "", `${location.pathname}${location.search}#matches`);
+}
 
 const demoPlayers = [
   ["Marek K.", 12, 18, 67], ["Ola W.", 11, 18, 61], ["Krzysztof P.", 10, 18, 56],
@@ -57,7 +60,6 @@ function save() {
 const icon = (name) => ({
   calendar: "<svg viewBox='0 0 24 24'><path d='M7 2v3M17 2v3M3 9h18M5 4h14a2 2 0 0 1 2 2v14H3V6a2 2 0 0 1 2-2Z'/></svg>",
   trophy: "<svg viewBox='0 0 24 24'><path d='M8 4h8v4c0 4-2 7-4 7s-4-3-4-7V4Zm4 11v5m-4 0h8M8 6H4c0 4 2 6 5 6m7-6h4c0 4-2 6-5 6'/></svg>",
-  bolt: "<svg viewBox='0 0 24 24'><path d='m13 2-8 12h7l-1 8 8-12h-7l1-8Z'/></svg>",
   lock: "<svg viewBox='0 0 24 24'><rect x='4' y='10' width='16' height='11' rx='2'/><path d='M8 10V7a4 4 0 0 1 8 0v3'/></svg>",
   check: "<svg viewBox='0 0 24 24'><path d='m5 12 4 4L19 6'/></svg>",
   arrow: "<svg viewBox='0 0 24 24'><path d='m9 18 6-6-6-6'/></svg>"
@@ -138,7 +140,7 @@ function matchCard(match) {
   const score = (live || final) && Number.isFinite(match.homeScore) ? `${match.homeScore} : ${match.awayScore}` : null;
   return `<article class="match-card ${prediction ? "is-typed" : ""} ${live ? "is-live" : ""}">
     <div class="match-meta">
-      <span>${live ? `<b class="live-label">LIVE ${match.liveElapsed || ""}'</b>` : `${formatDay(match)} · ${formatTime(match)}`}</span>
+      <span>${live ? `<b class="live-label">LIVE${Number.isFinite(match.liveElapsed) ? ` ${match.liveElapsed}'` : ""}</b>` : `${formatDay(match)} · ${formatTime(match)}`}</span>
       <span>${locked ? `${icon("lock")} zamknięty` : prediction ? `${icon("check")} typ zapisany` : "1 pkt do zdobycia"}</span>
     </div>
     <div class="match-teams">
@@ -153,13 +155,30 @@ function matchCard(match) {
   </article>`;
 }
 
+function liveMatchesSection() {
+  const liveMatches = state.matches
+    .filter((match) => LIVE.has(match.status))
+    .sort((a, b) => new Date(a.kickoffAt) - new Date(b.kickoffAt));
+
+  if (!liveMatches.length) return "";
+
+  return `<section class="content-section live-now-section" aria-labelledby="live-now-title">
+    <div class="live-now-heading">
+      <div><p class="eyebrow"><i class="live-dot"></i> NA ŻYWO</p><h2 id="live-now-title">Mecze trwające teraz</h2></div>
+      <p>Wyniki spotkań aktualizują się automatycznie.</p>
+    </div>
+    <div class="matches-grid live-now-grid">${liveMatches.map(matchCard).join("")}</div>
+  </section>`;
+}
+
 function matchesView() {
   const visible = state.matches
-    .filter((match) => match.matchday === state.matchday)
+    .filter((match) => match.matchday === state.matchday && !LIVE.has(match.status))
     .sort((a, b) => new Date(a.kickoffAt) - new Date(b.kickoffAt));
   const roundOptions = Array.from({ length: 17 }, (_, index) => index + (state.leg === 1 ? 1 : 18));
   return `${hero()}
     <section class="club-ribbon" aria-label="Kluby sezonu 2026/27">${teams.map((team) => `<img src="${team.crest}" alt="${team.name}" title="${team.name}">`).join("")}</section>
+    ${liveMatchesSection()}
     <section class="content-section" id="mecze">
       <div class="section-heading">
         <div><p class="eyebrow">TERMINARZ I TYPY</p><h2>Mecze Ekstraklasy</h2><p>Wybierz rezultat każdego spotkania. Typ blokuje się wraz z pierwszym gwizdkiem.</p></div>
@@ -189,24 +208,6 @@ function rankingView() {
     </section>`;
 }
 
-function liveView() {
-  const live = state.matches.filter((match) => LIVE.has(match.status));
-  const meta = state.liveMeta;
-  const used = meta?.quota?.usedToday ?? 0;
-  const budget = meta?.quota?.localBudget ?? 95;
-  const nextPoll = meta?.nextPollAt ? new Date(meta.nextPollAt).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" }) : null;
-  const statusText = !state.liveConfigured
-    ? "Dodaj API_FOOTBALL_KEY przy uruchomieniu serwera."
-    : meta?.mode === "quota-exhausted"
-      ? `Dzisiejszy budżet ${budget} zapytań został wykorzystany. Pokazujemy ostatni zapisany wynik.`
-      : `Wykorzystano dziś ${used}/${budget} zapytań.${nextPoll ? ` Następne sprawdzenie: ${nextPoll}.` : " Serwer czeka na najbliższy mecz."}`;
-  return `<section class="subpage-hero live-hero"><p class="eyebrow"><i class="live-dot"></i> CENTRUM LIVE</p><h1>Wyniki na żywo.</h1><p>Prosty wynik meczu, status i minuta spotkania — bez zbędnych zdarzeń.</p></section>
-    <section class="content-section narrow">
-      <div class="api-status ${state.liveConfigured && meta?.mode !== "quota-exhausted" ? "active" : ""}"><span>${icon("bolt")}</span><div><b>${state.liveConfigured ? "Darmowy kanał LIVE jest aktywny" : "Kanał LIVE czeka na klucz API"}</b><p>${statusText}${state.liveUpdatedAt ? ` Ostatnia synchronizacja: ${new Date(state.liveUpdatedAt).toLocaleTimeString("pl-PL")}.` : ""}</p></div></div>
-      ${live.length ? `<div class="matches-grid">${live.map(matchCard).join("")}</div>` : `<div class="empty-state"><span>●</span><h2>Teraz żaden mecz nie trwa</h2><p>Serwer uruchamia odświeżanie automatycznie tylko w czasie meczów i aktualizuje wynik mniej więcej co 6 minut.</p><button class="primary-button" data-view-jump="matches">Zobacz terminarz</button></div>`}
-    </section>`;
-}
-
 function rulesView() {
   return `<section class="subpage-hero"><p class="eyebrow">PROSTE ZASADY</p><h1>Piłka jest prosta.<br>Ten typer też.</h1></section>
     <section class="content-section narrow rules-grid">
@@ -218,7 +219,7 @@ function rulesView() {
 }
 
 function render() {
-  app.innerHTML = state.view === "ranking" ? rankingView() : state.view === "live" ? liveView() : state.view === "rules" ? rulesView() : matchesView();
+  app.innerHTML = state.view === "ranking" ? rankingView() : state.view === "rules" ? rulesView() : matchesView();
   document.querySelectorAll(".nav-link").forEach((node) => node.classList.toggle("is-active", node.dataset.view === state.view));
   updateAuthButton();
   bindRendered();
@@ -323,17 +324,29 @@ function normalizeName(value) {
 }
 
 async function pollLive() {
+  let nextDelay = 5 * 60_000;
   try {
-    const response = await fetch("./api/live", { cache: "no-store" });
+    const response = await fetch("./api/live");
     if (!response.ok) return;
     const payload = await response.json();
+    const providerInterval = Number(payload.pollIntervalSeconds) * 1000;
+    if (Number.isFinite(providerInterval)) {
+      nextDelay = Math.min(5 * 60_000, Math.max(30_000, providerInterval));
+    }
+    const incomingMatchIds = new Set(
+      (payload.fixtures || []).map((fixture) => fixture.localMatchId).filter(Boolean)
+    );
+    state.matches.forEach((match) => {
+      if (LIVE.has(match.status) && !incomingMatchIds.has(match.id)) {
+        match.status = "SUSP";
+        match.liveElapsed = null;
+      }
+    });
     const signature = (payload.fixtures || []).map((fixture) => [
       fixture.providerId, fixture.status, fixture.elapsed, fixture.score?.home,
       fixture.score?.away, fixture.kickoffAt, fixture.source
     ].join(":")).join("|");
     const dataChanged = signature !== state.liveSignature;
-    state.liveConfigured = payload.configured; state.liveUpdatedAt = payload.updatedAt;
-    state.liveMeta = payload;
     state.liveSignature = signature;
     payload.fixtures?.forEach((fixture) => {
       const target = state.matches.find((match) => match.id === fixture.localMatchId) || state.matches.find((match) => {
@@ -353,8 +366,9 @@ async function pollLive() {
         resultSource: fixture.source
       });
     });
-    if (dataChanged || state.view === "live" || state.matches.some((match) => LIVE.has(match.status))) render();
+    if (dataChanged || state.matches.some((match) => LIVE.has(match.status))) render();
   } catch { /* statyczny serwer lub brak adaptera — aplikacja nadal działa */ }
+  finally { setTimeout(pollLive, nextDelay); }
 }
 
 document.addEventListener("click", (event) => {
@@ -398,13 +412,20 @@ document.addEventListener("click", (event) => {
 
   if (event.target.matches?.("#matchDialog")) event.target.close();
 }, { capture: true });
-window.addEventListener("hashchange", () => { const view = location.hash.slice(1); if (["matches","ranking","live","rules"].includes(view)) setView(view); });
+window.addEventListener("hashchange", () => {
+  const view = location.hash.slice(1);
+  if (!VIEWS.has(view)) {
+    history.replaceState(null, "", `${location.pathname}${location.search}#matches`);
+    setView("matches");
+    return;
+  }
+  setView(view);
+});
 
 render();
 finishLoadingScreen();
 initFirebase();
 pollLive();
-setInterval(pollLive, 30000);
 setInterval(updateCountdowns, 60000);
 
 if ("serviceWorker" in navigator && location.protocol !== "file:") {

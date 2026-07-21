@@ -4,7 +4,7 @@
 
 # Ekstraklasa Typer 2026/27
 
-Prywatny typer 1X2 dla sezonu Ekstraklasy 2026/27. Każdy poprawny rezultat (`1`, `X` albo `2`) daje 1 punkt. Nie ma typowania dokładnego wyniku ani prawdziwych pieniędzy.
+Typer 1X2 dla sezonu Ekstraklasy 2026/27. Każdy poprawny rezultat (`1`, `X` albo `2`) daje 1 punkt. Nie ma typowania dokładnego wyniku.
 
 ## Uruchomienie lokalne
 
@@ -32,29 +32,20 @@ Gdy `apiKey` jest pusty, przyciski Google i Facebook świadomie przechodzą w lo
 
 ## Dane LIVE
 
-Źródłem wyników jest bezterminowo darmowy plan API-Football, liga `106`, sezon `2026`. Klucz pozostaje wyłącznie po stronie serwera.
+Wyniki pochodzą z publicznego API oficjalnego Centrum Meczowego Ekstraklasy. Kanał nie wymaga klucza, konta ani płatnego planu. Aplikacja pobiera historyczne wyniki, bieżącą kolejkę oraz wszystkie trwające spotkania, mapuje je do własnego terminarza i udostępnia graczom przez `/api/live`.
 
-```powershell
-$env:API_FOOTBALL_KEY="TWÓJ_KLUCZ"
-npm run dev
-```
+- podczas meczów odpowiedzi są współdzielone przez cache przez 45 sekund, a poza nimi przez 5 minut;
+- zakończone wyniki są odświeżane co najwyżej co 5 minut, a bieżąca i poprzednia kolejka stanowią świeżą nakładkę;
+- równoczesne odświeżenia są łączone w jedno zapytanie;
+- po chwilowej awarii przez maksymalnie 5 minut dostępny jest ostatni poprawny zapis; starszy status LIVE jest wygaszany;
+- blok LIVE pojawia się na głównej stronie wyłącznie podczas meczu;
+- nie są pobierane gole, kartki, zmiany, kontuzje ani składy.
 
-Na stałe można skopiować `.env.example` jako `.env` i wpisać klucz w tym pliku. `.env` jest ignorowany przez Git i automatycznie wczytywany przy każdym uruchomieniu serwera.
-
-Serwer działa według stałego budżetu 95 z dostępnych 100 zapytań dziennie:
-
-- synchronizuje pełny terminarz najwyżej raz na 7 dni;
-- odpytuje wszystkie mecze danego dnia jednym wywołaniem;
-- uruchamia polling tylko od 10 minut przed meczem do jego zakończenia;
-- aktualizuje wynik mniej więcej co 6 minut;
-- zapisuje terminarz, wyniki i licznik zapytań w `.cache/`, dzięki czemu restart nie zeruje lokalnego budżetu;
-- udostępnia przeglądarkom wyłącznie własny cache przez `/api/live` — liczba użytkowników nie zwiększa liczby wywołań API-Football.
-
-Frontend sprawdza lokalny cache co 30 sekund. Nie są pobierane gole, kartki, zmiany, kontuzje ani składy.
+Źródło jest publiczne i używane przez oficjalną stronę ligi, ale nie ma opublikowanego SLA. Adapter jest odseparowany od interfejsu, aby można go było podmienić bez przebudowy typowania. Szczegóły są opisane w `docs/LIVE-DATA.md`.
 
 ### Ręczna korekta wyniku
 
-Awaryjny wynik można wpisać do `manual-results.json` pod identyfikatorem meczu z `data.js`. Można też ustawić `ADMIN_RESULT_TOKEN` i użyć chronionego endpointu:
+W lokalnym serwerze Node awaryjny wynik można wpisać do `manual-results.json` pod identyfikatorem meczu z `data.js`. Można też ustawić `ADMIN_RESULT_TOKEN` i użyć chronionego endpointu:
 
 ```powershell
 $env:ADMIN_RESULT_TOKEN="WŁASNY_DŁUGI_TOKEN"
@@ -63,7 +54,7 @@ $body = @{ matchId = "1-radomiak-wieczysta"; homeScore = 2; awayScore = 1 } | Co
 Invoke-RestMethod -Method Post -Uri "http://localhost:5173/api/admin/result" -Headers $headers -ContentType "application/json" -Body $body
 ```
 
-Ręczna korekta ma pierwszeństwo przed wynikiem dostawcy. Szczegóły są opisane w `docs/LIVE-DATA.md`.
+Ręczna korekta ma pierwszeństwo przed wynikiem dostawcy. Wersja produkcyjna na Cloudflare nie ma jeszcze trwałego panelu korekt — przed rozgrywką komercyjną należy dodać chronione, trwałe źródło administracyjne. Szczegóły są opisane w `docs/LIVE-DATA.md`.
 
 ## Terminarz
 
@@ -73,8 +64,8 @@ Ręczna korekta ma pierwszeństwo przed wynikiem dostawcy. Szczegóły są opisa
 - Dokładne godziny pierwszych czterech kolejek są potwierdzone oficjalnie.
 - Kolejne spotkania mają datę ramową i są wyraźnie oznaczone jako „godz. do ustalenia”; data ramowa nie blokuje typu.
 
-Po publikacji dokładnych godzin należy uzupełnić mapę `exactKickoffs` w `data.js` lub zastąpić ją synchronizacją z API-Football.
+Po publikacji dokładnych godzin można uzupełnić mapę `exactKickoffs` w `data.js`; odpowiedź LIVE dodatkowo nadpisuje termin danymi oficjalnego Centrum Meczowego.
 
 ## Co przeniesiono z WC 2026 Buk
 
-Przeniesione zostały wyłącznie sprawdzone wzorce: osobne dane bazowe i nakładka live, blokada typów na podstawie prawdziwego kickoffu, logowanie społecznościowe, zapis własnych typów oraz trzymanie sekretów po stronie serwera. Interfejs, model 1X2, podział sezonu i centrum zdarzeń są zbudowane od nowa dla Ekstraklasy.
+Przeniesione zostały wyłącznie sprawdzone wzorce: osobne dane bazowe i nakładka live, blokada typów na podstawie prawdziwego kickoffu, logowanie społecznościowe oraz zapis własnych typów. Interfejs, model 1X2, podział sezonu i prezentacja wyników LIVE są zbudowane od nowa dla Ekstraklasy.
