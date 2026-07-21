@@ -1,11 +1,25 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    function signedIn() { return request.auth != null; }
+    function signedIn() {
+      return request.auth != null;
+    }
+
     function googleSignedIn() {
       return signedIn()
-        && request.auth.token.firebase.sign_in_provider == 'google.com';
+        && request.auth.token.firebase.sign_in_provider == 'google.com'
+        && request.auth.token.email_verified == true;
     }
+
+    function isAdmin() {
+      return googleSignedIn() && request.auth.token.email == 'mateuszjoe@gmail.com';
+    }
+
+    function isSeasonParticipant() {
+      return googleSignedIn()
+        && exists(/databases/$(database)/documents/seasons/2026-27/participants/$(request.auth.uid));
+    }
+
     function validOwnPrediction(predictionId) {
       return googleSignedIn()
         && request.resource.data.uid == request.auth.uid
@@ -15,15 +29,11 @@ service cloud.firestore {
         && request.resource.data.updatedAt == request.time
         && request.resource.data.keys().hasOnly(['uid', 'matchId', 'pick', 'updatedAt']);
     }
-    function validOwnProfile(uid) {
-      return googleSignedIn()
-        && uid == request.auth.uid
-        && request.resource.data.uid == request.auth.uid
-        && request.resource.data.avatarType in ['google', 'club', 'stock', 'upload']
+
+    function validAvatar() {
+      return request.resource.data.avatarType in ['google', 'club', 'stock', 'upload']
         && request.resource.data.avatarValue is string
         && request.resource.data.avatarValue.size() <= 180000
-        && request.resource.data.updatedAt == request.time
-        && request.resource.data.keys().hasOnly(['uid', 'avatarType', 'avatarValue', 'updatedAt'])
         && (
           (request.resource.data.avatarType == 'google' && request.resource.data.avatarValue == '')
           || (request.resource.data.avatarType == 'club' && request.resource.data.avatarValue in [
@@ -40,22 +50,168 @@ service cloud.firestore {
         );
     }
 
+    function validOwnProfile(uid) {
+      let tokenName = request.auth.token.get('name', '');
+      let trustedName = tokenName is string
+        && tokenName.size() > 0
+        && tokenName.size() <= 80
+        ? tokenName
+        : 'Gracz';
+      return googleSignedIn()
+        && uid == request.auth.uid
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() > 0
+        && request.resource.data.displayName.size() <= 80
+        && request.resource.data.displayName == trustedName
+        && request.resource.data.joinedAt is timestamp
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.keys().hasOnly([
+          'uid', 'displayName', 'avatarType', 'avatarValue', 'joinedAt', 'updatedAt'
+        ])
+        && validAvatar();
+    }
+
+    function validChatMessage() {
+      return isSeasonParticipant()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.text is string
+        && request.resource.data.text.size() <= 1000
+        && request.resource.data.image is string
+        && request.resource.data.image.size() <= 90000
+        && (request.resource.data.image == ''
+          || request.resource.data.image.matches('^data:image/(webp|jpeg);base64,[A-Za-z0-9+/=]+$'))
+        && (request.resource.data.text.size() > 0 || request.resource.data.image.size() > 0)
+        && request.resource.data.replyToId is string
+        && request.resource.data.replyToId.size() <= 100
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.keys().hasOnly(['uid', 'text', 'image', 'replyToId', 'createdAt']);
+    }
+
+    function validChatReaction(reactionId) {
+      return isSeasonParticipant()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.msgId is string
+        && request.resource.data.msgId.size() > 0
+        && request.resource.data.msgId.size() <= 100
+        && reactionId == request.resource.data.msgId + '_' + request.auth.uid
+        && exists(/databases/$(database)/documents/chat/$(request.resource.data.msgId))
+        && request.resource.data.emoji in ['👍', '❤️', '😂', '😮', '😢', '🔥']
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.keys().hasOnly(['uid', 'msgId', 'emoji', 'updatedAt']);
+    }
+
+    function validChatRead(uid) {
+      return isSeasonParticipant()
+        && uid == request.auth.uid
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.lastReadAt == request.time
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.keys().hasOnly(['uid', 'lastReadAt', 'updatedAt']);
+    }
+
     match /predictions/{predictionId} {
       allow read: if googleSignedIn() && resource.data.uid == request.auth.uid;
       allow create: if validOwnPrediction(predictionId);
-      allow update: if signedIn()
+      allow update: if googleSignedIn()
         && resource.data.uid == request.auth.uid
         && validOwnPrediction(predictionId);
       allow delete: if false;
     }
 
     match /profiles/{uid} {
-      allow read: if googleSignedIn() && uid == request.auth.uid;
-      allow create, update: if validOwnProfile(uid);
+      allow get: if googleSignedIn()
+        && (uid == request.auth.uid || isSeasonParticipant());
+      allow list: if false;
+      allow create: if validOwnProfile(uid)
+        && request.resource.data.joinedAt == request.time;
+      allow update: if validOwnProfile(uid)
+        && request.resource.data.joinedAt == resource.data.get('joinedAt', request.time);
       allow delete: if false;
     }
 
-    match /live/{document} { allow read: if true; allow write: if false; }
-    match /admin/{document} { allow read, write: if false; }
+    match /seasons/{seasonId}/participants/{uid} {
+      allow get: if googleSignedIn() && seasonId == '2026-27' && uid == request.auth.uid;
+      allow list: if false;
+      allow create: if googleSignedIn()
+        && seasonId == '2026-27'
+        && uid == request.auth.uid
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.seasonId == seasonId
+        && request.resource.data.joinedAt == request.time
+        && request.resource.data.keys().hasOnly(['uid', 'seasonId', 'joinedAt'])
+        && (
+          (!exists(/databases/$(database)/documents/seasonStats/$(seasonId))
+            && getAfter(/databases/$(database)/documents/seasonStats/$(seasonId)).data.participantCount == 1)
+          || (exists(/databases/$(database)/documents/seasonStats/$(seasonId))
+            && getAfter(/databases/$(database)/documents/seasonStats/$(seasonId)).data.participantCount
+              == get(/databases/$(database)/documents/seasonStats/$(seasonId)).data.participantCount + 1)
+        );
+      allow update, delete: if false;
+    }
+
+    match /seasonStats/{seasonId} {
+      allow get: if seasonId == '2026-27';
+      allow list: if false;
+      allow create: if googleSignedIn()
+        && seasonId == '2026-27'
+        && request.resource.data.seasonId == seasonId
+        && request.resource.data.participantCount == 1
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.keys().hasOnly(['seasonId', 'participantCount', 'updatedAt'])
+        && !exists(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(request.auth.uid))
+        && existsAfter(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(request.auth.uid));
+      allow update: if googleSignedIn()
+        && seasonId == '2026-27'
+        && request.resource.data.seasonId == resource.data.seasonId
+        && request.resource.data.participantCount == resource.data.participantCount + 1
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.keys().hasOnly(['seasonId', 'participantCount', 'updatedAt'])
+        && !exists(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(request.auth.uid))
+        && existsAfter(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(request.auth.uid));
+      allow delete: if false;
+    }
+
+    match /chat/{messageId} {
+      allow read: if isSeasonParticipant();
+      allow create: if validChatMessage();
+      allow update: if false;
+      allow delete: if isAdmin()
+        || (isSeasonParticipant() && resource.data.uid == request.auth.uid);
+    }
+
+    match /chatReactions/{reactionId} {
+      allow read: if isSeasonParticipant();
+      allow create: if validChatReaction(reactionId);
+      allow update: if resource.data.uid == request.auth.uid
+        && resource.data.msgId == request.resource.data.msgId
+        && validChatReaction(reactionId);
+      allow delete: if isAdmin()
+        || (isSeasonParticipant() && (
+          resource.data.uid == request.auth.uid
+          || (resource.data.msgId is string
+            && resource.data.msgId.size() > 0
+            && resource.data.msgId.size() <= 100
+            && exists(/databases/$(database)/documents/chat/$(resource.data.msgId))
+            && get(/databases/$(database)/documents/chat/$(resource.data.msgId)).data.uid == request.auth.uid)
+        ));
+    }
+
+    match /chatReads/{uid} {
+      allow get: if isSeasonParticipant() && uid == request.auth.uid;
+      allow list: if false;
+      allow create: if validChatRead(uid);
+      allow update: if resource.data.uid == request.auth.uid && validChatRead(uid);
+      allow delete: if false;
+    }
+
+    match /live/{document} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    match /admin/{document} {
+      allow read, write: if false;
+    }
   }
 }

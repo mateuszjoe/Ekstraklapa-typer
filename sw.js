@@ -1,16 +1,16 @@
-const CACHE_NAME = "ekstraklasa-typer-v8";
+const CACHE_NAME = "ekstraklasa-typer-v9";
 const OFFLINE_ASSETS = [
   "./",
-  "./styles.css?v=8",
-  "./manifest.webmanifest?v=8",
+  "./styles.css?v=9",
+  "./manifest.webmanifest?v=9",
   "./assets/fonts/manrope-latin.woff2",
   "./assets/fonts/manrope-latin-ext.woff2",
   "./assets/fonts/space-grotesk-latin.woff2",
   "./assets/fonts/space-grotesk-latin-ext.woff2",
-  "./assets/brand/app-icon-192.png?v=8",
-  "./assets/brand/app-icon-512.png?v=8",
-  "./assets/brand/apple-touch-icon.png?v=8",
-  "./assets/brand/favicon-32.png?v=8",
+  "./assets/brand/app-icon-192.png?v=9",
+  "./assets/brand/app-icon-512.png?v=9",
+  "./assets/brand/apple-touch-icon.png?v=9",
+  "./assets/brand/favicon-32.png?v=9",
   "./assets/brand/logo-horizontal.png",
   "./assets/brand/logo-compact.png"
 ];

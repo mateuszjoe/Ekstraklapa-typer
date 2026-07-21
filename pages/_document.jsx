@@ -9,7 +9,6 @@ const loaderCss = `
   .loader-card { position: relative; z-index: 1; width: min(370px, calc(100vw - 48px)); text-align: center; }
   .loader-emblem { position: relative; width: 112px; height: 112px; margin: 0 auto 30px; padding: 12px; border: 1px solid rgba(255,255,255,.14); border-radius: 31px; background: rgba(255,255,255,.045); box-shadow: 0 24px 70px rgba(0,0,0,.38), 5px 5px 0 rgba(255,208,0,.22); backdrop-filter: blur(10px); }
   .loader-emblem::before { content: ""; position: absolute; inset: -10px; border: 2px solid transparent; border-top-color: #ffd000; border-right-color: rgba(110,173,50,.75); border-radius: 37px; animation: loader-spin 1.8s linear infinite; }
-  .loader-emblem::after { content: ""; position: absolute; right: -12px; top: 50%; width: 7px; height: 7px; margin-top: -4px; border-radius: 50%; background: #6ead32; box-shadow: 0 0 18px rgba(110,173,50,.8); }
   .loader-emblem img { display: block; width: 88px; height: 88px; border-radius: 22px; object-fit: cover; animation: loader-breathe 1.8s ease-in-out infinite; }
   .loader-kicker { margin: 0 0 9px; color: #ffd000; font-size: 10px; font-weight: 800; letter-spacing: .24em; }
   .loader-title { display: block; font-size: clamp(24px, 5vw, 31px); line-height: 1; letter-spacing: .055em; }
@@ -35,17 +34,17 @@ export default function Document() {
   return (
     <Html lang="pl" className="app-loading">
       <Head>
-        <link rel="icon" type="image/png" sizes="32x32" href="/assets/brand/favicon-32.png?v=8" />
-        <link rel="apple-touch-icon" sizes="180x180" href="/assets/brand/apple-touch-icon.png?v=8" />
-        <link rel="manifest" href="/manifest.webmanifest?v=8" />
-        <link rel="preload" as="image" href="/assets/brand/app-icon-192.png?v=8" />
+        <link rel="icon" type="image/png" sizes="32x32" href="/assets/brand/favicon-32.png?v=9" />
+        <link rel="apple-touch-icon" sizes="180x180" href="/assets/brand/apple-touch-icon.png?v=9" />
+        <link rel="manifest" href="/manifest.webmanifest?v=9" />
+        <link rel="preload" as="image" href="/assets/brand/app-icon-192.png?v=9" />
         <style dangerouslySetInnerHTML={{ __html: loaderCss }} />
-        <link rel="stylesheet" href="/styles.css?v=8" />
+        <link rel="stylesheet" href="/styles.css?v=9" />
       </Head>
       <body>
         <div id="appLoader" role="status" aria-live="polite" aria-label="Wczytywanie Ekstraklasa Typer">
           <div className="loader-card">
-            <div className="loader-emblem"><img src="/assets/brand/app-icon-192.png?v=8" width="88" height="88" alt="" /></div>
+            <div className="loader-emblem"><img src="/assets/brand/app-icon-192.png?v=9" width="88" height="88" alt="" /></div>
             <p className="loader-kicker">SEZON 2026/27</p>
             <strong className="loader-title">EKSTRAKLASA <span>TYPER</span></strong>
             <p className="loader-copy">Przygotowujemy mecze i Twoje typy</p>
