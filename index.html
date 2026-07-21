@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="pl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#08261d" />
+    <meta name="description" content="Ekstraklasa Typer 2026/27 — prosty typer 1X2 ze znajomymi." />
+    <title>Ekstraklasa Typer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="#mecze" data-route="matches" aria-label="Ekstraklasa Typer — strona główna">
+        <span class="brand-mark"><img src="./assets/ekstraklasa-2026.png" alt="Ekstraklasa" /></span>
+        <span><b>EKSTRAKLASA</b><small>TYPER · 2026/27</small></span>
+      </a>
+      <nav class="main-nav" aria-label="Główna nawigacja">
+        <button class="nav-link is-active" data-view="matches">Mecze</button>
+        <button class="nav-link" data-view="ranking">Ranking</button>
+        <button class="nav-link" data-view="live">Centrum live <i class="live-dot"></i></button>
+        <button class="nav-link" data-view="rules">Zasady</button>
+      </nav>
+      <button id="authButton" class="auth-button"><span class="user-icon">◉</span><span>Zaloguj się</span></button>
+      <button id="menuButton" class="menu-button" aria-label="Otwórz menu">☰</button>
+    </header>
+
+    <main id="app" tabindex="-1"></main>
+
+    <footer>
+      <div class="footer-brand"><img src="./assets/ekstraklasa-2026.png" alt="" /><span>Ekstraklasa Typer</span></div>
+      <p>Prywatna zabawa na punkty. Bez zakładów i prawdziwych pieniędzy.</p>
+      <span>Sezon 2026/27</span>
+    </footer>
+
+    <dialog id="authDialog" class="modal auth-modal">
+      <button class="modal-close" data-close aria-label="Zamknij">×</button>
+      <img class="modal-logo" src="./assets/ekstraklasa-2026.png" alt="Ekstraklasa" />
+      <p class="eyebrow">DOŁĄCZ DO GRY</p>
+      <h2>Zaloguj się i typuj</h2>
+      <p class="modal-copy">Twoje typy będą dostępne na każdym urządzeniu. Jeden klik i jesteś w grze.</p>
+      <button class="provider google" data-provider="google"><span>G</span> Kontynuuj przez Google</button>
+      <button class="provider facebook" data-provider="facebook"><span>f</span> Kontynuuj przez Facebook</button>
+      <div class="or"><span>lub lokalnie</span></div>
+      <button class="provider demo" data-provider="demo">Uruchom konto demonstracyjne</button>
+      <small>Logując się, akceptujesz zasady prywatnej ligi.</small>
+    </dialog>
+
+    <dialog id="matchDialog" class="modal match-modal"></dialog>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

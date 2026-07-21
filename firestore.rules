@@ -1,0 +1,23 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function ownsPrediction() { return signedIn() && request.resource.data.uid == request.auth.uid; }
+
+    match /predictions/{predictionId} {
+      allow read: if signedIn();
+      allow create, update: if ownsPrediction()
+        && request.resource.data.matchId is string
+        && request.resource.data.pick in ['1', 'X', '2'];
+      allow delete: if signedIn() && resource.data.uid == request.auth.uid;
+    }
+
+    match /profiles/{uid} {
+      allow read: if true;
+      allow write: if signedIn() && request.auth.uid == uid;
+    }
+
+    match /live/{document} { allow read: if true; allow write: if false; }
+    match /admin/{document} { allow read, write: if false; }
+  }
+}

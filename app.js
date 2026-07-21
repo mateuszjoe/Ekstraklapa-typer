@@ -1,0 +1,353 @@
+import { matches as baseMatches, teamById, teams, roundDatesByNumber } from "./data.js";
+import { firebaseConfig } from "./firebase-config.js";
+
+const app = document.querySelector("#app");
+const authDialog = document.querySelector("#authDialog");
+const matchDialog = document.querySelector("#matchDialog");
+const toast = document.querySelector("#toast");
+const authButton = document.querySelector("#authButton");
+const STORAGE_KEY = "ekstraklasa-typer-state-v1";
+const FINAL = new Set(["FT", "AET", "PEN", "AWD", "WO", "FINISHED", "AWARDED"]);
+const LIVE = new Set(["1H", "HT", "2H", "ET", "BT", "P", "LIVE", "IN_PLAY", "PAUSED"]);
+
+const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+const state = {
+  view: location.hash.replace("#", "") || "matches",
+  leg: Number(saved.leg || 1),
+  matchday: Number(saved.matchday || 1),
+  predictions: saved.predictions || {},
+  user: saved.user || null,
+  matches: baseMatches.map((match) => ({ ...match })),
+  liveConfigured: false,
+  liveUpdatedAt: null,
+  liveMeta: null,
+  liveSignature: "",
+  auth: null,
+  db: null
+};
+
+const demoPlayers = [
+  ["Marek K.", 12, 18, 67], ["Ola W.", 11, 18, 61], ["Krzysztof P.", 10, 18, 56],
+  ["Ania S.", 9, 18, 50], ["Bartek M.", 8, 18, 44]
+];
+
+function save() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify({
+    leg: state.leg, matchday: state.matchday, predictions: state.predictions, user: state.user
+  }));
+}
+
+const icon = (name) => ({
+  calendar: "<svg viewBox='0 0 24 24'><path d='M7 2v3M17 2v3M3 9h18M5 4h14a2 2 0 0 1 2 2v14H3V6a2 2 0 0 1 2-2Z'/></svg>",
+  trophy: "<svg viewBox='0 0 24 24'><path d='M8 4h8v4c0 4-2 7-4 7s-4-3-4-7V4Zm4 11v5m-4 0h8M8 6H4c0 4 2 6 5 6m7-6h4c0 4-2 6-5 6'/></svg>",
+  bolt: "<svg viewBox='0 0 24 24'><path d='m13 2-8 12h7l-1 8 8-12h-7l1-8Z'/></svg>",
+  lock: "<svg viewBox='0 0 24 24'><rect x='4' y='10' width='16' height='11' rx='2'/><path d='M8 10V7a4 4 0 0 1 8 0v3'/></svg>",
+  check: "<svg viewBox='0 0 24 24'><path d='m5 12 4 4L19 6'/></svg>",
+  arrow: "<svg viewBox='0 0 24 24'><path d='m9 18 6-6-6-6'/></svg>"
+}[name] || "");
+
+function formatDay(match) {
+  const date = new Date(match.kickoffAt);
+  return new Intl.DateTimeFormat("pl-PL", { weekday: "short", day: "2-digit", month: "2-digit" }).format(date).replace(",", "");
+}
+
+function formatTime(match) {
+  if (!match.kickoffConfirmed) return "godz. do ustalenia";
+  return new Intl.DateTimeFormat("pl-PL", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Warsaw" }).format(new Date(match.kickoffAt));
+}
+
+function resultOf(match) {
+  if (!FINAL.has(match.status) || !Number.isFinite(match.homeScore) || !Number.isFinite(match.awayScore)) return null;
+  return match.homeScore === match.awayScore ? "X" : match.homeScore > match.awayScore ? "1" : "2";
+}
+
+function isLocked(match) {
+  return match.kickoffConfirmed && Date.now() >= new Date(match.kickoffAt).getTime();
+}
+
+function pointsFor(match) {
+  const result = resultOf(match);
+  return result && state.predictions[match.id] === result ? 1 : 0;
+}
+
+function setView(view) {
+  state.view = view;
+  location.hash = view;
+  document.querySelectorAll(".nav-link").forEach((node) => node.classList.toggle("is-active", node.dataset.view === view));
+  document.querySelector(".main-nav").classList.remove("is-open");
+  render();
+  app.focus({ preventScroll: true });
+}
+
+function hero() {
+  const selected = state.matches.filter((match) => match.matchday === state.matchday);
+  const typed = selected.filter((match) => state.predictions[match.id]).length;
+  const next = [...state.matches]
+    .filter((match) => new Date(match.kickoffAt) > new Date() && match.kickoffConfirmed)
+    .sort((a, b) => new Date(a.kickoffAt) - new Date(b.kickoffAt))[0];
+  return `<section class="hero">
+    <div class="hero-glow"></div>
+    <div class="hero-copy">
+      <span class="season-pill">SEZON 2026/27 · 100 LAT LIGI</span>
+      <h1>Jeden typ.<br><em>Jedna emocja.</em></h1>
+      <p>Wybierz 1, X albo 2. Każdy trafiony rezultat to punkt. Bez kombinowania — liczy się piłkarskie wyczucie.</p>
+      <div class="hero-actions">
+        <button class="primary-button" data-scroll-matches>Typuj mecze ${icon("arrow")}</button>
+        <button class="text-button" data-view-jump="rules">Jak to działa?</button>
+      </div>
+    </div>
+    <div class="hero-side">
+      <p class="eyebrow">NAJBLIŻSZY MECZ</p>
+      ${next ? `<div class="next-match">
+        <div class="next-date"><b>${formatDay(next)}</b><span>${formatTime(next)}</span></div>
+        <div class="next-teams">
+          <div><img src="${teamById[next.home].crest}" alt=""><b>${teamById[next.home].short}</b></div>
+          <span>VS</span>
+          <div><img src="${teamById[next.away].crest}" alt=""><b>${teamById[next.away].short}</b></div>
+        </div>
+        <div class="countdown" data-countdown="${next.kickoffAt}">Start za chwilę</div>
+      </div>` : "<p>Brak nadchodzących meczów.</p>"}
+      <div class="hero-progress"><span><b>${typed}/9</b> typów w tej kolejce</span><i><u style="width:${typed / 9 * 100}%"></u></i></div>
+    </div>
+  </section>`;
+}
+
+function matchCard(match) {
+  const home = teamById[match.home];
+  const away = teamById[match.away];
+  const prediction = state.predictions[match.id];
+  const locked = isLocked(match);
+  const live = LIVE.has(match.status);
+  const final = FINAL.has(match.status);
+  const score = (live || final) && Number.isFinite(match.homeScore) ? `${match.homeScore} : ${match.awayScore}` : null;
+  return `<article class="match-card ${prediction ? "is-typed" : ""} ${live ? "is-live" : ""}">
+    <div class="match-meta">
+      <span>${live ? `<b class="live-label">LIVE ${match.liveElapsed || ""}'</b>` : `${formatDay(match)} · ${formatTime(match)}`}</span>
+      <span>${locked ? `${icon("lock")} zamknięty` : prediction ? `${icon("check")} typ zapisany` : "1 pkt do zdobycia"}</span>
+    </div>
+    <div class="match-teams">
+      <div class="team home"><span>${home.name}</span><img src="${home.crest}" alt="Herb ${home.name}"></div>
+      <div class="score-zone">${score ? `<strong>${score}</strong>` : `<span>VS</span>`}</div>
+      <div class="team away"><img src="${away.crest}" alt="Herb ${away.name}"><span>${away.name}</span></div>
+    </div>
+    <div class="prediction-row" role="group" aria-label="Typ na mecz ${home.name} — ${away.name}">
+      ${[["1",home.short],["X","REMIS"],["2",away.short]].map(([pick,label]) => `<button data-pick="${pick}" data-match="${match.id}" class="pick ${prediction === pick ? "selected" : ""}" ${locked ? "disabled" : ""}><b>${pick}</b><small>${label}</small></button>`).join("")}
+    </div>
+    ${(live || final) ? `<button class="match-centre-link" data-match-centre="${match.id}">Szczegóły wyniku ${icon("arrow")}</button>` : ""}
+  </article>`;
+}
+
+function matchesView() {
+  const visible = state.matches
+    .filter((match) => match.matchday === state.matchday)
+    .sort((a, b) => new Date(a.kickoffAt) - new Date(b.kickoffAt));
+  const roundOptions = Array.from({ length: 17 }, (_, index) => index + (state.leg === 1 ? 1 : 18));
+  return `${hero()}
+    <section class="club-ribbon" aria-label="Kluby sezonu 2026/27">${teams.map((team) => `<img src="${team.crest}" alt="${team.name}" title="${team.name}">`).join("")}</section>
+    <section class="content-section" id="mecze">
+      <div class="section-heading">
+        <div><p class="eyebrow">TERMINARZ I TYPY</p><h2>Mecze Ekstraklasy</h2><p>Wybierz rezultat każdego spotkania. Typ blokuje się wraz z pierwszym gwizdkiem.</p></div>
+        <div class="stats-inline"><span><b>${state.matches.filter((m) => state.predictions[m.id]).length}</b> oddanych typów</span><span><b>${state.matches.reduce((sum, m) => sum + pointsFor(m), 0)}</b> punktów</span></div>
+      </div>
+      <div class="filters">
+        <div class="segmented"><button data-leg="1" class="${state.leg === 1 ? "active" : ""}">Runda 1 <small>kolejki 1–17</small></button><button data-leg="2" class="${state.leg === 2 ? "active" : ""}">Runda 2 <small>kolejki 18–34</small></button></div>
+        <label class="select-wrap">${icon("calendar")}<select id="matchdaySelect">${roundOptions.map((round) => `<option value="${round}" ${state.matchday === round ? "selected" : ""}>${round}. kolejka · ${new Intl.DateTimeFormat("pl-PL", { day: "2-digit", month: "long" }).format(new Date(`${roundDatesByNumber[round]}T12:00:00`))}</option>`).join("")}</select></label>
+      </div>
+      <div class="round-note"><span>${visible.some((m) => !m.kickoffConfirmed) ? "Daty ramowe" : "Terminy potwierdzone"}</span>${visible.some((m) => !m.kickoffConfirmed) ? "Dokładne dni i godziny tej kolejki nie zostały jeszcze opublikowane. Typy nie zostaną zablokowane na podstawie daty ramowej." : "Godziny zgodne z oficjalnym terminarzem Ekstraklasy."}</div>
+      <div class="matches-grid">${visible.map(matchCard).join("")}</div>
+    </section>`;
+}
+
+function rankingView() {
+  const ownPoints = state.matches.reduce((sum, match) => sum + pointsFor(match), 0);
+  const ownTyped = Object.keys(state.predictions).length;
+  const players = state.user ? [[state.user.name, ownPoints, ownTyped, ownTyped ? Math.round(ownPoints / ownTyped * 100) : 0, true], ...demoPlayers] : demoPlayers;
+  return `<section class="subpage-hero"><p class="eyebrow">KLASYFIKACJA</p><h1>Ranking typerów</h1><p>Każdy trafiony rezultat to dokładnie jeden punkt.</p></section>
+    <section class="content-section narrow">
+      ${!state.user ? `<div class="notice">Zaloguj się, żeby pojawić się w rankingu i zapisywać typy między urządzeniami.</div>` : ""}
+      <div class="ranking-card">
+        <div class="ranking-head"><span>#</span><span>Gracz</span><span>Punkty</span><span>Typy</span><span>Skuteczność</span></div>
+        ${players.sort((a,b) => b[1]-a[1]).map((player,index) => `<div class="ranking-row ${player[4] ? "me" : ""}"><b>${index + 1}</b><span><i>${player[0].slice(0,1)}</i><strong>${player[0]}</strong>${player[4] ? "<small>TY</small>" : ""}</span><strong>${player[1]}</strong><span>${player[2]}</span><span>${player[3]}%</span></div>`).join("")}
+      </div>
+      <p class="demo-caption">Pozostali gracze są danymi demonstracyjnymi do czasu podłączenia Firebase.</p>
+    </section>`;
+}
+
+function liveView() {
+  const live = state.matches.filter((match) => LIVE.has(match.status));
+  const meta = state.liveMeta;
+  const used = meta?.quota?.usedToday ?? 0;
+  const budget = meta?.quota?.localBudget ?? 95;
+  const nextPoll = meta?.nextPollAt ? new Date(meta.nextPollAt).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" }) : null;
+  const statusText = !state.liveConfigured
+    ? "Dodaj API_FOOTBALL_KEY przy uruchomieniu serwera."
+    : meta?.mode === "quota-exhausted"
+      ? `Dzisiejszy budżet ${budget} zapytań został wykorzystany. Pokazujemy ostatni zapisany wynik.`
+      : `Wykorzystano dziś ${used}/${budget} zapytań.${nextPoll ? ` Następne sprawdzenie: ${nextPoll}.` : " Serwer czeka na najbliższy mecz."}`;
+  return `<section class="subpage-hero live-hero"><p class="eyebrow"><i class="live-dot"></i> CENTRUM LIVE</p><h1>Wyniki na żywo.</h1><p>Prosty wynik meczu, status i minuta spotkania — bez zbędnych zdarzeń.</p></section>
+    <section class="content-section narrow">
+      <div class="api-status ${state.liveConfigured && meta?.mode !== "quota-exhausted" ? "active" : ""}"><span>${icon("bolt")}</span><div><b>${state.liveConfigured ? "Darmowy kanał LIVE jest aktywny" : "Kanał LIVE czeka na klucz API"}</b><p>${statusText}${state.liveUpdatedAt ? ` Ostatnia synchronizacja: ${new Date(state.liveUpdatedAt).toLocaleTimeString("pl-PL")}.` : ""}</p></div></div>
+      ${live.length ? `<div class="matches-grid">${live.map(matchCard).join("")}</div>` : `<div class="empty-state"><span>●</span><h2>Teraz żaden mecz nie trwa</h2><p>Serwer uruchamia odświeżanie automatycznie tylko w czasie meczów i aktualizuje wynik mniej więcej co 6 minut.</p><button class="primary-button" data-view-jump="matches">Zobacz terminarz</button></div>`}
+    </section>`;
+}
+
+function rulesView() {
+  return `<section class="subpage-hero"><p class="eyebrow">PROSTE ZASADY</p><h1>Piłka jest prosta.<br>Ten typer też.</h1></section>
+    <section class="content-section narrow rules-grid">
+      <article><b>01</b><span>${icon("calendar")}</span><h3>Wybierz 1, X lub 2</h3><p>1 oznacza wygraną gospodarzy, X remis, a 2 wygraną gości. Nie typujemy dokładnych wyników.</p></article>
+      <article><b>02</b><span>${icon("lock")}</span><h3>Zdąż przed gwizdkiem</h3><p>Typ możesz zmieniać do rozpoczęcia meczu. Później zostaje automatycznie zablokowany.</p></article>
+      <article><b>03</b><span>${icon("trophy")}</span><h3>Zdobądź 1 punkt</h3><p>Za każdy prawidłowy rezultat otrzymujesz jeden punkt. Wygrywa najwyższy wynik po 34. kolejce.</p></article>
+      <div class="rule-banner"><strong>306</strong><span>meczów</span><strong>34</strong><span>kolejki</span><strong>1</strong><span>punkt za trafienie</span></div>
+    </section>`;
+}
+
+function render() {
+  app.innerHTML = state.view === "ranking" ? rankingView() : state.view === "live" ? liveView() : state.view === "rules" ? rulesView() : matchesView();
+  updateAuthButton();
+  bindRendered();
+  updateCountdowns();
+}
+
+function bindRendered() {
+  app.querySelectorAll("[data-pick]").forEach((button) => button.addEventListener("click", () => setPrediction(button.dataset.match, button.dataset.pick)));
+  app.querySelectorAll("[data-leg]").forEach((button) => button.addEventListener("click", () => {
+    state.leg = Number(button.dataset.leg); state.matchday = state.leg === 1 ? 1 : 18; save(); render();
+  }));
+  app.querySelector("#matchdaySelect")?.addEventListener("change", (event) => { state.matchday = Number(event.target.value); save(); render(); });
+  app.querySelectorAll("[data-view-jump]").forEach((button) => button.addEventListener("click", () => setView(button.dataset.viewJump)));
+  app.querySelector("[data-scroll-matches]")?.addEventListener("click", () => document.querySelector("#mecze")?.scrollIntoView({ behavior: "smooth" }));
+  app.querySelectorAll("[data-match-centre]").forEach((button) => button.addEventListener("click", () => showMatchCentre(button.dataset.matchCentre)));
+}
+
+async function setPrediction(matchId, pick) {
+  const match = state.matches.find((item) => item.id === matchId);
+  if (!match || isLocked(match)) return notify("Ten mecz już się rozpoczął — typ jest zamknięty.");
+  state.predictions[matchId] = pick;
+  save();
+  if (state.db && state.user) await saveRemotePrediction(matchId, pick);
+  render();
+  notify(`Typ ${pick} zapisany`);
+}
+
+function showMatchCentre(matchId) {
+  const match = state.matches.find((item) => item.id === matchId);
+  const home = teamById[match.home], away = teamById[match.away];
+  const status = LIVE.has(match.status) ? `LIVE${match.liveElapsed ? ` · ${match.liveElapsed}'` : ""}` : FINAL.has(match.status) ? "Mecz zakończony" : "Mecz zaplanowany";
+  matchDialog.innerHTML = `<button class="modal-close" data-close>×</button><p class="eyebrow">WYNIK MECZU</p><div class="modal-score"><div><img src="${home.crest}" alt=""><b>${home.name}</b></div><strong>${Number.isFinite(match.homeScore) ? `${match.homeScore} : ${match.awayScore}` : "– : –"}</strong><div><img src="${away.crest}" alt=""><b>${away.name}</b></div></div><p class="no-events">${status}</p>`;
+  matchDialog.querySelector("[data-close]").addEventListener("click", () => matchDialog.close());
+  matchDialog.showModal();
+}
+
+function notify(message) {
+  toast.textContent = message; toast.classList.add("show");
+  setTimeout(() => toast.classList.remove("show"), 2400);
+}
+
+function updateAuthButton() {
+  authButton.innerHTML = state.user ? `<span class="avatar">${state.user.name.slice(0,1).toUpperCase()}</span><span>${state.user.name.split(" ")[0]}</span>` : `<span class="user-icon">◉</span><span>Zaloguj się</span>`;
+}
+
+function updateCountdowns() {
+  document.querySelectorAll("[data-countdown]").forEach((node) => {
+    const delta = new Date(node.dataset.countdown) - new Date();
+    if (delta <= 0) return node.textContent = "Mecz rozpoczęty";
+    const days = Math.floor(delta / 86400000); const hours = Math.floor(delta % 86400000 / 3600000);
+    node.textContent = days ? `Start za ${days} dni i ${hours} godz.` : `Start za ${hours} godz.`;
+  });
+}
+
+function loginDemo(provider = "demo") {
+  state.user = { uid: `${provider}-local`, name: provider === "facebook" ? "Gracz Facebook" : provider === "google" ? "Gracz Google" : "Gracz Demo", provider };
+  save(); authDialog.close(); render(); notify("Zalogowano w trybie lokalnym");
+}
+
+async function initFirebase() {
+  if (!firebaseConfig.apiKey || firebaseConfig.apiKey.includes("WSTAW")) return;
+  try {
+    const [{ initializeApp }, authModule, firestore] = await Promise.all([
+      import("https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js"),
+      import("https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"),
+      import("https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js")
+    ]);
+    const fbApp = initializeApp(firebaseConfig);
+    state.auth = authModule.getAuth(fbApp); state.db = firestore.getFirestore(fbApp);
+    state.firebaseModules = { ...authModule, ...firestore };
+    authModule.onAuthStateChanged(state.auth, async (user) => {
+      if (!user) return;
+      state.user = { uid: user.uid, name: user.displayName || "Gracz", provider: user.providerData[0]?.providerId };
+      await loadRemotePredictions(); save(); render();
+    });
+  } catch (error) { console.warn("Firebase nie został uruchomiony:", error); }
+}
+
+async function login(provider) {
+  if (!state.auth) return loginDemo(provider);
+  const { GoogleAuthProvider, FacebookAuthProvider, signInWithPopup } = state.firebaseModules;
+  const authProvider = provider === "facebook" ? new FacebookAuthProvider() : new GoogleAuthProvider();
+  try { await signInWithPopup(state.auth, authProvider); authDialog.close(); }
+  catch (error) { notify("Logowanie nie powiodło się. Sprawdź konfigurację Firebase."); }
+}
+
+async function saveRemotePrediction(matchId, pick) {
+  const { doc, setDoc, serverTimestamp } = state.firebaseModules;
+  await setDoc(doc(state.db, "predictions", `${state.user.uid}_${matchId}`), { uid: state.user.uid, matchId, pick, updatedAt: serverTimestamp() });
+}
+
+async function loadRemotePredictions() {
+  const { collection, query, where, getDocs } = state.firebaseModules;
+  const snapshot = await getDocs(query(collection(state.db, "predictions"), where("uid", "==", state.user.uid)));
+  snapshot.forEach((item) => { const data = item.data(); state.predictions[data.matchId] = data.pick; });
+}
+
+function normalizeName(value) {
+  return value.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
+}
+
+async function pollLive() {
+  try {
+    const response = await fetch("./api/live", { cache: "no-store" });
+    if (!response.ok) return;
+    const payload = await response.json();
+    const signature = (payload.fixtures || []).map((fixture) => [
+      fixture.providerId, fixture.status, fixture.elapsed, fixture.score?.home,
+      fixture.score?.away, fixture.kickoffAt, fixture.source
+    ].join(":")).join("|");
+    const dataChanged = signature !== state.liveSignature;
+    state.liveConfigured = payload.configured; state.liveUpdatedAt = payload.updatedAt;
+    state.liveMeta = payload;
+    state.liveSignature = signature;
+    payload.fixtures?.forEach((fixture) => {
+      const target = state.matches.find((match) => match.id === fixture.localMatchId) || state.matches.find((match) => {
+        const sameTeams = normalizeName(teamById[match.home].name).includes(normalizeName(fixture.home.name)) || normalizeName(fixture.home.name).includes(normalizeName(teamById[match.home].name));
+        const sameAway = normalizeName(teamById[match.away].name).includes(normalizeName(fixture.away.name)) || normalizeName(fixture.away.name).includes(normalizeName(teamById[match.away].name));
+        const close = Math.abs(new Date(match.kickoffAt) - new Date(fixture.kickoffAt)) < 3 * 3600000;
+        return sameTeams && sameAway && close;
+      });
+      if (!target) return;
+      Object.assign(target, {
+        status: fixture.status,
+        liveElapsed: fixture.elapsed,
+        homeScore: fixture.score.home,
+        awayScore: fixture.score.away,
+        kickoffAt: fixture.kickoffAt || target.kickoffAt,
+        kickoffConfirmed: Boolean(fixture.kickoffAt),
+        resultSource: fixture.source
+      });
+    });
+    if (dataChanged || state.view === "live" || state.matches.some((match) => LIVE.has(match.status))) render();
+  } catch { /* statyczny serwer lub brak adaptera — aplikacja nadal działa */ }
+}
+
+document.querySelectorAll(".nav-link").forEach((button) => button.addEventListener("click", () => setView(button.dataset.view)));
+document.querySelector("#menuButton").addEventListener("click", () => document.querySelector(".main-nav").classList.toggle("is-open"));
+authButton.addEventListener("click", () => state.user ? notify(`Zalogowany jako ${state.user.name}`) : authDialog.showModal());
+authDialog.querySelector("[data-close]").addEventListener("click", () => authDialog.close());
+authDialog.querySelectorAll("[data-provider]").forEach((button) => button.addEventListener("click", () => button.dataset.provider === "demo" ? loginDemo() : login(button.dataset.provider)));
+matchDialog.addEventListener("click", (event) => { if (event.target === matchDialog) matchDialog.close(); });
+window.addEventListener("hashchange", () => { const view = location.hash.slice(1); if (["matches","ranking","live","rules"].includes(view)) setView(view); });
+
+render();
+initFirebase();
+pollLive();
+setInterval(pollLive, 30000);
+setInterval(updateCountdowns, 60000);

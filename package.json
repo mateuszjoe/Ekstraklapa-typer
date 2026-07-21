@@ -1,0 +1,12 @@
+{
+  "name": "ekstraklasa-typer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Ekstraklasa Typer 2026/27 — typowanie 1X2 z centrum live",
+  "scripts": {
+    "dev": "node server.mjs",
+    "start": "node server.mjs",
+    "check": "node --check app.js && node --check data.js && node --check server.mjs && node scripts/check-data.mjs"
+  }
+}
