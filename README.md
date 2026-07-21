@@ -27,6 +27,7 @@ Aplikacja korzysta z osobnego projektu Firebase `ekstraklasa-typer-2026-27`. Pub
 - domena produkcyjna `ekstraklasa-typer.mateuszjoe.chatgpt.site` i `localhost` muszą znajdować się w Firebase Authentication → Authorized domains;
 - typy zalogowanego gracza zapisują się w Firestore i synchronizują między urządzeniami;
 - kliknięcie avatara w rankingu, oknie konta lub chacie otwiera typy gracza z zakładkami kolejek 1–17; cudze typy są dostępne dopiero od serwerowej godziny rozpoczęcia meczu;
+- nazwę gracza można zmienić w ustawieniach, a profil synchronizuje ją między urządzeniami;
 - avatar profilu można ustawić jako zdjęcie Google, własną pomniejszoną grafikę, herb klubu albo jeden z gotowych avatarów;
 - pływający chat graczy działa w czasie rzeczywistym i obsługuje odpowiedzi, reakcje oraz automatycznie pomniejszone grafiki;
 - licznik uczestników jest zwiększany transakcyjnie tylko raz dla danego konta Google, a sekcja zasad wylicza aktualną pulę i trzy nagrody;

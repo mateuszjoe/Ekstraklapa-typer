@@ -105,20 +105,19 @@ service cloud.firestore {
         );
     }
 
+    function validDisplayName() {
+      return request.resource.data.displayName is string
+        && request.resource.data.displayName.size() > 0
+        && request.resource.data.displayName.size() <= 40
+        && request.resource.data.displayName.matches('^[^\\n\\r\\t]{1,40}$')
+        && request.resource.data.displayName.matches('.*[^ ].*');
+    }
+
     function validOwnProfile(uid) {
-      let tokenName = request.auth.token.get('name', '');
-      let trustedName = tokenName is string
-        && tokenName.size() > 0
-        && tokenName.size() <= 80
-        ? tokenName
-        : 'Gracz';
       return googleSignedIn()
         && uid == request.auth.uid
         && request.resource.data.uid == request.auth.uid
-        && request.resource.data.displayName is string
-        && request.resource.data.displayName.size() > 0
-        && request.resource.data.displayName.size() <= 80
-        && request.resource.data.displayName == trustedName
+        && validDisplayName()
         && request.resource.data.joinedAt is timestamp
         && request.resource.data.updatedAt == request.time
         && request.resource.data.keys().hasOnly([

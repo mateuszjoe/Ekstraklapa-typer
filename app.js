@@ -15,6 +15,7 @@ const LAST_MATCHDAY = 17;
 const TYPER_MATCH_COUNT = 153;
 const MAX_AVATAR_FILE_SIZE = 8 * 1024 * 1024;
 const MAX_AVATAR_DATA_LENGTH = 180_000;
+const MAX_DISPLAY_NAME_LENGTH = 40;
 const MAX_CHAT_IMAGE_DATA_LENGTH = 90_000;
 const CHAT_LIVE_LIMIT = 30;
 const CHAT_PAGE_LIMIT = 20;
@@ -58,6 +59,7 @@ const state = {
   avatarBusy: false,
   avatarPending: false,
   avatarOperationId: 0,
+  nameBusy: false,
   participantReady: false,
   userDataReady: false,
   participantActivationBusy: false,
@@ -224,12 +226,25 @@ function safePhotoUrl(value) {
 }
 
 function googleAccountName(user) {
-  const name = typeof user?.displayName === "string" ? user.displayName : "";
-  return name.length > 0 && name.length <= 80 ? name : "Gracz";
+  const name = normalizeDisplayName(user?.displayName);
+  return name ? name.slice(0, MAX_DISPLAY_NAME_LENGTH) : "Gracz";
+}
+
+function normalizeDisplayName(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function validDisplayName(value) {
+  return value.length > 0 && value.length <= MAX_DISPLAY_NAME_LENGTH;
 }
 
 function normalizePublicProfile(uid, value = {}) {
-  const name = String(value.displayName || value.name || "Gracz").trim().slice(0, 80) || "Gracz";
+  const normalizedName = normalizeDisplayName(value.displayName || value.name);
+  const name = normalizedName ? normalizedName.slice(0, MAX_DISPLAY_NAME_LENGTH) : "Gracz";
   return {
     uid,
     name,
@@ -459,29 +474,39 @@ function rulesView() {
 }
 
 function settingsView() {
-  const heroMarkup = `<section class="subpage-hero"><p class="eyebrow">TWÓJ PROFIL</p><h1>Ustawienia</h1><p>Wybierz twarz, z którą wchodzisz do gry.</p></section>`;
+  const heroMarkup = `<section class="subpage-hero"><p class="eyebrow">TWÓJ PROFIL</p><h1>Ustawienia</h1><p>Ustaw nazwę i avatar, z którymi wchodzisz do gry.</p></section>`;
   if (!state.user) {
-    return `${heroMarkup}<section class="content-section narrow"><div class="settings-locked"><div class="settings-lock-icon">G</div><h2>Zaloguj się przez Google</h2><p>Avatar jest częścią prawdziwego profilu gracza i synchronizuje się między urządzeniami.</p><button class="primary-button" data-open-auth>PRZEJDŹ DO LOGOWANIA ${icon("arrow")}</button></div></section>`;
+    return `${heroMarkup}<section class="content-section narrow"><div class="settings-locked"><div class="settings-lock-icon">G</div><h2>Zaloguj się przez Google</h2><p>Nazwa i avatar są częścią profilu gracza i synchronizują się między urządzeniami.</p><button class="primary-button" data-open-auth>PRZEJDŹ DO LOGOWANIA ${icon("arrow")}</button></div></section>`;
   }
 
-  const disabled = state.avatarBusy ? "disabled" : "";
+  const profileBusy = state.avatarBusy || state.nameBusy;
+  const disabled = profileBusy ? "disabled" : "";
   const currentType = state.avatar.type;
   const currentValue = state.avatar.value;
   const googleAvatar = { type: "google", value: "" };
   return `${heroMarkup}<section class="content-section settings-section">
     <div class="settings-profile-card">
       ${avatarVisualMarkup("settings-avatar-preview", `Avatar ${state.user.name}`)}
-      <div><p class="eyebrow">AKTUALNY AVATAR</p><h2>${escapeHtml(state.user.name)}</h2><span>${escapeHtml(state.user.email || "Konto Google")}</span></div>
-      <small>${state.avatarBusy ? "Zapisywanie…" : state.avatarPending ? "Oczekuje na synchronizację" : "Zapisany na Twoim koncie"}</small>
+      <div><p class="eyebrow">TWÓJ PROFIL</p><h2>${escapeHtml(state.user.name)}</h2><span>${escapeHtml(state.user.email || "Konto Google")}</span></div>
+      <small>${state.nameBusy ? "Zapisywanie nazwy…" : state.avatarBusy ? "Zapisywanie avatara…" : state.avatarPending ? "Oczekuje na synchronizację" : "Zapisany na Twoim koncie"}</small>
     </div>
     <div class="settings-panels">
       <article class="settings-panel">
-        <div class="settings-panel-heading"><span>01</span><div><h3>Zdjęcie lub grafika</h3><p>Użyj zdjęcia Google albo wgraj własny plik. Grafikę automatycznie przytniemy do kwadratu.</p></div></div>
+        <div class="settings-panel-heading"><span>01</span><div><h3>Nazwa gracza</h3><p>Ta nazwa będzie widoczna w typerze, rankingu i chacie.</p></div></div>
+        <form id="displayNameForm" class="profile-name-form">
+          <label class="profile-name-field" for="displayNameInput"><span>Nazwa wyświetlana</span><input id="displayNameInput" class="profile-name-input" type="text" value="${escapeHtml(state.user.name)}" maxlength="${MAX_DISPLAY_NAME_LENGTH}" autocomplete="nickname" required ${disabled}></label>
+          <button class="primary-button profile-name-save" type="submit" ${disabled}>${state.nameBusy ? "ZAPISYWANIE…" : "ZAPISZ NAZWĘ"}</button>
+          <small class="profile-name-help">Maksymalnie ${MAX_DISPLAY_NAME_LENGTH} znaków. Zmiana zapisze się na wszystkich urządzeniach.</small>
+        </form>
+      </article>
+
+      <article class="settings-panel">
+        <div class="settings-panel-heading"><span>02</span><div><h3>Zdjęcie lub grafika</h3><p>Użyj zdjęcia Google albo wgraj własny plik. Grafikę automatycznie przytniemy do kwadratu.</p></div></div>
         <div class="avatar-source-actions">
           <button class="avatar-source-card ${currentType === "google" ? "is-selected" : ""}" data-avatar-type="google" data-avatar-value="" aria-pressed="${currentType === "google"}" ${disabled}>
             ${avatarVisualMarkup("avatar-option-image", "Zdjęcie Google", googleAvatar)}<span><strong>Zdjęcie Google</strong><small>lub inicjał konta</small></span>
           </button>
-          <label class="avatar-upload-card ${currentType === "upload" ? "is-selected" : ""} ${state.avatarBusy ? "is-disabled" : ""}">
+          <label class="avatar-upload-card ${currentType === "upload" ? "is-selected" : ""} ${profileBusy ? "is-disabled" : ""}">
             <input id="avatarUpload" type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/heic,image/heif" ${disabled}>
             <span class="upload-mark">↑</span><span><strong>Wgraj własną</strong><small>JPG, PNG lub WEBP · maks. 8 MB</small></span>
           </label>
@@ -489,12 +514,12 @@ function settingsView() {
       </article>
 
       <article class="settings-panel">
-        <div class="settings-panel-heading"><span>02</span><div><h3>Twój klub Ekstraklasy</h3><p>Wybierz herb, który będzie reprezentował Cię w typerze.</p></div></div>
+        <div class="settings-panel-heading"><span>03</span><div><h3>Twój klub Ekstraklasy</h3><p>Wybierz herb, który będzie reprezentował Cię w typerze.</p></div></div>
         <div class="club-avatar-grid">${teams.map((team) => `<button class="avatar-choice club-avatar-choice ${currentType === "club" && currentValue === team.id ? "is-selected" : ""}" data-avatar-type="club" data-avatar-value="${team.id}" aria-pressed="${currentType === "club" && currentValue === team.id}" title="${escapeHtml(team.name)}" ${disabled}><img src="${team.crest}" alt=""><span>${escapeHtml(team.name)}</span></button>`).join("")}</div>
       </article>
 
       <article class="settings-panel">
-        <div class="settings-panel-heading"><span>03</span><div><h3>Gotowe avatary</h3><p>Wybierz jeden z 18 gotowych motywów.</p></div></div>
+        <div class="settings-panel-heading"><span>04</span><div><h3>Gotowe avatary</h3><p>Wybierz jeden z 18 gotowych motywów.</p></div></div>
         <div class="stock-avatar-grid">${stockAvatars.map((avatar) => `<button class="avatar-choice stock-avatar-choice ${currentType === "stock" && currentValue === avatar.id ? "is-selected" : ""}" data-avatar-type="stock" data-avatar-value="${avatar.id}" aria-pressed="${currentType === "stock" && currentValue === avatar.id}" ${disabled}><img src="${escapeHtml(avatar.src)}" alt=""><span>${escapeHtml(avatar.label)}</span></button>`).join("")}</div>
       </article>
     </div>
@@ -531,6 +556,7 @@ function bindRendered() {
   app.querySelector("[data-open-auth]")?.addEventListener("click", () => document.querySelector("#authDialog")?.showModal());
   app.querySelectorAll("[data-avatar-type]").forEach((button) => button.addEventListener("click", () => selectAvatar(button.dataset.avatarType, button.dataset.avatarValue || "")));
   app.querySelector("#avatarUpload")?.addEventListener("change", (event) => handleAvatarUpload(event.target.files?.[0]));
+  app.querySelector("#displayNameForm")?.addEventListener("submit", saveDisplayName);
   app.querySelectorAll("[data-avatar-image]").forEach((image) => image.addEventListener("error", () => image.remove(), { once: true }));
 }
 
@@ -852,12 +878,57 @@ function updateCountdowns() {
   });
 }
 
+async function saveDisplayName(event) {
+  event.preventDefault();
+  if (!state.user || state.auth?.currentUser?.uid !== state.user.uid || !state.db || !state.firebaseModules) {
+    document.querySelector("#authDialog")?.showModal();
+    return;
+  }
+  if (state.nameBusy || state.avatarBusy) return;
+
+  const input = event.currentTarget.querySelector("#displayNameInput");
+  const nextName = normalizeDisplayName(input?.value);
+  if (!validDisplayName(nextName)) {
+    notify(`Nazwa musi mieć od 1 do ${MAX_DISPLAY_NAME_LENGTH} znaków.`);
+    input?.focus();
+    return;
+  }
+  if (nextName === state.user.name) {
+    if (input) input.value = nextName;
+    notify("To już jest Twoja aktualna nazwa.");
+    return;
+  }
+
+  const uid = state.user.uid;
+  state.nameBusy = true;
+  render();
+  try {
+    await saveRemoteDisplayName(uid, nextName);
+    if (state.auth?.currentUser?.uid !== uid || state.user?.uid !== uid) return;
+    state.user.name = nextName;
+    state.chatProfiles[uid] = normalizePublicProfile(uid, {
+      displayName: nextName,
+      avatarType: state.avatar.type,
+      avatarValue: state.avatar.value
+    });
+    notify("Nazwa gracza została zapisana.");
+  } catch (error) {
+    console.error("Nie udało się zapisać nazwy gracza:", error);
+    notify("Nie udało się zapisać nazwy. Spróbuj ponownie.");
+  } finally {
+    if (state.auth?.currentUser?.uid === uid && state.user?.uid === uid) {
+      state.nameBusy = false;
+      render();
+    }
+  }
+}
+
 async function selectAvatar(type, value) {
   if (!state.user || state.auth?.currentUser?.uid !== state.user.uid) {
     document.querySelector("#authDialog")?.showModal();
     return;
   }
-  if (state.avatarBusy) return;
+  if (state.avatarBusy || state.nameBusy) return;
 
   const nextAvatar = normalizeAvatar({ type, value });
   if (!nextAvatar) {
@@ -1007,7 +1078,7 @@ async function avatarDataFromFile(file) {
 }
 
 async function handleAvatarUpload(file) {
-  if (!file || state.avatarBusy || !state.user) return;
+  if (!file || state.avatarBusy || state.nameBusy || !state.user) return;
   const uid = state.user.uid;
   const preparationId = ++state.avatarOperationId;
   state.avatarBusy = true;
@@ -1813,6 +1884,7 @@ async function handleAuthState(user) {
   state.avatarOperationId += 1;
   state.avatarBusy = false;
   state.avatarPending = false;
+  state.nameBusy = false;
   state.participantReady = false;
   state.participantActivationBusy = false;
   state.participantActivationError = false;
@@ -1870,6 +1942,8 @@ async function handleAuthState(user) {
   state.predictions = { ...remote };
   state.confirmedPredictions = { ...remote };
   state.avatar = remoteProfile?.avatar || cachedAvatar;
+  const savedDisplayName = normalizeDisplayName(remoteProfile?.data?.displayName);
+  if (savedDisplayName) state.user.name = savedDisplayName.slice(0, MAX_DISPLAY_NAME_LENGTH);
   state.chatProfiles[user.uid] = normalizePublicProfile(user.uid, {
     displayName: state.user.name,
     photoURL: state.user.photoURL,
@@ -1885,18 +1959,20 @@ async function handleAuthState(user) {
   Object.assign(state.predictions, migratedPredictions);
   Object.assign(state.confirmedPredictions, migratedPredictions);
 
-  try {
-    const profileSave = saveRemoteProfile(user.uid, state.avatar, remoteProfile?.data || null).then(
-      () => ({ status: "saved" }),
-      (error) => ({ status: "failed", error })
-    );
-    const profileResult = await Promise.race([
-      profileSave,
-      new Promise((resolve) => setTimeout(() => resolve({ status: "pending" }), 6500))
-    ]);
-    if (profileResult.status === "failed") throw profileResult.error;
-  } catch (error) {
-    console.error("Nie udało się uzupełnić profilu gracza:", error);
+  if (profileResult.status === "fulfilled") {
+    try {
+      const profileSave = saveRemoteProfile(user.uid, state.avatar, remoteProfile?.data || null).then(
+        () => ({ status: "saved" }),
+        (error) => ({ status: "failed", error })
+      );
+      const profileWriteResult = await Promise.race([
+        profileSave,
+        new Promise((resolve) => setTimeout(() => resolve({ status: "pending" }), 6500))
+      ]);
+      if (profileWriteResult.status === "failed") throw profileWriteResult.error;
+    } catch (error) {
+      console.error("Nie udało się uzupełnić profilu gracza:", error);
+    }
   }
   if (state.auth?.currentUser?.uid !== user.uid) return;
 
@@ -2012,6 +2088,7 @@ async function logout() {
   state.avatar = { ...DEFAULT_AVATAR };
   state.avatarBusy = false;
   state.avatarPending = false;
+  state.nameBusy = false;
   state.avatarOperationId += 1;
   state.participantReady = false;
   state.participantActivationBusy = false;
@@ -2064,20 +2141,47 @@ async function saveRemoteAvatar(uid, avatar) {
   if (!state.db || !state.firebaseModules || state.auth?.currentUser?.uid !== uid) throw new Error("Brak aktywnej sesji Google");
   const normalized = normalizeAvatar(avatar);
   if (!normalized) throw new Error("Nieprawidłowy avatar");
-  const { doc, getDoc } = state.firebaseModules;
-  const snapshot = await getDoc(doc(state.db, "profiles", uid));
-  await saveRemoteProfile(uid, normalized, snapshot.exists() ? snapshot.data() : null);
+  const { doc, getDoc, serverTimestamp, updateDoc } = state.firebaseModules;
+  const reference = doc(state.db, "profiles", uid);
+  const snapshot = await getDoc(reference);
+  if (!snapshot.exists()) {
+    await saveRemoteProfile(uid, normalized, null);
+    return;
+  }
+  await updateDoc(reference, {
+    avatarType: normalized.type,
+    avatarValue: normalized.value,
+    updatedAt: serverTimestamp()
+  });
 }
 
-async function saveRemoteProfile(uid, avatar, existingData = null) {
+async function saveRemoteDisplayName(uid, displayName) {
+  if (!state.db || !state.firebaseModules || state.auth?.currentUser?.uid !== uid || state.user?.uid !== uid) {
+    throw new Error("Brak aktywnej sesji Google");
+  }
+  const normalizedName = normalizeDisplayName(displayName);
+  if (!validDisplayName(normalizedName)) throw new Error("Nieprawidłowa nazwa gracza");
+  const { doc, getDoc, serverTimestamp, updateDoc } = state.firebaseModules;
+  const reference = doc(state.db, "profiles", uid);
+  const snapshot = await getDoc(reference);
+  if (!snapshot.exists()) {
+    await saveRemoteProfile(uid, state.avatar, null, normalizedName);
+    return;
+  }
+  await updateDoc(reference, { displayName: normalizedName, updatedAt: serverTimestamp() });
+}
+
+async function saveRemoteProfile(uid, avatar, existingData = null, displayName = state.user?.name) {
   if (!state.db || !state.firebaseModules || state.auth?.currentUser?.uid !== uid || state.user?.uid !== uid) {
     throw new Error("Brak aktywnej sesji Google");
   }
   const normalized = normalizeAvatar(avatar) || { ...DEFAULT_AVATAR };
+  const normalizedName = normalizeDisplayName(displayName);
+  if (!validDisplayName(normalizedName)) throw new Error("Nieprawidłowa nazwa gracza");
   const { doc, setDoc, serverTimestamp } = state.firebaseModules;
   await setDoc(doc(state.db, "profiles", uid), {
     uid,
-    displayName: state.user.name,
+    displayName: normalizedName,
     avatarType: normalized.type,
     avatarValue: normalized.value,
     joinedAt: existingData?.joinedAt || serverTimestamp(),

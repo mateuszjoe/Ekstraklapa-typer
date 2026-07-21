@@ -203,6 +203,14 @@ svg { width: 1.1em; height: 1.1em; fill: none; stroke: currentColor; stroke-widt
 .settings-panel-heading > span { width: 38px; flex: 0 0 auto; color: var(--yellow); -webkit-text-stroke: 1px var(--ink); font: 800 30px/1 Space Grotesk; }
 .settings-panel-heading h3 { margin: 0 0 6px; font: 700 20px/1.1 Space Grotesk; }
 .settings-panel-heading p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
+.profile-name-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 10px 14px; }
+.profile-name-field { min-width: 0; display: grid; gap: 7px; color: var(--ink); font-size: 9px; font-weight: 900; letter-spacing: .05em; text-transform: uppercase; }
+.profile-name-input { width: 100%; min-height: 44px; padding: 10px 13px; color: var(--ink); background: var(--paper); border: 2px solid var(--ink); border-radius: 8px; outline: none; font-size: 13px; font-weight: 750; letter-spacing: 0; text-transform: none; box-shadow: 3px 3px 0 var(--paper-strong); }
+.profile-name-input:focus { border-color: var(--green-dark); box-shadow: 3px 3px 0 var(--yellow); }
+.profile-name-input:disabled { cursor: wait; opacity: .62; }
+.profile-name-save { min-height: 44px; justify-content: center; }
+.profile-name-save:disabled { cursor: wait; opacity: .58; transform: none; box-shadow: 3px 3px 0 var(--paper-strong); }
+.profile-name-help { grid-column: 1 / -1; color: var(--muted); font-size: 9px; line-height: 1.5; }
 .avatar-source-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .avatar-source-card, .avatar-upload-card { position: relative; min-height: 94px; display: flex; align-items: center; gap: 14px; padding: 13px; color: var(--ink); text-align: left; background: var(--paper); border: 2px solid var(--line); border-radius: 10px; transition: transform .15s, border-color .15s, box-shadow .15s; }
 .avatar-source-card:hover, .avatar-upload-card:hover, .avatar-choice:hover { border-color: var(--ink); transform: translateY(-2px); }
@@ -548,6 +556,8 @@ footer { min-height: 96px; padding: 20px clamp(25px, 7vw, 110px); color: #b7b0a3
   .ranking-row { padding-inline: 12px; }
   .settings-panel { padding: 20px 14px; }
   .settings-panel-heading { gap: 9px; }
+  .profile-name-form { grid-template-columns: 1fr; }
+  .profile-name-help { grid-column: auto; }
   .stock-avatar-grid { grid-template-columns: 1fr; }
   .rule-banner { gap: 10px; }
   .rule-stat { justify-content: flex-start; }
