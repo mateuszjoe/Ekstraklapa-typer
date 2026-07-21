@@ -22,5 +22,9 @@ const files = [
 
 await Promise.all(files.map((file) => cp(join(root, file), join(output, file))));
 await cp(join(root, "assets"), join(output, "assets"), { recursive: true });
+await mkdir(join(output, "server"), { recursive: true });
+await mkdir(join(output, ".openai"), { recursive: true });
+await cp(join(root, "worker.mjs"), join(output, "server", "index.js"));
+await cp(join(root, ".openai", "hosting.json"), join(output, ".openai", "hosting.json"));
 
 console.log(`Build gotowy: ${output}`);
