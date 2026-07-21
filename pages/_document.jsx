@@ -35,17 +35,17 @@ export default function Document() {
   return (
     <Html lang="pl" className="app-loading">
       <Head>
-        <link rel="icon" type="image/png" sizes="32x32" href="/assets/brand/favicon-32.png" />
-        <link rel="apple-touch-icon" sizes="180x180" href="/assets/brand/apple-touch-icon.png" />
-        <link rel="manifest" href="/manifest.webmanifest" />
-        <link rel="preload" as="image" href="/assets/brand/app-icon-192.png" />
+        <link rel="icon" type="image/png" sizes="32x32" href="/assets/brand/favicon-32.png?v=4" />
+        <link rel="apple-touch-icon" sizes="180x180" href="/assets/brand/apple-touch-icon.png?v=4" />
+        <link rel="manifest" href="/manifest.webmanifest?v=4" />
+        <link rel="preload" as="image" href="/assets/brand/app-icon-192.png?v=4" />
         <style dangerouslySetInnerHTML={{ __html: loaderCss }} />
         <link rel="stylesheet" href="/styles.css" />
       </Head>
       <body>
         <div id="appLoader" role="status" aria-live="polite" aria-label="Wczytywanie Ekstraklasa Typer">
           <div className="loader-card">
-            <div className="loader-emblem"><img src="/assets/brand/app-icon-192.png" width="88" height="88" alt="" /></div>
+            <div className="loader-emblem"><img src="/assets/brand/app-icon-192.png?v=4" width="88" height="88" alt="" /></div>
             <p className="loader-kicker">SEZON 2026/27</p>
             <strong className="loader-title">EKSTRAKLASA <span>TYPER</span></strong>
             <p className="loader-copy">Przygotowujemy mecze i Twoje typy</p>

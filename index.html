@@ -9,10 +9,10 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Ekstraklasa Typer" />
     <title>Ekstraklasa Typer</title>
-    <link rel="icon" type="image/png" sizes="32x32" href="./assets/brand/favicon-32.png" />
-    <link rel="apple-touch-icon" sizes="180x180" href="./assets/brand/apple-touch-icon.png" />
-    <link rel="manifest" href="./manifest.webmanifest" />
-    <link rel="preload" as="image" href="./assets/brand/app-icon-192.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="./assets/brand/favicon-32.png?v=4" />
+    <link rel="apple-touch-icon" sizes="180x180" href="./assets/brand/apple-touch-icon.png?v=4" />
+    <link rel="manifest" href="./manifest.webmanifest?v=4" />
+    <link rel="preload" as="image" href="./assets/brand/app-icon-192.png?v=4" />
     <style>
       html.app-loading, html.app-loading body { min-height: 100%; overflow: hidden; background: #021d15; }
       html.app-loading body > *:not(#appLoader):not(script) { visibility: hidden !important; }
@@ -46,7 +46,7 @@
   <body>
     <div id="appLoader" role="status" aria-live="polite" aria-label="Wczytywanie Ekstraklasa Typer">
       <div class="loader-card">
-        <div class="loader-emblem"><img src="./assets/brand/app-icon-192.png" width="88" height="88" alt="" /></div>
+        <div class="loader-emblem"><img src="./assets/brand/app-icon-192.png?v=4" width="88" height="88" alt="" /></div>
         <p class="loader-kicker">SEZON 2026/27</p>
         <strong class="loader-title">EKSTRAKLASA <span>TYPER</span></strong>
         <p class="loader-copy">Przygotowujemy mecze i Twoje typy</p>
@@ -57,8 +57,7 @@
     <script>window.__etLoaderFallback=setTimeout(function(){var root=document.documentElement;root.classList.remove("app-loading");root.classList.add("app-ready");},8000);</script>
     <header class="site-header">
       <a class="brand" href="#matches" data-route="matches" aria-label="Ekstraklasa Typer — strona główna">
-        <span class="brand-mark"><img src="./assets/brand/brand-mark.png" alt="" /></span>
-        <span><b>EKSTRAKLASA</b><small>TYPER · 2026/27</small></span>
+        <img class="brand-logo" src="./assets/brand/logo-horizontal.png" alt="" />
       </a>
       <nav class="main-nav" aria-label="Główna nawigacja">
         <button class="nav-link is-active" data-view="matches">Mecze</button>
@@ -73,14 +72,14 @@
     <main id="app" tabindex="-1"></main>
 
     <footer>
-      <div class="footer-brand"><img src="./assets/brand/brand-mark.png" alt="" /><span>Ekstraklasa Typer</span></div>
+      <div class="footer-brand"><img src="./assets/brand/logo-compact.png" alt="Ekstraklasa Typer" /></div>
       <p>Prywatna zabawa na punkty. Bez zakładów i prawdziwych pieniędzy.</p>
       <span>Sezon 2026/27</span>
     </footer>
 
     <dialog id="authDialog" class="modal auth-modal">
       <button class="modal-close" data-close aria-label="Zamknij">×</button>
-      <img class="modal-logo" src="./assets/brand/brand-mark.png" alt="Ekstraklasa Typer" />
+      <img class="modal-logo" src="./assets/brand/logo-compact.png" alt="Ekstraklasa Typer" />
       <p class="eyebrow">DOŁĄCZ DO GRY</p>
       <h2>Zaloguj się i typuj</h2>
       <p class="modal-copy">Twoje typy będą dostępne na każdym urządzeniu. Jeden klik i jesteś w grze.</p>

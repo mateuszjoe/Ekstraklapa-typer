@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/brand/brand-mark.png" width="128" alt="Znak Ekstraklasa Typer" />
+  <img src="assets/brand/logo-horizontal.png" width="520" alt="Ekstraklasa Typer" />
 </p>
 
 # Ekstraklasa Typer 2026/27

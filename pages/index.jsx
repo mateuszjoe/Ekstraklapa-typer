@@ -27,8 +27,7 @@ export default function Home() {
 
       <header className="site-header">
         <a className="brand" href="#matches" data-route="matches" aria-label="Ekstraklasa Typer — strona główna">
-          <span className="brand-mark"><img src="/assets/brand/brand-mark.png" alt="" /></span>
-          <span><b>EKSTRAKLASA</b><small>TYPER · 2026/27</small></span>
+          <img className="brand-logo" src="/assets/brand/logo-horizontal.png" alt="" />
         </a>
         <nav className="main-nav" aria-label="Główna nawigacja">
           <button className="nav-link is-active" data-view="matches">Mecze</button>
@@ -43,14 +42,14 @@ export default function Home() {
       <main id="app" tabIndex="-1" />
 
       <footer>
-        <div className="footer-brand"><img src="/assets/brand/brand-mark.png" alt="" /><span>Ekstraklasa Typer</span></div>
+        <div className="footer-brand"><img src="/assets/brand/logo-compact.png" alt="Ekstraklasa Typer" /></div>
         <p>Prywatna zabawa na punkty. Bez zakładów i prawdziwych pieniędzy.</p>
         <span>Sezon 2026/27</span>
       </footer>
 
       <dialog id="authDialog" className="modal auth-modal">
         <button className="modal-close" data-close aria-label="Zamknij">×</button>
-        <img className="modal-logo" src="/assets/brand/brand-mark.png" alt="Ekstraklasa Typer" />
+        <img className="modal-logo" src="/assets/brand/logo-compact.png" alt="Ekstraklasa Typer" />
         <p className="eyebrow">DOŁĄCZ DO GRY</p>
         <h2>Zaloguj się i typuj</h2>
         <p className="modal-copy">Twoje typy będą dostępne na każdym urządzeniu. Jeden klik i jesteś w grze.</p>

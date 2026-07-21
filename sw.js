@@ -1,15 +1,18 @@
-const CACHE_NAME = "ekstraklasa-typer-v3";
+const CACHE_NAME = "ekstraklasa-typer-v4";
 const OFFLINE_ASSETS = [
   "./",
   "./styles.css",
-  "./manifest.webmanifest",
+  "./manifest.webmanifest?v=4",
   "./assets/fonts/manrope-latin.woff2",
   "./assets/fonts/manrope-latin-ext.woff2",
   "./assets/fonts/space-grotesk-latin.woff2",
   "./assets/fonts/space-grotesk-latin-ext.woff2",
-  "./assets/brand/app-icon-192.png",
-  "./assets/brand/app-icon-512.png",
-  "./assets/brand/brand-mark.png"
+  "./assets/brand/app-icon-192.png?v=4",
+  "./assets/brand/app-icon-512.png?v=4",
+  "./assets/brand/apple-touch-icon.png?v=4",
+  "./assets/brand/favicon-32.png?v=4",
+  "./assets/brand/logo-horizontal.png",
+  "./assets/brand/logo-compact.png"
 ];
 
 self.addEventListener("install", (event) => {
