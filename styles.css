@@ -203,8 +203,11 @@ svg { width: 1.1em; height: 1.1em; fill: none; stroke: currentColor; stroke-widt
 .modal-copy { color: var(--muted); font-size: 11px; line-height: 1.6; margin-bottom: 23px; }
 .provider { width: 100%; min-height: 47px; display: flex; align-items: center; justify-content: center; gap: 12px; margin: 8px 0; border: 2px solid var(--ink); border-radius: 8px; background: white; color: var(--ink); font-size: 11px; font-weight: 900; }
 .provider span { width: 20px; font-size: 17px; }
-.provider.facebook { color: white; border-color: #1769cf; background: #1877f2; }
+.provider:disabled { cursor: wait; opacity: .58; box-shadow: none; }
+.provider.google span { display: grid; place-items: center; width: 25px; height: 25px; border-radius: 50%; color: white; background: conic-gradient(from -45deg, #4285f4 0 25%, #34a853 0 50%, #fbbc05 0 75%, #ea4335 0); font: 900 13px Manrope; }
 .provider.demo { background: var(--yellow); color: var(--ink); border-color: var(--ink); box-shadow: 3px 3px 0 var(--green); }
+.provider.signout { margin-top: 20px; color: white; background: var(--ink); }
+.account-modal h2 { overflow-wrap: anywhere; }
 .or { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 8px; margin: 15px 0; }
 .or::before, .or::after { content: ""; height: 1px; flex: 1; background: var(--line); }
 .auth-modal > small { display: block; text-align: center; color: var(--muted); font-size: 8px; margin-top: 15px; }

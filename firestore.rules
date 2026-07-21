@@ -2,19 +2,27 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() { return request.auth != null; }
-    function ownsPrediction() { return signedIn() && request.resource.data.uid == request.auth.uid; }
+    function validOwnPrediction(predictionId) {
+      return signedIn()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.matchId is string
+        && predictionId == request.auth.uid + '_' + request.resource.data.matchId
+        && request.resource.data.pick in ['1', 'X', '2']
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.keys().hasOnly(['uid', 'matchId', 'pick', 'updatedAt']);
+    }
 
     match /predictions/{predictionId} {
-      allow read: if signedIn();
-      allow create, update: if ownsPrediction()
-        && request.resource.data.matchId is string
-        && request.resource.data.pick in ['1', 'X', '2'];
-      allow delete: if signedIn() && resource.data.uid == request.auth.uid;
+      allow read: if signedIn() && resource.data.uid == request.auth.uid;
+      allow create: if validOwnPrediction(predictionId);
+      allow update: if signedIn()
+        && resource.data.uid == request.auth.uid
+        && validOwnPrediction(predictionId);
+      allow delete: if false;
     }
 
     match /profiles/{uid} {
-      allow read: if true;
-      allow write: if signedIn() && request.auth.uid == uid;
+      allow read, write: if false;
     }
 
     match /live/{document} { allow read: if true; allow write: if false; }

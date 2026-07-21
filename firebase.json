@@ -1,0 +1,13 @@
+{
+  "auth": {
+    "providers": {
+      "googleSignIn": {
+        "oAuthBrandDisplayName": "Ekstraklasa Typer",
+        "supportEmail": "mateuszjoe@gmail.com"
+      }
+    }
+  },
+  "firestore": {
+    "rules": "firestore.rules"
+  }
+}

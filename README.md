@@ -20,15 +20,17 @@ Bez dodatkowej konfiguracji działa pełny interfejs, terminarz, typowanie zapis
 
 Po publikacji przez HTTPS aplikację można dodać do ekranu głównego telefonu. Manifest wykorzystuje osobne ikony 192 × 192 i 512 × 512, a urządzenia Apple plik 180 × 180.
 
-## Logowanie Google i Facebook
+## Logowanie Google
 
-1. Utwórz aplikację webową w [Firebase Console](https://console.firebase.google.com/).
-2. W Authentication włącz dostawców Google i Facebook. Dla Facebooka dodaj App ID i App Secret z Meta for Developers.
-3. Wklej dane aplikacji webowej do `firebase-config.js`.
-4. Utwórz Firestore i opublikuj reguły z `firestore.rules`.
-5. Dodaj `localhost` i późniejszą domenę produkcyjną do Authorized domains.
+Aplikacja korzysta z osobnego projektu Firebase `ekstraklasa-typer-2026-27`. Publiczna konfiguracja aplikacji webowej znajduje się w `firebase-config.js`, a dostawca Google jest zarządzany jako kod w `firebase.json`.
 
-Gdy `apiKey` jest pusty, przyciski Google i Facebook świadomie przechodzą w lokalny tryb demonstracyjny — dzięki temu frontend można testować bez cudzych kluczy.
+- domena produkcyjna `ekstraklasa-typer.mateuszjoe.chatgpt.site` i `localhost` muszą znajdować się w Firebase Authentication → Authorized domains;
+- typy zalogowanego gracza zapisują się w Firestore i synchronizują między urządzeniami;
+- dostęp do dokumentów zabezpieczają reguły z `firestore.rules`;
+- konto demonstracyjne zapisuje dane wyłącznie w tej przeglądarce;
+- Facebook nie jest używany jako dostawca logowania.
+
+Konfigurację backendu wdraża się poleceniami `firebase deploy --only auth` oraz `firebase deploy --only firestore:rules`.
 
 ## Dane LIVE
 

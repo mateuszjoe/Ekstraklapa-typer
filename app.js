@@ -8,18 +8,41 @@ const FINAL = new Set(["FT", "AET", "PEN", "AWD", "WO", "FINISHED", "AWARDED"]);
 const LIVE = new Set(["1H", "HT", "2H", "ET", "BT", "P", "LIVE", "IN_PLAY", "PAUSED"]);
 const VIEWS = new Set(["matches", "ranking", "rules"]);
 
-const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+function loadSavedState() {
+  try {
+    const value = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  } catch (error) {
+    console.warn("Pominięto uszkodzony lokalny zapis typera:", error);
+    localStorage.removeItem(STORAGE_KEY);
+    return {};
+  }
+}
+
+const saved = loadSavedState();
+const savedLocalUser = saved.user?.provider === "demo" ? saved.user : null;
+if (saved.user && !savedLocalUser) {
+  delete saved.user;
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
+}
+const savedAnonymousPredictions = saved.anonymousPredictions || saved.predictions || {};
 const requestedView = location.hash.slice(1);
 const state = {
   view: VIEWS.has(requestedView) ? requestedView : "matches",
   leg: Number(saved.leg || 1),
   matchday: Number(saved.matchday || 1),
-  predictions: saved.predictions || {},
-  user: saved.user || null,
+  predictions: { ...savedAnonymousPredictions },
+  anonymousPredictions: { ...savedAnonymousPredictions },
+  predictionsByUser: saved.predictionsByUser || {},
+  user: savedLocalUser,
   matches: baseMatches.map((match) => ({ ...match })),
   liveSignature: "",
   auth: null,
-  db: null
+  db: null,
+  authStatus: "loading",
+  authBusy: false,
+  firebaseModules: null,
+  firebaseReady: null
 };
 
 if (location.hash && !VIEWS.has(requestedView)) {
@@ -52,8 +75,17 @@ async function finishLoadingScreen() {
 }
 
 function save() {
+  if (state.user?.provider === "google.com") {
+    state.predictionsByUser[state.user.uid] = { ...state.predictions };
+  } else {
+    state.anonymousPredictions = { ...state.predictions };
+  }
   localStorage.setItem(STORAGE_KEY, JSON.stringify({
-    leg: state.leg, matchday: state.matchday, predictions: state.predictions, user: state.user
+    leg: state.leg,
+    matchday: state.matchday,
+    anonymousPredictions: state.anonymousPredictions,
+    predictionsByUser: state.predictionsByUser,
+    user: state.user?.provider === "demo" ? state.user : null
   }));
 }
 
@@ -64,6 +96,15 @@ const icon = (name) => ({
   check: "<svg viewBox='0 0 24 24'><path d='m5 12 4 4L19 6'/></svg>",
   arrow: "<svg viewBox='0 0 24 24'><path d='m9 18 6-6-6-6'/></svg>"
 }[name] || "");
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
 
 function formatDay(match) {
   const date = new Date(match.kickoffAt);
@@ -202,7 +243,10 @@ function rankingView() {
       ${!state.user ? `<div class="notice">Zaloguj się, żeby pojawić się w rankingu i zapisywać typy między urządzeniami.</div>` : ""}
       <div class="ranking-card">
         <div class="ranking-head"><span>#</span><span>Gracz</span><span>Punkty</span><span>Typy</span><span>Skuteczność</span></div>
-        ${players.sort((a,b) => b[1]-a[1]).map((player,index) => `<div class="ranking-row ${player[4] ? "me" : ""}"><b>${index + 1}</b><span><i>${player[0].slice(0,1)}</i><strong>${player[0]}</strong>${player[4] ? "<small>TY</small>" : ""}</span><strong>${player[1]}</strong><span>${player[2]}</span><span>${player[3]}%</span></div>`).join("")}
+        ${players.sort((a,b) => b[1]-a[1]).map((player,index) => {
+          const playerName = String(player[0] || "Gracz");
+          return `<div class="ranking-row ${player[4] ? "me" : ""}"><b>${index + 1}</b><span><i>${escapeHtml(playerName.slice(0,1))}</i><strong>${escapeHtml(playerName)}</strong>${player[4] ? "<small>TY</small>" : ""}</span><strong>${player[1]}</strong><span>${player[2]}</span><span>${player[3]}%</span></div>`;
+        }).join("")}
       </div>
       <p class="demo-caption">Pozostali gracze są danymi demonstracyjnymi do czasu podłączenia Firebase.</p>
     </section>`;
@@ -248,9 +292,17 @@ async function setPrediction(matchId, pick) {
   if (!match || isLocked(match)) return notify("Ten mecz już się rozpoczął — typ jest zamknięty.");
   state.predictions[matchId] = pick;
   save();
-  if (state.db && state.user) await saveRemotePrediction(matchId, pick);
+  let synced = true;
+  if (state.auth?.currentUser?.uid === state.user?.uid) {
+    try {
+      await saveRemotePrediction(matchId, pick);
+    } catch (error) {
+      synced = false;
+      console.error("Nie udało się zapisać typu w Firestore:", error);
+    }
+  }
   render();
-  notify(`Typ ${pick} zapisany`);
+  notify(synced ? `Typ ${pick} zapisany` : `Typ ${pick} zapisany lokalnie — synchronizacja spróbuje ponownie później`);
 }
 
 function showMatchCentre(matchId) {
@@ -270,7 +322,40 @@ function notify(message) {
 
 function updateAuthButton() {
   const authButton = document.querySelector("#authButton");
-  authButton.innerHTML = state.user ? `<span class="avatar">${state.user.name.slice(0,1).toUpperCase()}</span><span>${state.user.name.split(" ")[0]}</span>` : `<span class="user-icon">◉</span><span>Zaloguj się</span>`;
+  const iconNode = document.createElement("span");
+  const labelNode = document.createElement("span");
+  if (state.user) {
+    iconNode.className = "avatar";
+    iconNode.textContent = state.user.name.slice(0, 1).toUpperCase();
+    labelNode.textContent = state.user.name.split(" ")[0];
+  } else {
+    iconNode.className = "user-icon";
+    iconNode.textContent = "◉";
+    labelNode.textContent = "Zaloguj się";
+  }
+  authButton.replaceChildren(iconNode, labelNode);
+
+  const googleButton = document.querySelector("#authDialog [data-provider='google']");
+  if (googleButton) {
+    googleButton.disabled = state.authStatus !== "ready" || state.authBusy;
+    googleButton.innerHTML = state.authBusy
+      ? "Otwieranie Google…"
+      : state.authStatus === "loading"
+      ? "Łączenie z Google…"
+      : state.authStatus === "unavailable"
+        ? "Logowanie Google chwilowo niedostępne"
+        : "<span>G</span> Kontynuuj przez Google";
+  }
+}
+
+function openAccountDialog() {
+  const dialog = document.querySelector("#accountDialog");
+  if (!dialog || !state.user) return;
+  dialog.querySelector("#accountName").textContent = state.user.name;
+  dialog.querySelector("#accountDetails").textContent = state.user.provider === "google.com"
+    ? state.user.email || "Zalogowano przez Google"
+    : "Tryb demonstracyjny · dane tylko na tym urządzeniu";
+  dialog.showModal();
 }
 
 function updateCountdowns() {
@@ -282,47 +367,198 @@ function updateCountdowns() {
   });
 }
 
-function loginDemo(provider = "demo") {
-  state.user = { uid: `${provider}-local`, name: provider === "facebook" ? "Gracz Facebook" : provider === "google" ? "Gracz Google" : "Gracz Demo", provider };
-  save(); document.querySelector("#authDialog")?.close(); render(); notify("Zalogowano w trybie lokalnym");
+function loginDemo() {
+  state.user = { uid: "demo-local", name: "Gracz Demo", provider: "demo" };
+  state.predictions = { ...state.anonymousPredictions };
+  save();
+  document.querySelector("#authDialog")?.close();
+  render();
+  notify("Uruchomiono tryb demonstracyjny na tym urządzeniu");
+}
+
+function isInAppBrowser() {
+  return /FBAN|FBAV|FB_IAB|Instagram|Messenger|LinkedInApp|; wv\)|\bwv\b/i.test(navigator.userAgent || "");
+}
+
+function authErrorMessage(error) {
+  const messages = {
+    "auth/unauthorized-domain": "Ta domena nie jest jeszcze dopuszczona w Google. Odśwież stronę za chwilę.",
+    "auth/operation-not-allowed": "Logowanie Google nie jest włączone w Firebase.",
+    "auth/popup-blocked": "Przeglądarka zablokowała okno Google. Zezwól na wyskakujące okna i spróbuj ponownie.",
+    "auth/popup-closed-by-user": "Okno logowania Google zostało zamknięte.",
+    "auth/cancelled-popup-request": "Poprzednia próba logowania została anulowana. Spróbuj ponownie.",
+    "auth/network-request-failed": "Nie udało się połączyć z Google. Sprawdź internet i spróbuj ponownie.",
+    "auth/invalid-api-key": "Konfiguracja logowania Google jest nieprawidłowa."
+  };
+  return messages[error?.code] || "Logowanie Google nie powiodło się. Spróbuj ponownie.";
+}
+
+async function handleAuthState(user) {
+  state.authStatus = "ready";
+  if (!user) {
+    if (state.user?.provider === "google.com") {
+      state.user = null;
+      state.predictions = { ...state.anonymousPredictions };
+      save();
+    }
+    render();
+    return;
+  }
+
+  const previousWasGoogle = state.user?.provider === "google.com";
+  const pendingLocal = previousWasGoogle ? {} : { ...state.anonymousPredictions };
+  const cached = state.predictionsByUser[user.uid] || {};
+  state.user = {
+    uid: user.uid,
+    name: user.displayName || user.email || "Gracz",
+    email: user.email || "",
+    provider: "google.com"
+  };
+
+  let remote = {};
+  try {
+    remote = await loadRemotePredictions(user.uid);
+  } catch (error) {
+    console.error("Nie udało się pobrać typów z Firestore:", error);
+    notify("Zalogowano przez Google, ale synchronizacja typów jest chwilowo niedostępna");
+  }
+
+  if (state.auth?.currentUser?.uid !== user.uid) return;
+
+  state.predictions = { ...cached, ...pendingLocal, ...remote };
+  state.predictionsByUser[user.uid] = { ...state.predictions };
+  if (Object.keys(pendingLocal).length) state.anonymousPredictions = {};
+  save();
+  render();
+  document.querySelector("#authDialog")?.close();
+
+  try {
+    await syncPredictionsToRemote();
+  } catch (error) {
+    console.error("Nie udało się zsynchronizować lokalnych typów:", error);
+  }
 }
 
 async function initFirebase() {
-  if (!firebaseConfig.apiKey || firebaseConfig.apiKey.includes("WSTAW")) return;
+  if (!firebaseConfig.apiKey || !firebaseConfig.authDomain || !firebaseConfig.projectId) {
+    state.authStatus = "unavailable";
+    render();
+    return;
+  }
+
   try {
     const [{ initializeApp }, authModule, firestore] = await Promise.all([
       import("https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js"),
       import("https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"),
       import("https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js")
     ]);
-    const fbApp = initializeApp(firebaseConfig);
-    state.auth = authModule.getAuth(fbApp); state.db = firestore.getFirestore(fbApp);
+    const firebaseApp = initializeApp(firebaseConfig);
+    state.auth = authModule.getAuth(firebaseApp);
+    state.db = firestore.getFirestore(firebaseApp);
     state.firebaseModules = { ...authModule, ...firestore };
-    authModule.onAuthStateChanged(state.auth, async (user) => {
-      if (!user) return;
-      state.user = { uid: user.uid, name: user.displayName || "Gracz", provider: user.providerData[0]?.providerId };
-      await loadRemotePredictions(); save(); render();
+    authModule.onAuthStateChanged(state.auth, (user) => {
+      handleAuthState(user).catch((error) => {
+        console.error("Błąd obsługi sesji Firebase:", error);
+        state.authStatus = "ready";
+        render();
+      });
     });
-  } catch (error) { console.warn("Firebase nie został uruchomiony:", error); }
+  } catch (error) {
+    state.authStatus = "unavailable";
+    console.error("Firebase nie został uruchomiony:", error);
+    render();
+  }
 }
 
-async function login(provider) {
-  if (!state.auth) return loginDemo(provider);
-  const { GoogleAuthProvider, FacebookAuthProvider, signInWithPopup } = state.firebaseModules;
-  const authProvider = provider === "facebook" ? new FacebookAuthProvider() : new GoogleAuthProvider();
-  try { await signInWithPopup(state.auth, authProvider); document.querySelector("#authDialog")?.close(); }
-  catch (error) { notify("Logowanie nie powiodło się. Sprawdź konfigurację Firebase."); }
+async function loginGoogle() {
+  if (isInAppBrowser()) {
+    notify("Otwórz tę stronę w Chrome lub Safari, aby zalogować się przez Google");
+    return;
+  }
+  if (state.authStatus === "loading") await state.firebaseReady;
+  if (!state.auth || !state.firebaseModules || state.authStatus !== "ready") {
+    notify("Logowanie Google jest chwilowo niedostępne. Odśwież stronę i spróbuj ponownie.");
+    return;
+  }
+  if (state.authBusy) return;
+
+  const { GoogleAuthProvider, signInWithPopup } = state.firebaseModules;
+  const provider = new GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: "select_account" });
+  state.authBusy = true;
+  updateAuthButton();
+  try {
+    await signInWithPopup(state.auth, provider);
+    document.querySelector("#authDialog")?.close();
+  } catch (error) {
+    console.error("Logowanie Google nie powiodło się:", error?.code, error);
+    notify(authErrorMessage(error));
+  } finally {
+    state.authBusy = false;
+    updateAuthButton();
+  }
+}
+
+async function logout() {
+  document.querySelector("#accountDialog")?.close();
+  if (state.auth?.currentUser && state.firebaseModules?.signOut) {
+    try {
+      await state.firebaseModules.signOut(state.auth);
+      notify("Wylogowano");
+    } catch (error) {
+      console.error("Wylogowanie nie powiodło się:", error);
+      notify("Nie udało się wylogować. Spróbuj ponownie.");
+    }
+    return;
+  }
+
+  state.user = null;
+  state.predictions = { ...state.anonymousPredictions };
+  save();
+  render();
+  notify("Wyłączono tryb demonstracyjny");
 }
 
 async function saveRemotePrediction(matchId, pick) {
+  if (!state.db || !state.firebaseModules || state.auth?.currentUser?.uid !== state.user?.uid) return;
   const { doc, setDoc, serverTimestamp } = state.firebaseModules;
-  await setDoc(doc(state.db, "predictions", `${state.user.uid}_${matchId}`), { uid: state.user.uid, matchId, pick, updatedAt: serverTimestamp() });
+  await setDoc(doc(state.db, "predictions", `${state.user.uid}_${matchId}`), {
+    uid: state.user.uid,
+    matchId,
+    pick,
+    updatedAt: serverTimestamp()
+  });
 }
 
-async function loadRemotePredictions() {
+async function loadRemotePredictions(uid) {
   const { collection, query, where, getDocs } = state.firebaseModules;
-  const snapshot = await getDocs(query(collection(state.db, "predictions"), where("uid", "==", state.user.uid)));
-  snapshot.forEach((item) => { const data = item.data(); state.predictions[data.matchId] = data.pick; });
+  const snapshot = await getDocs(query(collection(state.db, "predictions"), where("uid", "==", uid)));
+  const predictions = {};
+  snapshot.forEach((item) => {
+    const data = item.data();
+    if (typeof data.matchId === "string" && ["1", "X", "2"].includes(data.pick)) predictions[data.matchId] = data.pick;
+  });
+  return predictions;
+}
+
+async function syncPredictionsToRemote() {
+  if (!state.db || !state.firebaseModules || state.auth?.currentUser?.uid !== state.user?.uid) return;
+  const entries = Object.entries(state.predictions).filter(([matchId, pick]) => {
+    const match = state.matches.find((item) => item.id === matchId);
+    return match && !isLocked(match) && ["1", "X", "2"].includes(pick);
+  });
+  if (!entries.length) return;
+  const { doc, writeBatch, serverTimestamp } = state.firebaseModules;
+  const batch = writeBatch(state.db);
+  entries.forEach(([matchId, pick]) => {
+    batch.set(doc(state.db, "predictions", `${state.user.uid}_${matchId}`), {
+      uid: state.user.uid,
+      matchId,
+      pick,
+      updatedAt: serverTimestamp()
+    });
+  });
+  await batch.commit();
 }
 
 function normalizeName(value) {
@@ -398,7 +634,7 @@ document.addEventListener("click", (event) => {
   }
 
   if (event.target.closest?.("#authButton")) {
-    if (state.user) notify(`Zalogowany jako ${state.user.name}`);
+    if (state.user) openAccountDialog();
     else document.querySelector("#authDialog")?.showModal();
     return;
   }
@@ -406,7 +642,12 @@ document.addEventListener("click", (event) => {
   const providerButton = event.target.closest?.("#authDialog [data-provider]");
   if (providerButton) {
     if (providerButton.dataset.provider === "demo") loginDemo();
-    else login(providerButton.dataset.provider);
+    else loginGoogle();
+    return;
+  }
+
+  if (event.target.closest?.("[data-sign-out]")) {
+    logout();
     return;
   }
 
@@ -430,7 +671,7 @@ window.addEventListener("hashchange", () => {
 
 render();
 finishLoadingScreen();
-initFirebase();
+state.firebaseReady = initFirebase();
 pollLive();
 setInterval(updateCountdowns, 60000);
 

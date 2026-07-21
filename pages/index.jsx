@@ -53,10 +53,18 @@ export default function Home() {
         <h2>Zaloguj się i typuj</h2>
         <p className="modal-copy">Twoje typy będą dostępne na każdym urządzeniu. Jeden klik i jesteś w grze.</p>
         <button className="provider google" data-provider="google"><span>G</span> Kontynuuj przez Google</button>
-        <button className="provider facebook" data-provider="facebook"><span>f</span> Kontynuuj przez Facebook</button>
         <div className="or"><span>lub lokalnie</span></div>
         <button className="provider demo" data-provider="demo">Uruchom konto demonstracyjne</button>
         <small>Logując się, akceptujesz zasady prywatnej ligi.</small>
+      </dialog>
+
+      <dialog id="accountDialog" className="modal auth-modal account-modal">
+        <button className="modal-close" data-close aria-label="Zamknij">×</button>
+        <img className="modal-logo" src="/assets/brand/logo-compact.png" alt="Ekstraklasa Typer" />
+        <p className="eyebrow">TWOJE KONTO</p>
+        <h2 id="accountName">Gracz</h2>
+        <p className="modal-copy" id="accountDetails">Zalogowano przez Google</p>
+        <button className="provider signout" data-sign-out>Wyloguj się</button>
       </dialog>
 
       <dialog id="matchDialog" className="modal match-modal" />
