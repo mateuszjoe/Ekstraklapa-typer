@@ -158,7 +158,19 @@ const stockAvatars = [
   { id: "sedzia-var", label: "Sędzia z VAR-u", emoji: "🥸", background: "#f2eee3", accent: "#e44735" },
   { id: "krol-murawy", label: "Król murawy", emoji: "👑", background: "#ffd86b", accent: "#0d0d0d" },
   { id: "kibic-incognito", label: "Kibic incognito", emoji: "🕶️", background: "#d5cef7", accent: "#6ead32" },
-  { id: "magik-pilki", label: "Magik piłki", emoji: "🧙", background: "#bfe5ff", accent: "#ffd000" }
+  { id: "magik-pilki", label: "Magik piłki", emoji: "🧙", background: "#bfe5ff", accent: "#ffd000" },
+  { id: "snajper-pola-karnego", label: "Snajper pola karnego", emoji: "🎯", background: "#ffd000", accent: "#0d0d0d" },
+  { id: "numer-jeden", label: "Numer jeden", emoji: "🧤", background: "#f2eee3", accent: "#ffd000" },
+  { id: "mur-obrony", label: "Mur obrony", emoji: "🧱", background: "#ffd4cc", accent: "#e44735" },
+  { id: "boiskowy-strateg", label: "Boiskowy strateg", emoji: "🧠", background: "#a9df77", accent: "#0d0d0d" },
+  { id: "kapitan-druzyny", label: "Kapitan drużyny", emoji: "🛡️", background: "#bfe5ff", accent: "#ffd000" },
+  { id: "motor-napedowy", label: "Motor napędowy", emoji: "⚙️", background: "#ffd86b", accent: "#e44735" },
+  { id: "joker-z-lawki", label: "Joker z ławki", emoji: "🃏", background: "#d5cef7", accent: "#6ead32" },
+  { id: "glos-trybun", label: "Głos trybun", emoji: "📣", background: "#f2eee3", accent: "#6ead32" },
+  { id: "weteran-sektora", label: "Weteran sektora", emoji: "🥁", background: "#bde3c2", accent: "#ffd000" },
+  { id: "szybkie-skrzydlo", label: "Szybkie skrzydło", emoji: "⚡", background: "#ffe6a6", accent: "#0d0d0d" },
+  { id: "profesor-futbolu", label: "Profesor futbolu", emoji: "🎓", background: "#c8d5e0", accent: "#6ead32" },
+  { id: "talizman-druzyny", label: "Talizman drużyny", emoji: "🍀", background: "#dff0c8", accent: "#ffd000" }
 ].map((avatar) => ({ ...avatar, src: stockAvatarSource(avatar) }));
 
 function normalizeAvatar(value) {
@@ -453,7 +465,7 @@ function settingsView() {
       </article>
 
       <article class="settings-panel">
-        <div class="settings-panel-heading"><span>03</span><div><h3>Śmieszne gotowce</h3><p>Gdy herb to za mało, wybierz avatara z lekkim poślizgiem.</p></div></div>
+        <div class="settings-panel-heading"><span>03</span><div><h3>Gotowe avatary</h3><p>Wybierz jeden z 18 gotowych motywów.</p></div></div>
         <div class="stock-avatar-grid">${stockAvatars.map((avatar) => `<button class="avatar-choice stock-avatar-choice ${currentType === "stock" && currentValue === avatar.id ? "is-selected" : ""}" data-avatar-type="stock" data-avatar-value="${avatar.id}" aria-pressed="${currentType === "stock" && currentValue === avatar.id}" ${disabled}><img src="${escapeHtml(avatar.src)}" alt=""><span>${escapeHtml(avatar.label)}</span></button>`).join("")}</div>
       </article>
     </div>

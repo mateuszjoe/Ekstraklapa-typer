@@ -43,7 +43,10 @@ service cloud.firestore {
           ])
           || (request.resource.data.avatarType == 'stock' && request.resource.data.avatarValue in [
             'bananowy-drybler', 'goat-osiedlowy', 'sedzia-var', 'krol-murawy',
-            'kibic-incognito', 'magik-pilki'
+            'kibic-incognito', 'magik-pilki', 'snajper-pola-karnego', 'numer-jeden',
+            'mur-obrony', 'boiskowy-strateg', 'kapitan-druzyny', 'motor-napedowy',
+            'joker-z-lawki', 'glos-trybun', 'weteran-sektora', 'szybkie-skrzydlo',
+            'profesor-futbolu', 'talizman-druzyny'
           ])
           || (request.resource.data.avatarType == 'upload'
             && request.resource.data.avatarValue.matches('^data:image/(webp|jpeg);base64,[A-Za-z0-9+/=]+$'))
