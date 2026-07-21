@@ -20,6 +20,18 @@ service cloud.firestore {
         && exists(/databases/$(database)/documents/seasons/2026-27/participants/$(request.auth.uid));
     }
 
+    function matchOpen(seasonId, matchId) {
+      return seasonId == '2026-27'
+        && exists(/databases/$(database)/documents/seasons/$(seasonId)/matches/$(matchId))
+        && request.time < get(/databases/$(database)/documents/seasons/$(seasonId)/matches/$(matchId)).data.closesAt;
+    }
+
+    function matchRevealed(seasonId, matchId) {
+      return seasonId == '2026-27'
+        && exists(/databases/$(database)/documents/seasons/$(seasonId)/matches/$(matchId))
+        && request.time >= get(/databases/$(database)/documents/seasons/$(seasonId)/matches/$(matchId)).data.revealsAt;
+    }
+
     function validOwnPrediction(predictionId) {
       return googleSignedIn()
         && request.resource.data.uid == request.auth.uid
@@ -27,7 +39,41 @@ service cloud.firestore {
         && predictionId == request.auth.uid + '_' + request.resource.data.matchId
         && request.resource.data.pick in ['1', 'X', '2']
         && request.resource.data.updatedAt == request.time
+        && matchOpen('2026-27', request.resource.data.matchId)
         && request.resource.data.keys().hasOnly(['uid', 'matchId', 'pick', 'updatedAt']);
+    }
+
+    function validPlayerPick() {
+      return request.resource.data.pick in ['1', 'X', '2']
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.keys().hasOnly(['pick', 'updatedAt']);
+    }
+
+    function validTrustedMatch(seasonId, matchId) {
+      return seasonId == '2026-27'
+        && matchId.size() > 0
+        && matchId.size() <= 180
+        && request.resource.data.matchday is int
+        && request.resource.data.matchday >= 1
+        && request.resource.data.matchday <= 34
+        && request.resource.data.closesAt is timestamp
+        && request.resource.data.revealsAt is timestamp
+        && request.resource.data.revealsAt == request.resource.data.closesAt
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.keys().hasOnly(['matchday', 'closesAt', 'revealsAt', 'updatedAt']);
+    }
+
+    function validScheduleMeta(seasonId) {
+      return seasonId == '2026-27'
+        && request.resource.data.seasonId == seasonId
+        && request.resource.data.signature is string
+        && request.resource.data.signature.size() > 0
+        && request.resource.data.signature.size() <= 100000
+        && request.resource.data.matchCount is int
+        && request.resource.data.matchCount > 0
+        && request.resource.data.matchCount <= 306
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.keys().hasOnly(['seasonId', 'signature', 'matchCount', 'updatedAt']);
     }
 
     function validAvatar() {
@@ -119,6 +165,34 @@ service cloud.firestore {
       allow update: if googleSignedIn()
         && resource.data.uid == request.auth.uid
         && validOwnPrediction(predictionId);
+      allow delete: if false;
+    }
+
+    match /seasons/{seasonId}/players/{uid}/picks/{matchId} {
+      allow get: if googleSignedIn()
+        && (uid == request.auth.uid
+          || (isSeasonParticipant() && matchRevealed(seasonId, matchId)));
+      allow list: if googleSignedIn() && uid == request.auth.uid;
+      allow create: if isSeasonParticipant()
+        && uid == request.auth.uid
+        && matchOpen(seasonId, matchId)
+        && validPlayerPick();
+      allow update: if isSeasonParticipant()
+        && uid == request.auth.uid
+        && matchOpen(seasonId, matchId)
+        && validPlayerPick();
+      allow delete: if false;
+    }
+
+    match /seasons/{seasonId}/matches/{matchId} {
+      allow get, list: if isAdmin();
+      allow create, update: if isAdmin() && validTrustedMatch(seasonId, matchId);
+      allow delete: if false;
+    }
+
+    match /scheduleMeta/{seasonId} {
+      allow get, list: if isAdmin();
+      allow create, update: if isAdmin() && validScheduleMeta(seasonId);
       allow delete: if false;
     }
 

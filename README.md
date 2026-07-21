@@ -26,6 +26,7 @@ Aplikacja korzysta z osobnego projektu Firebase `ekstraklasa-typer-2026-27`. Pub
 
 - domena produkcyjna `ekstraklasa-typer.mateuszjoe.chatgpt.site` i `localhost` muszą znajdować się w Firebase Authentication → Authorized domains;
 - typy zalogowanego gracza zapisują się w Firestore i synchronizują między urządzeniami;
+- kliknięcie avatara w rankingu, oknie konta lub chacie otwiera typy gracza z zakładkami kolejek 1–34; cudze typy są dostępne dopiero od serwerowej godziny rozpoczęcia meczu;
 - avatar profilu można ustawić jako zdjęcie Google, własną pomniejszoną grafikę, herb klubu albo jeden z gotowych avatarów;
 - pływający chat graczy działa w czasie rzeczywistym i obsługuje odpowiedzi, reakcje oraz automatycznie pomniejszone grafiki;
 - licznik uczestników jest zwiększany transakcyjnie tylko raz dla danego konta Google, a sekcja zasad wylicza aktualną pulę i trzy nagrody;
@@ -33,6 +34,14 @@ Aplikacja korzysta z osobnego projektu Firebase `ekstraklasa-typer-2026-27`. Pub
 - Facebook nie jest używany jako dostawca logowania.
 
 Konfigurację backendu wdraża się poleceniami `firebase deploy --only auth` oraz `firebase deploy --only firestore:rules`.
+
+Potwierdzone terminy, na których Firestore opiera zamykanie i odkrywanie typów, synchronizuje administrator:
+
+```powershell
+npm run sync:schedule
+```
+
+Skrypt korzysta z zalogowanej sesji Firebase CLI i nie zapisuje żadnych sekretów w repozytorium. Jednorazową migrację starego układu dokumentów wykonuje `npm run migrate:picks`.
 
 ## Dane LIVE
 
@@ -66,9 +75,9 @@ Ręczna korekta ma pierwszeństwo przed wynikiem dostawcy. Wersja produkcyjna na
 - Kolejki 18–34: runda 2 (rewanżowa).
 - Pełne pary pochodzą z oficjalnego terminarza Ekstraklasy.
 - Dokładne godziny pierwszych czterech kolejek są potwierdzone oficjalnie.
-- Kolejne spotkania mają datę ramową i są wyraźnie oznaczone jako „godz. do ustalenia”; data ramowa nie blokuje typu.
+- Kolejne spotkania mają datę ramową i są wyraźnie oznaczone jako „godz. do ustalenia”; typowanie uruchamia się dopiero po potwierdzeniu dokładnej godziny.
 
-Po publikacji dokładnych godzin można uzupełnić mapę `exactKickoffs` w `data.js`; odpowiedź LIVE dodatkowo nadpisuje termin danymi oficjalnego Centrum Meczowego.
+Po publikacji dokładnych godzin należy uzupełnić mapę `exactKickoffs` w `data.js` i wykonać `npm run sync:schedule`; zalogowane konto administratora synchronizuje też nowe oficjalne terminy otrzymane z kanału LIVE.
 
 ## Co przeniesiono z WC 2026 Buk
 

@@ -34,6 +34,7 @@ function asRecord(value) {
 }
 
 const saved = loadSavedState();
+let legacyPredictionsByUser = asRecord(saved.predictionsByUser);
 const deprecatedLocalKeys = ["user", "predictions", "anonymousPredictions"];
 if (deprecatedLocalKeys.some((key) => key in saved)) {
   deprecatedLocalKeys.forEach((key) => delete saved[key]);
@@ -45,13 +46,14 @@ const state = {
   leg: Number(saved.leg || 1),
   matchday: Number(saved.matchday || 1),
   predictions: {},
-  predictionsByUser: asRecord(saved.predictionsByUser),
+  confirmedPredictions: {},
   avatar: { ...DEFAULT_AVATAR },
   avatarsByUser: asRecord(saved.avatarsByUser),
   avatarBusy: false,
   avatarPending: false,
   avatarOperationId: 0,
   participantReady: false,
+  userDataReady: false,
   participantActivationBusy: false,
   participantActivationError: false,
   participantCount: null,
@@ -77,6 +79,10 @@ const state = {
   chatRemoteReadMs: 0,
   chatReadSaving: false,
   chatReadRetryAt: 0,
+  playerPicksUid: null,
+  playerPicksMatchday: Number(saved.matchday || 1),
+  playerPicksStatus: "idle",
+  playerPicksCache: {},
   matches: baseMatches.map((match) => ({ ...match })),
   liveSignature: "",
   auth: null,
@@ -90,7 +96,11 @@ const state = {
 let seasonStatsUnsubscribe = null;
 let chatUnsubscribes = [];
 const chatProfileLoads = new Set();
+const predictionWriteQueues = new Map();
+const predictionWriteVersions = new Map();
 let chatViewportHandler = null;
+let playerPicksLoadId = 0;
+let trustedMatchesSyncPromise = null;
 
 if (location.hash && !VIEWS.has(requestedView)) {
   history.replaceState(null, "", `${location.pathname}${location.search}#matches`);
@@ -118,16 +128,18 @@ async function finishLoadingScreen() {
 
 function save() {
   if (state.user?.provider === "google.com") {
-    state.predictionsByUser[state.user.uid] = { ...state.predictions };
     if (state.avatar.type === "upload") delete state.avatarsByUser[state.user.uid];
     else state.avatarsByUser[state.user.uid] = { ...state.avatar };
   }
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({
+  const nextSavedState = {
     leg: state.leg,
     matchday: state.matchday,
-    predictionsByUser: state.predictionsByUser,
     avatarsByUser: state.avatarsByUser
-  }));
+  };
+  if (Object.keys(legacyPredictionsByUser).length) {
+    nextSavedState.predictionsByUser = legacyPredictionsByUser;
+  }
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(nextSavedState));
 }
 
 const icon = (name) => ({
@@ -235,6 +247,12 @@ function avatarForUid(uid, className = "chat-avatar") {
   return avatarVisualMarkup(className, `Avatar ${profile.name}`, profile.avatar, profile);
 }
 
+function playerAvatarButton(uid, className = "chat-avatar") {
+  const profile = profileForUid(uid);
+  if (!uid) return avatarVisualMarkup(className, `Avatar ${profile.name}`, profile.avatar, profile);
+  return `<button type="button" class="player-avatar-button" data-player-picks="${escapeHtml(uid)}" aria-label="Zobacz typy gracza ${escapeHtml(profile.name)}" title="Pokaż typy: ${escapeHtml(profile.name)}">${avatarVisualMarkup(className, `Avatar ${profile.name}`, profile.avatar, profile)}</button>`;
+}
+
 function formatDay(match) {
   const date = new Date(match.kickoffAt);
   return new Intl.DateTimeFormat("pl-PL", { weekday: "short", day: "2-digit", month: "2-digit" }).format(date).replace(",", "");
@@ -252,6 +270,10 @@ function resultOf(match) {
 
 function isLocked(match) {
   return match.kickoffConfirmed && Date.now() >= new Date(match.kickoffAt).getTime();
+}
+
+function isPredictionOpen(match) {
+  return Boolean(match?.kickoffConfirmed && !isLocked(match));
 }
 
 function pointsFor(match) {
@@ -305,13 +327,15 @@ function matchCard(match) {
   const away = teamById[match.away];
   const prediction = state.predictions[match.id];
   const locked = isLocked(match);
+  const waitingForKickoff = !match.kickoffConfirmed;
+  const waitingForPlayer = Boolean(state.user && (!state.userDataReady || !state.participantReady));
   const live = LIVE.has(match.status);
   const final = FINAL.has(match.status);
   const score = (live || final) && Number.isFinite(match.homeScore) ? `${match.homeScore} : ${match.awayScore}` : null;
   return `<article class="match-card ${prediction ? "is-typed" : ""} ${live ? "is-live" : ""}">
     <div class="match-meta">
       <span>${live ? `<b class="live-label">LIVE${Number.isFinite(match.liveElapsed) ? ` ${match.liveElapsed}'` : ""}</b>` : `${formatDay(match)} · ${formatTime(match)}`}</span>
-      <span>${locked ? `${icon("lock")} zamknięty` : prediction ? `${icon("check")} typ zapisany` : "1 pkt do zdobycia"}</span>
+      <span>${locked ? `${icon("lock")} zamknięty` : waitingForKickoff ? `${icon("calendar")} czeka na termin` : waitingForPlayer ? `${icon("calendar")} synchronizacja konta` : prediction ? `${icon("check")} typ zapisany` : "1 pkt do zdobycia"}</span>
     </div>
     <div class="match-teams">
       <div class="team home"><span>${home.name}</span><img src="${home.crest}" alt="Herb ${home.name}"></div>
@@ -319,7 +343,7 @@ function matchCard(match) {
       <div class="team away"><img src="${away.crest}" alt="Herb ${away.name}"><span>${away.name}</span></div>
     </div>
     <div class="prediction-row" role="group" aria-label="Typ na mecz ${home.name} — ${away.name}">
-      ${[["1",home.short],["X","REMIS"],["2",away.short]].map(([pick,label]) => `<button data-pick="${pick}" data-match="${match.id}" class="pick ${prediction === pick ? "selected" : ""}" aria-pressed="${prediction === pick}" ${locked ? "disabled" : ""}><b>${pick}</b><small>${label}</small></button>`).join("")}
+      ${[["1",home.short],["X","REMIS"],["2",away.short]].map(([pick,label]) => `<button data-pick="${pick}" data-match="${match.id}" class="pick ${prediction === pick ? "selected" : ""}" aria-pressed="${prediction === pick}" ${locked || waitingForKickoff || waitingForPlayer ? "disabled" : ""}><b>${pick}</b><small>${label}</small></button>`).join("")}
     </div>
     ${(live || final) ? `<button class="match-centre-link" data-match-centre="${match.id}">Szczegóły wyniku ${icon("arrow")}</button>` : ""}
   </article>`;
@@ -358,7 +382,7 @@ function matchesView() {
         <div class="segmented"><button data-leg="1" class="${state.leg === 1 ? "active" : ""}" aria-pressed="${state.leg === 1}">Runda 1 <small>kolejki 1–17</small></button><button data-leg="2" class="${state.leg === 2 ? "active" : ""}" aria-pressed="${state.leg === 2}">Runda 2 <small>kolejki 18–34</small></button></div>
         <label class="select-wrap">${icon("calendar")}<select id="matchdaySelect">${roundOptions.map((round) => `<option value="${round}" ${state.matchday === round ? "selected" : ""}>${round}. kolejka · ${new Intl.DateTimeFormat("pl-PL", { day: "2-digit", month: "long" }).format(new Date(`${roundDatesByNumber[round]}T12:00:00`))}</option>`).join("")}</select></label>
       </div>
-      <div class="round-note"><span>${visible.some((m) => !m.kickoffConfirmed) ? "Daty ramowe" : "Terminy potwierdzone"}</span>${visible.some((m) => !m.kickoffConfirmed) ? "Dokładne dni i godziny tej kolejki nie zostały jeszcze opublikowane. Typy nie zostaną zablokowane na podstawie daty ramowej." : "Godziny zgodne z oficjalnym terminarzem Ekstraklasy."}</div>
+      <div class="round-note"><span>${visible.some((m) => !m.kickoffConfirmed) ? "Daty ramowe" : "Terminy potwierdzone"}</span>${visible.some((m) => !m.kickoffConfirmed) ? "Dokładne dni i godziny tej kolejki nie zostały jeszcze opublikowane. Typowanie uruchomi się po potwierdzeniu terminów." : "Godziny zgodne z oficjalnym terminarzem Ekstraklasy."}</div>
       <div class="matches-grid">${visible.map(matchCard).join("")}</div>
     </section>`;
 }
@@ -376,7 +400,7 @@ function rankingView() {
         <div class="ranking-head"><span>#</span><span>Gracz</span><span>Punkty</span><span>Typy</span><span>Skuteczność</span></div>
         ${player ? (() => {
           const playerName = String(player[0] || "Gracz");
-          return `<div class="ranking-row me"><b>—</b><span>${avatarVisualMarkup("ranking-avatar", `Avatar ${playerName}`)}<strong>${escapeHtml(playerName)}</strong><small>TY</small></span><strong>${player[1]}</strong><span>${player[2]}</span><span>${player[3]}%</span></div>`;
+          return `<div class="ranking-row me"><b>—</b><span>${playerAvatarButton(state.user.uid, "ranking-avatar")}<strong>${escapeHtml(playerName)}</strong><small>TY</small></span><strong>${player[1]}</strong><span>${player[2]}</span><span>${player[3]}%</span></div>`;
         })() : `<div class="ranking-empty"><strong>Brak graczy do wyświetlenia</strong><span>Ranking pokazuje wyłącznie prawdziwe konta Google — bez fikcyjnych wpisów.</span></div>`}
       </div>
     </section>`;
@@ -502,27 +526,58 @@ function bindRendered() {
   app.querySelectorAll("[data-avatar-image]").forEach((image) => image.addEventListener("error", () => image.remove(), { once: true }));
 }
 
-async function setPrediction(matchId, pick) {
+function refreshPredictionUi() {
+  render();
+  if (state.playerPicksUid === state.user?.uid && document.querySelector("#playerPicksDialog")?.open) {
+    renderPlayerPicksDialog();
+  }
+}
+
+function setPrediction(matchId, pick) {
   if (!state.user || state.user.provider !== "google.com" || state.auth?.currentUser?.uid !== state.user.uid) {
     document.querySelector("#authDialog")?.showModal();
     notify("Zaloguj się przez Google, aby oddać typ");
     return;
   }
-  const match = state.matches.find((item) => item.id === matchId);
-  if (!match || isLocked(match)) return notify("Ten mecz już się rozpoczął — typ jest zamknięty.");
-  state.predictions[matchId] = pick;
-  save();
-  let synced = true;
-  if (state.auth?.currentUser?.uid === state.user?.uid) {
-    try {
-      await saveRemotePrediction(matchId, pick);
-    } catch (error) {
-      synced = false;
-      console.error("Nie udało się zapisać typu w Firestore:", error);
-    }
+  if (!state.userDataReady || !state.participantReady) {
+    notify("Kończymy synchronizację konta — typowanie będzie dostępne za chwilę.");
+    return;
   }
-  render();
-  notify(synced ? `Typ ${pick} zapisany` : `Typ ${pick} zapisany lokalnie — synchronizacja spróbuje ponownie później`);
+  const match = state.matches.find((item) => item.id === matchId);
+  if (!match) return;
+  if (!match.kickoffConfirmed) return notify("Typowanie ruszy po potwierdzeniu dokładnego terminu meczu.");
+  if (!isPredictionOpen(match)) return notify("Ten mecz już się rozpoczął — typ jest zamknięty.");
+  const uid = state.user.uid;
+  const queueKey = `${uid}:${matchId}`;
+  const version = (predictionWriteVersions.get(queueKey) || 0) + 1;
+  predictionWriteVersions.set(queueKey, version);
+  state.predictions[matchId] = pick;
+  refreshPredictionUi();
+
+  const previousWrite = predictionWriteQueues.get(queueKey) || Promise.resolve();
+  const operation = previousWrite.catch(() => {}).then(async () => {
+    await saveRemotePrediction(uid, matchId, pick);
+    if (state.user?.uid === uid) state.confirmedPredictions[matchId] = pick;
+  });
+  predictionWriteQueues.set(queueKey, operation);
+  operation.then(() => {
+    if (state.user?.uid === uid && predictionWriteVersions.get(queueKey) === version) {
+      refreshPredictionUi();
+      notify(`Typ ${pick} zapisany`);
+    }
+  }).catch((error) => {
+    console.error("Nie udało się zapisać typu w Firestore:", error);
+    if (state.user?.uid !== uid || predictionWriteVersions.get(queueKey) !== version) return;
+    const confirmed = state.confirmedPredictions[matchId];
+    if (["1", "X", "2"].includes(confirmed)) state.predictions[matchId] = confirmed;
+    else delete state.predictions[matchId];
+    refreshPredictionUi();
+    notify(error?.code === "permission-denied"
+      ? "Serwer zamknął już ten mecz — typ nie został zmieniony."
+      : "Nie udało się zapisać typu. Sprawdź internet i spróbuj ponownie.");
+  }).finally(() => {
+    if (predictionWriteQueues.get(queueKey) === operation) predictionWriteQueues.delete(queueKey);
+  });
 }
 
 function showMatchCentre(matchId) {
@@ -584,10 +639,194 @@ function openAccountDialog() {
   dialog.querySelector("#accountDetails").textContent = state.user.email || "Zalogowano przez Google";
   const avatarHost = dialog.querySelector("#accountAvatar");
   if (avatarHost) {
-    avatarHost.innerHTML = avatarVisualMarkup("account-avatar-image", `Avatar ${state.user.name}`);
+    avatarHost.innerHTML = playerAvatarButton(state.user.uid, "account-avatar-image");
     avatarHost.querySelector("[data-avatar-image]")?.addEventListener("error", (event) => event.currentTarget.remove(), { once: true });
   }
   dialog.showModal();
+}
+
+function defaultPlayerPicksMatchday() {
+  const liveMatch = state.matches.find((match) => LIVE.has(match.status));
+  if (liveMatch) return liveMatch.matchday;
+  const latestStarted = state.matches
+    .filter((match) => match.kickoffConfirmed && isLocked(match))
+    .sort((a, b) => new Date(b.kickoffAt) - new Date(a.kickoffAt))[0];
+  return latestStarted?.matchday || state.matchday || 1;
+}
+
+function mountPlayerPicksDialog() {
+  let dialog = document.querySelector("#playerPicksDialog");
+  if (dialog) return dialog;
+  dialog = document.createElement("dialog");
+  dialog.id = "playerPicksDialog";
+  dialog.className = "modal player-picks-modal";
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog) dialog.close();
+  });
+  dialog.addEventListener("close", () => {
+    playerPicksLoadId += 1;
+    state.playerPicksUid = null;
+    state.playerPicksStatus = "idle";
+  });
+  document.body.appendChild(dialog);
+  return dialog;
+}
+
+function playerPicksCacheKey(uid, matchday) {
+  return `${uid}:${matchday}`;
+}
+
+function playerPickDisplay(uid, match) {
+  const ownProfile = uid === state.user?.uid;
+  if (ownProfile) return { status: "ready", pick: state.predictions[match.id] || null };
+  if (!match.kickoffConfirmed || !isLocked(match)) return { status: "hidden", pick: null };
+  const cached = state.playerPicksCache[playerPicksCacheKey(uid, match.matchday)] || {};
+  return cached[match.id] || { status: state.playerPicksStatus === "loading" ? "loading" : "unavailable", pick: null };
+}
+
+function playerPickRowHtml(uid, match) {
+  const home = teamById[match.home];
+  const away = teamById[match.away];
+  const display = playerPickDisplay(uid, match);
+  const result = resultOf(match);
+  const hit = display.pick && result ? display.pick === result : null;
+  const score = Number.isFinite(match.homeScore) && (LIVE.has(match.status) || FINAL.has(match.status))
+    ? `${match.homeScore}:${match.awayScore}`
+    : "–:–";
+  const pickMarkup = display.status === "hidden"
+    ? `<span class="player-pick-lock">${icon("lock")}</span><small>Typ ukryty do pierwszego gwizdka</small>`
+    : display.status === "loading"
+      ? `<span class="player-pick-loader" aria-hidden="true"></span><small>Sprawdzamy typ…</small>`
+      : display.status === "unavailable"
+        ? `<span class="player-pick-none">!</span><small>Chwilowo niedostępny</small>`
+        : display.pick
+          ? `<span class="player-pick-value">${display.pick}</span><small>${hit === true ? "Trafiony · 1 pkt" : hit === false ? "Nietrafiony · 0 pkt" : "Oddany typ"}</small>`
+          : `<span class="player-pick-none">—</span><small>Brak typu</small>`;
+  return `<article class="player-pick-row${hit === true ? " is-hit" : hit === false ? " is-miss" : ""}">
+    <div class="player-pick-match-meta"><span>${formatDay(match)} · ${formatTime(match)}</span><b>${score}</b></div>
+    <div class="player-pick-teams">
+      <span><img src="${home.crest}" alt="">${escapeHtml(home.name)}</span>
+      <i>VS</i>
+      <span><img src="${away.crest}" alt="">${escapeHtml(away.name)}</span>
+    </div>
+    <div class="player-pick-result ${display.status}">${pickMarkup}</div>
+  </article>`;
+}
+
+function renderPlayerPicksDialog() {
+  const dialog = mountPlayerPicksDialog();
+  const uid = state.playerPicksUid;
+  if (!uid) return;
+  const focusedMatchday = dialog.contains(document.activeElement)
+    ? document.activeElement?.dataset?.playerMatchday || null
+    : null;
+  const roundScrollPositions = [...dialog.querySelectorAll(".player-round-group > div")]
+    .map((group) => group.scrollLeft);
+  const listScrollPosition = dialog.querySelector(".player-picks-list")?.scrollTop || 0;
+  const profile = profileForUid(uid);
+  const matchday = state.playerPicksMatchday;
+  const roundMatches = state.matches
+    .filter((match) => match.matchday === matchday)
+    .sort((a, b) => new Date(a.kickoffAt) - new Date(b.kickoffAt));
+  const displays = roundMatches.map((match) => ({ match, ...playerPickDisplay(uid, match) }));
+  const visiblePicks = displays.filter((item) => item.pick);
+  const points = visiblePicks.reduce((total, item) => total + (resultOf(item.match) === item.pick ? 1 : 0), 0);
+  const ownProfile = uid === state.user?.uid;
+  const roundTabs = (start, end, label) => `<div class="player-round-group"><span>${label}</span><div>${Array.from({ length: end - start + 1 }, (_, index) => index + start).map((round) => `<button type="button" data-player-matchday="${round}" class="${round === matchday ? "active" : ""}" aria-pressed="${round === matchday}" aria-label="Kolejka ${round}">${round}</button>`).join("")}</div></div>`;
+  dialog.innerHTML = `<button class="modal-close" data-close aria-label="Zamknij">×</button>
+    <header class="player-picks-head">
+      ${avatarVisualMarkup("player-picks-avatar", `Avatar ${profile.name}`, profile.avatar, profile)}
+      <div><p class="eyebrow">TYPY GRACZA</p><h2>${escapeHtml(profile.name)}</h2><span>${ownProfile ? "Twój profil typowania" : "Typy odkrywają się po rozpoczęciu meczu"}</span></div>
+    </header>
+    <nav class="player-round-tabs" aria-label="Kolejki Ekstraklasy">${roundTabs(1, 17, "Runda 1")}${roundTabs(18, 34, "Runda 2")}</nav>
+    <div class="player-picks-summary"><div><span>Kolejka</span><strong>${matchday}</strong></div><div><span>Widoczne typy</span><strong>${visiblePicks.length}/${roundMatches.length}</strong></div><div><span>Punkty</span><strong>${points}</strong></div></div>
+    <div class="player-picks-list" aria-live="polite">${roundMatches.length ? roundMatches.map((match) => playerPickRowHtml(uid, match)).join("") : `<div class="player-picks-empty">Brak meczów w tej kolejce.</div>`}</div>
+    ${!ownProfile ? `<p class="player-picks-privacy">Przed pierwszym gwizdkiem cudzy typ pozostaje ukryty także bezpośrednio w bazie danych.</p>` : ""}`;
+  dialog.querySelectorAll("[data-avatar-image]").forEach((image) => image.addEventListener("error", () => image.remove(), { once: true }));
+  dialog.querySelectorAll(".player-round-group > div").forEach((group, index) => {
+    group.scrollLeft = roundScrollPositions[index] || 0;
+  });
+  const list = dialog.querySelector(".player-picks-list");
+  if (list) list.scrollTop = listScrollPosition;
+  if (focusedMatchday) {
+    requestAnimationFrame(() => {
+      const button = dialog.querySelector(`[data-player-matchday="${focusedMatchday}"]`);
+      button?.focus({ preventScroll: true });
+      button?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    });
+  }
+}
+
+async function ensurePlayerPicksProfile(uid) {
+  if (!uid || uid === state.user?.uid || state.chatProfiles[uid] || !state.db || !state.firebaseModules) return;
+  try {
+    const { doc, getDoc } = state.firebaseModules;
+    const snapshot = await getDoc(doc(state.db, "profiles", uid));
+    state.chatProfiles[uid] = snapshot.exists() ? normalizePublicProfile(uid, snapshot.data()) : normalizePublicProfile(uid);
+    if (state.playerPicksUid === uid) renderPlayerPicksDialog();
+  } catch (error) {
+    console.error("Nie udało się pobrać profilu gracza:", error);
+  }
+}
+
+async function loadPlayerPicksMatchday(matchday) {
+  const uid = state.playerPicksUid;
+  if (!uid || !Number.isInteger(matchday) || matchday < 1 || matchday > 34) return;
+  state.playerPicksMatchday = matchday;
+  const loadId = ++playerPicksLoadId;
+  if (uid === state.user?.uid) {
+    state.playerPicksStatus = "ready";
+    renderPlayerPicksDialog();
+    return;
+  }
+
+  const cacheKey = playerPicksCacheKey(uid, matchday);
+  const cached = state.playerPicksCache[cacheKey] || {};
+  const readableMatches = state.matches.filter((match) => match.matchday === matchday && match.kickoffConfirmed && isLocked(match));
+  const missing = readableMatches.filter((match) => !Object.hasOwn(cached, match.id));
+  state.playerPicksStatus = missing.length ? "loading" : "ready";
+  renderPlayerPicksDialog();
+  if (!missing.length) return;
+
+  const { doc, getDocFromServer } = state.firebaseModules;
+  const results = await Promise.all(missing.map(async (match) => {
+    try {
+      if (typeof getDocFromServer !== "function") throw new Error("Brak bezpiecznego odczytu bezpośrednio z serwera.");
+      const snapshot = await getDocFromServer(doc(state.db, "seasons", SEASON_ID, "players", uid, "picks", match.id));
+      const data = snapshot.exists() ? snapshot.data() : null;
+      const pick = ["1", "X", "2"].includes(data?.pick) ? data.pick : null;
+      return [match.id, { status: "ready", pick }];
+    } catch (error) {
+      console.error(`Nie udało się pobrać typu ${uid}/${match.id}:`, error);
+      return [match.id, { status: "unavailable", pick: null }];
+    }
+  }));
+  if (loadId !== playerPicksLoadId || state.playerPicksUid !== uid || state.playerPicksMatchday !== matchday) return;
+  state.playerPicksCache[cacheKey] = { ...cached, ...Object.fromEntries(results) };
+  state.playerPicksStatus = "ready";
+  renderPlayerPicksDialog();
+}
+
+async function openPlayerPicks(uid) {
+  if (!uid) return;
+  if (!state.user || state.auth?.currentUser?.uid !== state.user.uid) {
+    document.querySelector("#authDialog")?.showModal();
+    notify("Zaloguj się przez Google, aby zobaczyć typy graczy.");
+    return;
+  }
+  if (!state.participantReady) {
+    const activated = await activateSeasonParticipant(state.user.uid, { notifyOnError: true });
+    if (!activated) return;
+  }
+  state.playerPicksUid = uid;
+  state.playerPicksMatchday = defaultPlayerPicksMatchday();
+  document.querySelector("#accountDialog")?.close();
+  if (state.chatOpen) toggleChat(false);
+  const dialog = mountPlayerPicksDialog();
+  renderPlayerPicksDialog();
+  if (!dialog.open) dialog.showModal();
+  ensurePlayerPicksProfile(uid);
+  loadPlayerPicksMatchday(state.playerPicksMatchday);
 }
 
 function updateCountdowns() {
@@ -887,7 +1126,7 @@ function chatMessageHtml(message) {
   const reply = replyMessage ? chatReplySummary(replyMessage) : message.replyToId ? { id: message.replyToId, name: "Wcześniejsza wiadomość", text: "Pokaż kontekst", image: false } : null;
   const text = escapeHtml(message.text).replaceAll("\n", "<br>");
   return `<article class="chat-msg${mine ? " mine" : ""}" data-chat-message="${escapeHtml(message.id)}">
-    ${avatarForUid(message.uid)}
+    ${playerAvatarButton(message.uid)}
     <div class="chat-bubble">
       <div class="chat-head"><strong class="chat-name">${escapeHtml(profile.name)}</strong><time class="chat-time">${escapeHtml(formatChatTime(message.createdAt))}</time>
         <span class="chat-actions">
@@ -1537,6 +1776,25 @@ function isGoogleAccount(user) {
 }
 
 async function handleAuthState(user) {
+  const previousUid = state.user?.uid || null;
+  state.userDataReady = false;
+  if (previousUid && (!user || previousUid !== user.uid)) {
+    state.predictions = {};
+    state.confirmedPredictions = {};
+    state.playerPicksCache = {};
+    predictionWriteQueues.clear();
+    predictionWriteVersions.clear();
+    location.reload();
+    return;
+  }
+  if (!user) {
+    document.querySelector("#playerPicksDialog")?.close();
+    state.playerPicksUid = null;
+    state.playerPicksCache = {};
+    state.confirmedPredictions = {};
+    predictionWriteQueues.clear();
+    predictionWriteVersions.clear();
+  }
   state.authStatus = "ready";
   state.avatarOperationId += 1;
   state.avatarBusy = false;
@@ -1548,6 +1806,8 @@ async function handleAuthState(user) {
   if (user && !isGoogleAccount(user)) {
     state.user = null;
     state.predictions = {};
+    state.confirmedPredictions = {};
+    state.userDataReady = false;
     state.avatar = { ...DEFAULT_AVATAR };
     render();
     notify("Ta liga obsługuje wyłącznie prawdziwe konta Google");
@@ -1557,17 +1817,16 @@ async function handleAuthState(user) {
     return;
   }
   if (!user) {
-    if (state.user?.provider === "google.com") {
-      state.user = null;
-      state.predictions = {};
-      state.avatar = { ...DEFAULT_AVATAR };
-      save();
-    }
+    state.user = null;
+    state.predictions = {};
+    state.confirmedPredictions = {};
+    state.userDataReady = false;
+    state.avatar = { ...DEFAULT_AVATAR };
+    save();
     render();
     return;
   }
 
-  const cached = state.predictionsByUser[user.uid] || {};
   const cachedAvatar = normalizeAvatar(state.avatarsByUser[user.uid]) || { ...DEFAULT_AVATAR };
   state.user = {
     uid: user.uid,
@@ -1594,9 +1853,9 @@ async function handleAuthState(user) {
 
   if (state.auth?.currentUser?.uid !== user.uid) return;
 
-  state.predictions = { ...cached, ...remote };
+  state.predictions = { ...remote };
+  state.confirmedPredictions = { ...remote };
   state.avatar = remoteProfile?.avatar || cachedAvatar;
-  state.predictionsByUser[user.uid] = { ...state.predictions };
   state.chatProfiles[user.uid] = normalizePublicProfile(user.uid, {
     displayName: state.user.name,
     photoURL: state.user.photoURL,
@@ -1606,6 +1865,11 @@ async function handleAuthState(user) {
 
   await activateSeasonParticipant(user.uid, { startRealtime: false, notifyOnError: true });
   if (state.auth?.currentUser?.uid !== user.uid) return;
+
+  const migratedPredictions = await migrateLegacyLocalPredictions(user.uid);
+  if (state.auth?.currentUser?.uid !== user.uid) return;
+  Object.assign(state.predictions, migratedPredictions);
+  Object.assign(state.confirmedPredictions, migratedPredictions);
 
   try {
     const profileSave = saveRemoteProfile(user.uid, state.avatar, remoteProfile?.data || null).then(
@@ -1622,16 +1886,13 @@ async function handleAuthState(user) {
   }
   if (state.auth?.currentUser?.uid !== user.uid) return;
 
+  state.userDataReady = true;
   save();
   render();
   if (state.participantReady) startChatRealtime(user.uid);
   document.querySelector("#authDialog")?.close();
 
-  try {
-    await syncPredictionsToRemote();
-  } catch (error) {
-    console.error("Nie udało się zsynchronizować lokalnych typów:", error);
-  }
+  syncTrustedMatchTimes();
 }
 
 async function initFirebase() {
@@ -1650,14 +1911,19 @@ async function initFirebase() {
     const firebaseApp = initializeApp(firebaseConfig);
     state.auth = authModule.getAuth(firebaseApp);
     try {
-      const cacheOptions = typeof firestore.persistentMultipleTabManager === "function"
-        ? { tabManager: firestore.persistentMultipleTabManager() }
+      const firestoreOptions = typeof firestore.memoryLocalCache === "function"
+        ? { localCache: firestore.memoryLocalCache() }
         : {};
-      state.db = firestore.initializeFirestore(firebaseApp, {
-        localCache: firestore.persistentLocalCache(cacheOptions)
-      });
+      state.db = firestore.initializeFirestore(firebaseApp, firestoreOptions);
+      if (typeof firestore.clearIndexedDbPersistence === "function") {
+        try {
+          await firestore.clearIndexedDbPersistence(state.db);
+        } catch (error) {
+          console.warn("Nie udało się usunąć starego cache Firestore z innej otwartej karty:", error);
+        }
+      }
     } catch (error) {
-      console.warn("Trwały cache Firestore jest niedostępny, używam cache w pamięci:", error);
+      console.warn("Nie udało się jawnie ustawić cache w pamięci Firestore:", error);
       state.db = firestore.getFirestore(firebaseApp);
     }
     state.firebaseModules = { ...authModule, ...firestore };
@@ -1710,7 +1976,14 @@ async function logout() {
   if (state.auth?.currentUser && state.firebaseModules?.signOut) {
     try {
       await state.firebaseModules.signOut(state.auth);
-      notify("Wylogowano");
+      state.user = null;
+      state.predictions = {};
+      state.confirmedPredictions = {};
+      state.userDataReady = false;
+      predictionWriteQueues.clear();
+      predictionWriteVersions.clear();
+      save();
+      location.reload();
     } catch (error) {
       console.error("Wylogowanie nie powiodło się:", error);
       notify("Nie udało się wylogować. Spróbuj ponownie.");
@@ -1720,6 +1993,8 @@ async function logout() {
 
   state.user = null;
   state.predictions = {};
+  state.confirmedPredictions = {};
+  state.userDataReady = false;
   state.avatar = { ...DEFAULT_AVATAR };
   state.avatarBusy = false;
   state.avatarPending = false;
@@ -1728,16 +2003,20 @@ async function logout() {
   state.participantActivationBusy = false;
   state.participantActivationError = false;
   stopChatRealtime();
+  predictionWriteQueues.clear();
+  predictionWriteVersions.clear();
   save();
   render();
 }
 
-async function saveRemotePrediction(matchId, pick) {
-  if (!state.db || !state.firebaseModules || state.auth?.currentUser?.uid !== state.user?.uid) return;
+async function saveRemotePrediction(uid, matchId, pick) {
+  if (!state.db || !state.firebaseModules || state.auth?.currentUser?.uid !== uid || state.user?.uid !== uid) {
+    const error = new Error("Sesja gracza zmieniła się przed zapisem typu.");
+    error.code = "auth/session-changed";
+    throw error;
+  }
   const { doc, setDoc, serverTimestamp } = state.firebaseModules;
-  await setDoc(doc(state.db, "predictions", `${state.user.uid}_${matchId}`), {
-    uid: state.user.uid,
-    matchId,
+  await setDoc(doc(state.db, "seasons", SEASON_ID, "players", uid, "picks", matchId), {
     pick,
     updatedAt: serverTimestamp()
   });
@@ -1745,12 +2024,24 @@ async function saveRemotePrediction(matchId, pick) {
 
 async function loadRemotePredictions(uid) {
   const { collection, query, where, getDocs } = state.firebaseModules;
-  const snapshot = await getDocs(query(collection(state.db, "predictions"), where("uid", "==", uid)));
   const predictions = {};
-  snapshot.forEach((item) => {
-    const data = item.data();
-    if (typeof data.matchId === "string" && ["1", "X", "2"].includes(data.pick)) predictions[data.matchId] = data.pick;
-  });
+  const [legacyResult, currentResult] = await Promise.allSettled([
+    getDocs(query(collection(state.db, "predictions"), where("uid", "==", uid))),
+    getDocs(collection(state.db, "seasons", SEASON_ID, "players", uid, "picks"))
+  ]);
+  if (legacyResult.status === "fulfilled") {
+    legacyResult.value.forEach((item) => {
+      const data = item.data();
+      if (typeof data.matchId === "string" && ["1", "X", "2"].includes(data.pick)) predictions[data.matchId] = data.pick;
+    });
+  }
+  if (currentResult.status === "fulfilled") {
+    currentResult.value.forEach((item) => {
+      const data = item.data();
+      if (["1", "X", "2"].includes(data.pick)) predictions[item.id] = data.pick;
+    });
+  }
+  if (legacyResult.status === "rejected" && currentResult.status === "rejected") throw currentResult.reason;
   return predictions;
 }
 
@@ -1787,24 +2078,87 @@ async function loadRemoteProfile(uid) {
   return { data, avatar: normalizeAvatar(data) };
 }
 
-async function syncPredictionsToRemote() {
-  if (!state.db || !state.firebaseModules || state.auth?.currentUser?.uid !== state.user?.uid) return;
-  const entries = Object.entries(state.predictions).filter(([matchId, pick]) => {
+async function migrateLegacyLocalPredictions(uid) {
+  const source = asRecord(legacyPredictionsByUser[uid]);
+  const validEntries = Object.entries(source).filter(([matchId, pick]) => (
+    state.matches.some((match) => match.id === matchId) && ["1", "X", "2"].includes(pick)
+  ));
+  if (!validEntries.length) {
+    if (uid in legacyPredictionsByUser) {
+      delete legacyPredictionsByUser[uid];
+      save();
+    }
+    return {};
+  }
+  if (!state.participantReady || state.auth?.currentUser?.uid !== uid || state.user?.uid !== uid) return {};
+
+  const serverBackedIds = new Set(
+    validEntries
+      .filter(([matchId]) => Object.hasOwn(state.confirmedPredictions, matchId))
+      .map(([matchId]) => matchId)
+  );
+  const writableEntries = validEntries.filter(([matchId]) => {
     const match = state.matches.find((item) => item.id === matchId);
-    return match && !isLocked(match) && ["1", "X", "2"].includes(pick);
+    return !serverBackedIds.has(matchId) && isPredictionOpen(match);
   });
-  if (!entries.length) return;
-  const { doc, writeBatch, serverTimestamp } = state.firebaseModules;
-  const batch = writeBatch(state.db);
-  entries.forEach(([matchId, pick]) => {
-    batch.set(doc(state.db, "predictions", `${state.user.uid}_${matchId}`), {
-      uid: state.user.uid,
-      matchId,
-      pick,
+  const results = await Promise.allSettled(
+    writableEntries.map(([matchId, pick]) => saveRemotePrediction(uid, matchId, pick))
+  );
+  const migrated = {};
+  const migratedIds = new Set();
+  results.forEach((result, index) => {
+    if (result.status !== "fulfilled") return;
+    const [matchId, pick] = writableEntries[index];
+    migrated[matchId] = pick;
+    migratedIds.add(matchId);
+  });
+
+  const remaining = Object.fromEntries(validEntries.filter(([matchId]) => (
+    !serverBackedIds.has(matchId) && !migratedIds.has(matchId)
+  )));
+  if (Object.keys(remaining).length) legacyPredictionsByUser[uid] = remaining;
+  else delete legacyPredictionsByUser[uid];
+  save();
+  return migrated;
+}
+
+async function syncTrustedMatchTimes() {
+  if (trustedMatchesSyncPromise) return trustedMatchesSyncPromise;
+  if (state.user?.email !== "mateuszjoe@gmail.com" || state.auth?.currentUser?.uid !== state.user.uid || !state.db || !state.firebaseModules) return;
+  const confirmedMatches = state.matches
+    .filter((match) => match.kickoffConfirmed && Number.isFinite(new Date(match.kickoffAt).getTime()))
+    .sort((a, b) => a.id.localeCompare(b.id));
+  if (!confirmedMatches.length) return;
+  const signature = confirmedMatches.map((match) => `${match.id}:${match.matchday}:${new Date(match.kickoffAt).toISOString()}`).join("|");
+
+  trustedMatchesSyncPromise = (async () => {
+    const { doc, getDoc, serverTimestamp, Timestamp, writeBatch } = state.firebaseModules;
+    const metaReference = doc(state.db, "scheduleMeta", SEASON_ID);
+    const metaSnapshot = await getDoc(metaReference);
+    if (metaSnapshot.exists() && metaSnapshot.data().signature === signature) return;
+    const batch = writeBatch(state.db);
+    confirmedMatches.forEach((match) => {
+      const kickoff = Timestamp.fromDate(new Date(match.kickoffAt));
+      batch.set(doc(state.db, "seasons", SEASON_ID, "matches", match.id), {
+        matchday: match.matchday,
+        closesAt: kickoff,
+        revealsAt: kickoff,
+        updatedAt: serverTimestamp()
+      });
+    });
+    batch.set(metaReference, {
+      seasonId: SEASON_ID,
+      signature,
+      matchCount: confirmedMatches.length,
       updatedAt: serverTimestamp()
     });
+    await batch.commit();
+  })().catch((error) => {
+    console.error("Nie udało się zsynchronizować bezpiecznych terminów meczów:", error);
+  }).finally(() => {
+    trustedMatchesSyncPromise = null;
   });
-  await batch.commit();
+  return trustedMatchesSyncPromise;
 }
 
 function normalizeName(value) {
@@ -1854,12 +2208,26 @@ async function pollLive() {
         resultSource: fixture.source
       });
     });
+    syncTrustedMatchTimes();
     if (dataChanged || state.matches.some((match) => LIVE.has(match.status))) render();
   } catch { /* statyczny serwer lub brak adaptera — aplikacja nadal działa */ }
   finally { setTimeout(pollLive, nextDelay); }
 }
 
 document.addEventListener("click", (event) => {
+  const playerButton = event.target.closest?.("[data-player-picks]");
+  if (playerButton) {
+    event.preventDefault();
+    openPlayerPicks(playerButton.dataset.playerPicks);
+    return;
+  }
+
+  const playerMatchdayButton = event.target.closest?.("[data-player-matchday]");
+  if (playerMatchdayButton) {
+    loadPlayerPicksMatchday(Number(playerMatchdayButton.dataset.playerMatchday));
+    return;
+  }
+
   const navButton = event.target.closest?.(".nav-link[data-view]");
   if (navButton) {
     event.preventDefault();
@@ -1908,7 +2276,7 @@ document.addEventListener("click", (event) => {
     return;
   }
 
-  if (event.target.matches?.("#matchDialog")) event.target.close();
+  if (event.target.matches?.("#matchDialog, #playerPicksDialog")) event.target.close();
 }, { capture: true });
 window.addEventListener("hashchange", () => {
   const view = location.hash.slice(1);
