@@ -1,6 +1,7 @@
 import { matches as baseMatches, teamById, teams, roundDatesByNumber } from "./data.js";
 import { firebaseConfig } from "./firebase-config.js";
 
+const bootStartedAt = performance.now();
 const app = document.querySelector("#app");
 const STORAGE_KEY = "ekstraklasa-typer-state-v1";
 const FINAL = new Set(["FT", "AET", "PEN", "AWD", "WO", "FINISHED", "AWARDED"]);
@@ -26,6 +27,26 @@ const demoPlayers = [
   ["Marek K.", 12, 18, 67], ["Ola W.", 11, 18, 61], ["Krzysztof P.", 10, 18, 56],
   ["Ania S.", 9, 18, 50], ["Bartek M.", 8, 18, 44]
 ];
+
+async function finishLoadingScreen() {
+  const fontsReady = document.fonts?.ready || Promise.resolve();
+  await Promise.race([
+    Promise.resolve(fontsReady).catch(() => {}),
+    new Promise((resolve) => setTimeout(resolve, 1800))
+  ]);
+
+  const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  const minimumDuration = reduceMotion ? 180 : 800;
+  const remaining = Math.max(0, minimumDuration - (performance.now() - bootStartedAt));
+
+  setTimeout(() => {
+    clearTimeout(window.__etLoaderFallback);
+    document.documentElement.classList.add("app-ready");
+    document.documentElement.classList.remove("app-loading");
+    document.querySelector("#appLoader")?.setAttribute("aria-hidden", "true");
+    setTimeout(() => document.querySelector("#appLoader")?.remove(), 500);
+  }, remaining);
+}
 
 function save() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify({
@@ -380,6 +401,7 @@ document.addEventListener("click", (event) => {
 window.addEventListener("hashchange", () => { const view = location.hash.slice(1); if (["matches","ranking","live","rules"].includes(view)) setView(view); });
 
 render();
+finishLoadingScreen();
 initFirebase();
 pollLive();
 setInterval(pollLive, 30000);

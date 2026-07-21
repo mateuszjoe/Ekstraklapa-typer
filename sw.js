@@ -1,4 +1,4 @@
-const CACHE_NAME = "ekstraklasa-typer-v2";
+const CACHE_NAME = "ekstraklasa-typer-v3";
 const OFFLINE_ASSETS = [
   "./",
   "./styles.css",
