@@ -9,7 +9,7 @@ Aplikacja korzysta z publicznego API oficjalnego Centrum Meczowego Ekstraklasy:
 - `GET https://api.centrum-meczowe.ekstraklasa.org/v1/seasons/current`
 - `GET https://api.centrum-meczowe.ekstraklasa.org/v1/matches`
 
-To ten sam kanał, którego używa oficjalna strona `ekstraklasa.org`. Zwraca 306 meczów sezonu 2026/27 oraz statusy `fixture`, `playing`, `played`, `postponed`, `suspended`, `cancelled` i `awarded`. Nie wymaga klucza, konta ani płatnego planu. Nie jest jednak udokumentowaną usługą z gwarancją SLA, dlatego cała integracja jest zamknięta w adapterze i może zostać później wymieniona.
+To ten sam kanał, którego używa oficjalna strona `ekstraklasa.org`. Zwraca 306 meczów całego sezonu 2026/27 oraz statusy `fixture`, `playing`, `played`, `postponed`, `suspended`, `cancelled` i `awarded`. Typer filtruje ten feed do 153 meczów rundy jesiennej, czyli kolejek 1–17. Kanał nie wymaga klucza, konta ani płatnego planu. Nie jest jednak udokumentowaną usługą z gwarancją SLA, dlatego cała integracja jest zamknięta w adapterze i może zostać później wymieniona.
 
 Projekt pobiera tylko dane potrzebne typerowi: termin, status i wynik. Nie pobiera zdarzeń, składów, strzelców, kartek ani zmian.
 
@@ -43,7 +43,7 @@ W bezpośrednim teście endpoint `site.api.espn.com/apis/site/v2/sports/soccer/p
 
 Odpowiedź zawiera:
 
-- `fixtures` — zakończone mecze sezonu, bieżąca kolejka i wszystkie aktualnie trwające spotkania;
+- `fixtures` — zakończone mecze, bieżąca kolejka i aktualnie trwające spotkania wyłącznie z rundy jesiennej;
 - `mode` — `waiting`, `live-polling`, `stale` albo `degraded`;
 - `provider` — `ekstraklasa-match-center`;
 - `updatedAt`, `nextPollAt` i `pollIntervalSeconds`;

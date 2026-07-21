@@ -11,6 +11,8 @@ const DEFAULT_AVATAR = Object.freeze({ type: "google", value: "" });
 const SEASON_ID = "2026-27";
 const ENTRY_FEE = 100;
 const MINIMUM_PLAYERS = 5;
+const LAST_MATCHDAY = 17;
+const TYPER_MATCH_COUNT = 153;
 const MAX_AVATAR_FILE_SIZE = 8 * 1024 * 1024;
 const MAX_AVATAR_DATA_LENGTH = 180_000;
 const MAX_CHAT_IMAGE_DATA_LENGTH = 90_000;
@@ -41,10 +43,14 @@ if (deprecatedLocalKeys.some((key) => key in saved)) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
 }
 const requestedView = location.hash.slice(1);
+const savedMatchday = Number(saved.matchday);
+const initialMatchday = Number.isInteger(savedMatchday) && savedMatchday >= 1 && savedMatchday <= LAST_MATCHDAY
+  ? savedMatchday
+  : 1;
+const typerMatchIds = new Set(baseMatches.map((match) => match.id));
 const state = {
   view: VIEWS.has(requestedView) ? requestedView : "matches",
-  leg: Number(saved.leg || 1),
-  matchday: Number(saved.matchday || 1),
+  matchday: initialMatchday,
   predictions: {},
   confirmedPredictions: {},
   avatar: { ...DEFAULT_AVATAR },
@@ -80,7 +86,7 @@ const state = {
   chatReadSaving: false,
   chatReadRetryAt: 0,
   playerPicksUid: null,
-  playerPicksMatchday: Number(saved.matchday || 1),
+  playerPicksMatchday: initialMatchday,
   playerPicksStatus: "idle",
   playerPicksCache: {},
   matches: baseMatches.map((match) => ({ ...match })),
@@ -132,7 +138,6 @@ function save() {
     else state.avatarsByUser[state.user.uid] = { ...state.avatar };
   }
   const nextSavedState = {
-    leg: state.leg,
     matchday: state.matchday,
     avatarsByUser: state.avatarsByUser
   };
@@ -277,6 +282,7 @@ function isPredictionOpen(match) {
 }
 
 function pointsFor(match) {
+  if (!typerMatchIds.has(match?.id)) return 0;
   const result = resultOf(match);
   return result && state.predictions[match.id] === result ? 1 : 0;
 }
@@ -293,12 +299,12 @@ function hero() {
   const selected = state.matches.filter((match) => match.matchday === state.matchday);
   const typed = selected.filter((match) => state.predictions[match.id]).length;
   const next = [...state.matches]
-    .filter((match) => new Date(match.kickoffAt) > new Date() && match.kickoffConfirmed)
+    .filter((match) => typerMatchIds.has(match.id) && new Date(match.kickoffAt) > new Date() && match.kickoffConfirmed)
     .sort((a, b) => new Date(a.kickoffAt) - new Date(b.kickoffAt))[0];
   return `<section class="hero">
     <div class="hero-glow"></div>
     <div class="hero-copy">
-      <span class="season-pill">SEZON 2026/27 · 100 LAT LIGI</span>
+      <span class="season-pill">SEZON 2026/27 · RUNDA JESIENNA</span>
       <h1>Jeden typ.<br><em>Jedna emocja.</em></h1>
       <p>Wybierz 1, X albo 2. Każdy trafiony rezultat to punkt. Bez kombinowania — liczy się piłkarskie wyczucie.</p>
       <div class="hero-actions">
@@ -351,7 +357,7 @@ function matchCard(match) {
 
 function liveMatchesSection() {
   const liveMatches = state.matches
-    .filter((match) => LIVE.has(match.status))
+    .filter((match) => typerMatchIds.has(match.id) && LIVE.has(match.status))
     .sort((a, b) => new Date(a.kickoffAt) - new Date(b.kickoffAt));
 
   if (!liveMatches.length) return "";
@@ -369,17 +375,18 @@ function matchesView() {
   const visible = state.matches
     .filter((match) => match.matchday === state.matchday && !LIVE.has(match.status))
     .sort((a, b) => new Date(a.kickoffAt) - new Date(b.kickoffAt));
-  const roundOptions = Array.from({ length: 17 }, (_, index) => index + (state.leg === 1 ? 1 : 18));
+  const roundOptions = Array.from({ length: LAST_MATCHDAY }, (_, index) => index + 1);
+  const typerMatches = state.matches.filter((match) => typerMatchIds.has(match.id));
   return `${hero()}
     <section class="club-ribbon" aria-label="Kluby sezonu 2026/27">${teams.map((team) => `<img src="${team.crest}" alt="${team.name}" title="${team.name}">`).join("")}</section>
     ${liveMatchesSection()}
     <section class="content-section" id="mecze">
       <div class="section-heading">
         <div><p class="eyebrow">TERMINARZ I TYPY</p><h2>Mecze Ekstraklasy</h2><p>Wybierz rezultat każdego spotkania. Typ blokuje się wraz z pierwszym gwizdkiem.</p></div>
-        <div class="stats-inline"><span><b>${state.matches.filter((m) => state.predictions[m.id]).length}</b> oddanych typów</span><span><b>${state.matches.reduce((sum, m) => sum + pointsFor(m), 0)}</b> punktów</span></div>
+        <div class="stats-inline"><span><b>${typerMatches.filter((match) => state.predictions[match.id]).length}</b> oddanych typów</span><span><b>${typerMatches.reduce((sum, match) => sum + pointsFor(match), 0)}</b> punktów</span></div>
       </div>
       <div class="filters">
-        <div class="segmented"><button data-leg="1" class="${state.leg === 1 ? "active" : ""}" aria-pressed="${state.leg === 1}">Runda 1 <small>kolejki 1–17</small></button><button data-leg="2" class="${state.leg === 2 ? "active" : ""}" aria-pressed="${state.leg === 2}">Runda 2 <small>kolejki 18–34</small></button></div>
+        <div class="stage-label"><strong>Runda jesienna</strong><small>kolejki 1–17</small></div>
         <label class="select-wrap">${icon("calendar")}<select id="matchdaySelect">${roundOptions.map((round) => `<option value="${round}" ${state.matchday === round ? "selected" : ""}>${round}. kolejka · ${new Intl.DateTimeFormat("pl-PL", { day: "2-digit", month: "long" }).format(new Date(`${roundDatesByNumber[round]}T12:00:00`))}</option>`).join("")}</select></label>
       </div>
       <div class="round-note"><span>${visible.some((m) => !m.kickoffConfirmed) ? "Daty ramowe" : "Terminy potwierdzone"}</span>${visible.some((m) => !m.kickoffConfirmed) ? "Dokładne dni i godziny tej kolejki nie zostały jeszcze opublikowane. Typowanie uruchomi się po potwierdzeniu terminów." : "Godziny zgodne z oficjalnym terminarzem Ekstraklasy."}</div>
@@ -388,12 +395,13 @@ function matchesView() {
 }
 
 function rankingView() {
-  const ownPoints = state.matches.reduce((sum, match) => sum + pointsFor(match), 0);
-  const ownTyped = Object.keys(state.predictions).length;
+  const typerMatches = state.matches.filter((match) => typerMatchIds.has(match.id));
+  const ownPoints = typerMatches.reduce((sum, match) => sum + pointsFor(match), 0);
+  const ownTyped = typerMatches.filter((match) => state.predictions[match.id]).length;
   const player = state.user
     ? [state.user.name, ownPoints, ownTyped, ownTyped ? Math.round(ownPoints / ownTyped * 100) : 0]
     : null;
-  return `<section class="subpage-hero"><p class="eyebrow">KLASYFIKACJA</p><h1>Ranking typerów</h1><p>Każdy trafiony rezultat to dokładnie jeden punkt.</p></section>
+  return `<section class="subpage-hero"><p class="eyebrow">KLASYFIKACJA</p><h1>Ranking typerów</h1><p>Ranking obejmuje rundę jesienną. Każdy trafiony rezultat to dokładnie jeden punkt.</p></section>
     <section class="content-section narrow">
       ${!state.user ? `<div class="notice">Zaloguj się przez Google, żeby pojawić się w rankingu i zapisywać typy między urządzeniami.</div>` : ""}
       <div class="ranking-card">
@@ -438,15 +446,15 @@ function prizePoolHtml() {
 }
 
 function rulesView() {
-  return `<section class="subpage-hero"><p class="eyebrow">PROSTE ZASADY</p><h1>Piłka jest prosta.<br>Ten typer też.</h1></section>
+  return `<section class="subpage-hero"><p class="eyebrow">PROSTE ZASADY</p><h1>Piłka jest prosta.<br>Ten typer też.</h1><p>Typujemy wyłącznie rundę jesienną: kolejki 1–17.</p></section>
     <section class="content-section narrow rules-grid">
       <article><b>01</b><span>${icon("calendar")}</span><h3>Wybierz 1, X lub 2</h3><p>1 oznacza wygraną gospodarzy, X remis, a 2 wygraną gości. Nie typujemy dokładnych wyników.</p></article>
       <article><b>02</b><span>${icon("lock")}</span><h3>Zdąż przed gwizdkiem</h3><p>Typ możesz zmieniać do rozpoczęcia meczu. Później zostaje automatycznie zablokowany.</p></article>
-      <article><b>03</b><span>${icon("trophy")}</span><h3>Zdobądź 1 punkt</h3><p>Za każdy prawidłowy rezultat otrzymujesz jeden punkt. Wygrywa najwyższy wynik po 34. kolejce.</p></article>
+      <article><b>03</b><span>${icon("trophy")}</span><h3>Zdobądź 1 punkt</h3><p>Za każdy prawidłowy rezultat otrzymujesz jeden punkt. Wygrywa najwyższy wynik po 17. kolejce.</p></article>
       <div class="rule-banner">
         <div class="rule-stat"><strong>100 zł</strong><span>wpisowe za gracza</span></div>
-        <div class="rule-stat"><strong>306</strong><span>meczów</span></div>
-        <div class="rule-stat"><strong>34</strong><span>kolejki</span></div>
+        <div class="rule-stat"><strong>${TYPER_MATCH_COUNT}</strong><span>mecze rundy jesiennej</span></div>
+        <div class="rule-stat"><strong>${LAST_MATCHDAY}</strong><span>kolejek</span></div>
         <div class="rule-stat"><strong>1</strong><span>punkt za trafienie</span></div>
       </div>
       ${prizePoolHtml()}
@@ -513,10 +521,13 @@ function render() {
 
 function bindRendered() {
   app.querySelectorAll("[data-pick]").forEach((button) => button.addEventListener("click", () => setPrediction(button.dataset.match, button.dataset.pick)));
-  app.querySelectorAll("[data-leg]").forEach((button) => button.addEventListener("click", () => {
-    state.leg = Number(button.dataset.leg); state.matchday = state.leg === 1 ? 1 : 18; save(); render();
-  }));
-  app.querySelector("#matchdaySelect")?.addEventListener("change", (event) => { state.matchday = Number(event.target.value); save(); render(); });
+  app.querySelector("#matchdaySelect")?.addEventListener("change", (event) => {
+    const matchday = Number(event.target.value);
+    if (!Number.isInteger(matchday) || matchday < 1 || matchday > LAST_MATCHDAY) return;
+    state.matchday = matchday;
+    save();
+    render();
+  });
   app.querySelectorAll("[data-view-jump]").forEach((button) => button.addEventListener("click", () => setView(button.dataset.viewJump)));
   app.querySelector("[data-scroll-matches]")?.addEventListener("click", () => document.querySelector("#mecze")?.scrollIntoView({ behavior: "smooth" }));
   app.querySelectorAll("[data-match-centre]").forEach((button) => button.addEventListener("click", () => showMatchCentre(button.dataset.matchCentre)));
@@ -545,6 +556,7 @@ function setPrediction(matchId, pick) {
   }
   const match = state.matches.find((item) => item.id === matchId);
   if (!match) return;
+  if (!typerMatchIds.has(match.id) || match.matchday > LAST_MATCHDAY) return notify("Ten mecz nie należy do rundy jesiennej typera.");
   if (!match.kickoffConfirmed) return notify("Typowanie ruszy po potwierdzeniu dokładnego terminu meczu.");
   if (!isPredictionOpen(match)) return notify("Ten mecz już się rozpoczął — typ jest zamknięty.");
   const uid = state.user.uid;
@@ -600,8 +612,9 @@ function updateAuthButton() {
   const iconNode = document.createElement("span");
   const labelNode = document.createElement("span");
   if (state.user) {
+    const fullName = String(state.user.name || "Gracz").trim() || "Gracz";
     iconNode.className = "avatar";
-    iconNode.textContent = state.user.name.slice(0, 1).toUpperCase();
+    iconNode.textContent = fullName.slice(0, 1).toUpperCase();
     const source = avatarSource();
     if (state.avatar.type === "club") iconNode.classList.add("is-club");
     if (source) {
@@ -611,11 +624,15 @@ function updateAuthButton() {
       image.addEventListener("error", () => image.remove(), { once: true });
       iconNode.append(image);
     }
-    labelNode.textContent = state.user.name.split(" ")[0];
+    labelNode.textContent = fullName;
+    authButton.setAttribute("aria-label", `Konto gracza ${fullName}`);
+    authButton.title = fullName;
   } else {
     iconNode.className = "user-icon";
     iconNode.textContent = "◉";
     labelNode.textContent = "Zaloguj się";
+    authButton.setAttribute("aria-label", "Zaloguj się");
+    authButton.removeAttribute("title");
   }
   authButton.replaceChildren(iconNode, labelNode);
 
@@ -646,12 +663,12 @@ function openAccountDialog() {
 }
 
 function defaultPlayerPicksMatchday() {
-  const liveMatch = state.matches.find((match) => LIVE.has(match.status));
+  const liveMatch = state.matches.find((match) => typerMatchIds.has(match.id) && LIVE.has(match.status));
   if (liveMatch) return liveMatch.matchday;
   const latestStarted = state.matches
-    .filter((match) => match.kickoffConfirmed && isLocked(match))
+    .filter((match) => typerMatchIds.has(match.id) && match.kickoffConfirmed && isLocked(match))
     .sort((a, b) => new Date(b.kickoffAt) - new Date(a.kickoffAt))[0];
-  return latestStarted?.matchday || state.matchday || 1;
+  return latestStarted?.matchday || (state.matchday >= 1 && state.matchday <= LAST_MATCHDAY ? state.matchday : 1);
 }
 
 function mountPlayerPicksDialog() {
@@ -738,7 +755,7 @@ function renderPlayerPicksDialog() {
       ${avatarVisualMarkup("player-picks-avatar", `Avatar ${profile.name}`, profile.avatar, profile)}
       <div><p class="eyebrow">TYPY GRACZA</p><h2>${escapeHtml(profile.name)}</h2><span>${ownProfile ? "Twój profil typowania" : "Typy odkrywają się po rozpoczęciu meczu"}</span></div>
     </header>
-    <nav class="player-round-tabs" aria-label="Kolejki Ekstraklasy">${roundTabs(1, 17, "Runda 1")}${roundTabs(18, 34, "Runda 2")}</nav>
+    <nav class="player-round-tabs" aria-label="Kolejki rundy jesiennej">${roundTabs(1, LAST_MATCHDAY, "Runda jesienna")}</nav>
     <div class="player-picks-summary"><div><span>Kolejka</span><strong>${matchday}</strong></div><div><span>Widoczne typy</span><strong>${visiblePicks.length}/${roundMatches.length}</strong></div><div><span>Punkty</span><strong>${points}</strong></div></div>
     <div class="player-picks-list" aria-live="polite">${roundMatches.length ? roundMatches.map((match) => playerPickRowHtml(uid, match)).join("") : `<div class="player-picks-empty">Brak meczów w tej kolejce.</div>`}</div>
     ${!ownProfile ? `<p class="player-picks-privacy">Przed pierwszym gwizdkiem cudzy typ pozostaje ukryty także bezpośrednio w bazie danych.</p>` : ""}`;
@@ -771,7 +788,7 @@ async function ensurePlayerPicksProfile(uid) {
 
 async function loadPlayerPicksMatchday(matchday) {
   const uid = state.playerPicksUid;
-  if (!uid || !Number.isInteger(matchday) || matchday < 1 || matchday > 34) return;
+  if (!uid || !Number.isInteger(matchday) || matchday < 1 || matchday > LAST_MATCHDAY) return;
   state.playerPicksMatchday = matchday;
   const loadId = ++playerPicksLoadId;
   if (uid === state.user?.uid) {
@@ -2015,6 +2032,7 @@ async function saveRemotePrediction(uid, matchId, pick) {
     error.code = "auth/session-changed";
     throw error;
   }
+  if (!typerMatchIds.has(matchId)) throw new Error("Mecz nie należy do rundy jesiennej typera.");
   const { doc, setDoc, serverTimestamp } = state.firebaseModules;
   await setDoc(doc(state.db, "seasons", SEASON_ID, "players", uid, "picks", matchId), {
     pick,
@@ -2032,13 +2050,13 @@ async function loadRemotePredictions(uid) {
   if (legacyResult.status === "fulfilled") {
     legacyResult.value.forEach((item) => {
       const data = item.data();
-      if (typeof data.matchId === "string" && ["1", "X", "2"].includes(data.pick)) predictions[data.matchId] = data.pick;
+      if (typeof data.matchId === "string" && typerMatchIds.has(data.matchId) && ["1", "X", "2"].includes(data.pick)) predictions[data.matchId] = data.pick;
     });
   }
   if (currentResult.status === "fulfilled") {
     currentResult.value.forEach((item) => {
       const data = item.data();
-      if (["1", "X", "2"].includes(data.pick)) predictions[item.id] = data.pick;
+      if (typerMatchIds.has(item.id) && ["1", "X", "2"].includes(data.pick)) predictions[item.id] = data.pick;
     });
   }
   if (legacyResult.status === "rejected" && currentResult.status === "rejected") throw currentResult.reason;
@@ -2081,7 +2099,7 @@ async function loadRemoteProfile(uid) {
 async function migrateLegacyLocalPredictions(uid) {
   const source = asRecord(legacyPredictionsByUser[uid]);
   const validEntries = Object.entries(source).filter(([matchId, pick]) => (
-    state.matches.some((match) => match.id === matchId) && ["1", "X", "2"].includes(pick)
+    typerMatchIds.has(matchId) && ["1", "X", "2"].includes(pick)
   ));
   if (!validEntries.length) {
     if (uid in legacyPredictionsByUser) {
@@ -2126,7 +2144,7 @@ async function syncTrustedMatchTimes() {
   if (trustedMatchesSyncPromise) return trustedMatchesSyncPromise;
   if (state.user?.email !== "mateuszjoe@gmail.com" || state.auth?.currentUser?.uid !== state.user.uid || !state.db || !state.firebaseModules) return;
   const confirmedMatches = state.matches
-    .filter((match) => match.kickoffConfirmed && Number.isFinite(new Date(match.kickoffAt).getTime()))
+    .filter((match) => typerMatchIds.has(match.id) && match.matchday <= LAST_MATCHDAY && match.kickoffConfirmed && Number.isFinite(new Date(match.kickoffAt).getTime()))
     .sort((a, b) => a.id.localeCompare(b.id));
   if (!confirmedMatches.length) return;
   const signature = confirmedMatches.map((match) => `${match.id}:${match.matchday}:${new Date(match.kickoffAt).toISOString()}`).join("|");
@@ -2209,7 +2227,7 @@ async function pollLive() {
       });
     });
     syncTrustedMatchTimes();
-    if (dataChanged || state.matches.some((match) => LIVE.has(match.status))) render();
+    if (dataChanged || state.matches.some((match) => typerMatchIds.has(match.id) && LIVE.has(match.status))) render();
   } catch { /* statyczny serwer lub brak adaptera — aplikacja nadal działa */ }
   finally { setTimeout(pollLive, nextDelay); }
 }

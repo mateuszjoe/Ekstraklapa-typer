@@ -69,12 +69,13 @@ function normalizeFixture(item) {
   if (!home || !away || !Number.isInteger(week)) return null;
 
   const localMatch = localMatchByTeamsAndWeek.get(`${week}:${home.id}:${away.id}`);
+  if (!localMatch) return null;
   const kickoffAt = item.postponed_datetime || item.match_datetime || null;
   const status = STATUS_MAP[item.status] || String(item.status || "NS").toUpperCase();
 
   return {
     providerId: String(item.match_id),
-    localMatchId: localMatch?.id || null,
+    localMatchId: localMatch.id,
     kickoffAt,
     status,
     elapsed: null,

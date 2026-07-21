@@ -21,7 +21,7 @@ export const teams = [
 
 export const teamById = Object.fromEntries(teams.map((team) => [team.id, team]));
 
-const firstLeg = [
+const autumnRounds = [
   [["wisla-krakow","gks-katowice"],["radomiak","wieczysta"],["pogon","legia"],["rakow","wisla-plock"],["widzew","motor"],["jagiellonia","korona"],["gornik-zabrze","slask"],["zaglebie","piast"],["lech","cracovia"]],
   [["motor","jagiellonia"],["korona","gornik-zabrze"],["wieczysta","lech"],["cracovia","pogon"],["legia","zaglebie"],["gks-katowice","radomiak"],["slask","rakow"],["piast","wisla-krakow"],["wisla-plock","widzew"]],
   [["korona","legia"],["wisla-krakow","wisla-plock"],["radomiak","gornik-zabrze"],["pogon","motor"],["rakow","zaglebie"],["gks-katowice","wieczysta"],["slask","cracovia"],["jagiellonia","widzew"],["lech","piast"]],
@@ -42,8 +42,7 @@ const firstLeg = [
 ];
 
 const roundDates = [
-  "2026-07-25","2026-08-01","2026-08-08","2026-08-15","2026-08-22","2026-08-29","2026-09-05","2026-09-12","2026-09-19","2026-10-10","2026-10-17","2026-10-24","2026-10-31","2026-11-07","2026-11-21","2026-11-28","2026-12-05",
-  "2026-12-12","2027-01-30","2027-02-06","2027-02-13","2027-02-20","2027-02-27","2027-03-06","2027-03-13","2027-03-20","2027-04-03","2027-04-10","2027-04-17","2027-04-23","2027-05-01","2027-05-08","2027-05-15","2027-05-22"
+  "2026-07-25","2026-08-01","2026-08-08","2026-08-15","2026-08-22","2026-08-29","2026-09-05","2026-09-12","2026-09-19","2026-10-10","2026-10-17","2026-10-24","2026-10-31","2026-11-07","2026-11-21","2026-11-28","2026-12-05"
 ];
 
 const exactKickoffs = {
@@ -85,12 +84,7 @@ const exactKickoffs = {
   "4-piast-wieczysta":"2026-08-17T19:00:00+02:00"
 };
 
-const allRounds = [
-  ...firstLeg,
-  ...firstLeg.map((round) => round.map(([home, away]) => [away, home]))
-];
-
-export const matches = allRounds.flatMap((round, roundIndex) => {
+export const matches = autumnRounds.flatMap((round, roundIndex) => {
   const matchday = roundIndex + 1;
   return round.map(([home, away], index) => {
     const id = `${matchday}-${home}-${away}`;
@@ -98,7 +92,6 @@ export const matches = allRounds.flatMap((round, roundIndex) => {
     return {
       id,
       matchday,
-      leg: matchday <= 17 ? 1 : 2,
       home,
       away,
       kickoffAt: exact || `${roundDates[roundIndex]}T13:00:00+02:00`,

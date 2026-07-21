@@ -23,12 +23,18 @@ service cloud.firestore {
     function matchOpen(seasonId, matchId) {
       return seasonId == '2026-27'
         && exists(/databases/$(database)/documents/seasons/$(seasonId)/matches/$(matchId))
+        && get(/databases/$(database)/documents/seasons/$(seasonId)/matches/$(matchId)).data.matchday is int
+        && get(/databases/$(database)/documents/seasons/$(seasonId)/matches/$(matchId)).data.matchday >= 1
+        && get(/databases/$(database)/documents/seasons/$(seasonId)/matches/$(matchId)).data.matchday <= 17
         && request.time < get(/databases/$(database)/documents/seasons/$(seasonId)/matches/$(matchId)).data.closesAt;
     }
 
     function matchRevealed(seasonId, matchId) {
       return seasonId == '2026-27'
         && exists(/databases/$(database)/documents/seasons/$(seasonId)/matches/$(matchId))
+        && get(/databases/$(database)/documents/seasons/$(seasonId)/matches/$(matchId)).data.matchday is int
+        && get(/databases/$(database)/documents/seasons/$(seasonId)/matches/$(matchId)).data.matchday >= 1
+        && get(/databases/$(database)/documents/seasons/$(seasonId)/matches/$(matchId)).data.matchday <= 17
         && request.time >= get(/databases/$(database)/documents/seasons/$(seasonId)/matches/$(matchId)).data.revealsAt;
     }
 
@@ -55,7 +61,7 @@ service cloud.firestore {
         && matchId.size() <= 180
         && request.resource.data.matchday is int
         && request.resource.data.matchday >= 1
-        && request.resource.data.matchday <= 34
+        && request.resource.data.matchday <= 17
         && request.resource.data.closesAt is timestamp
         && request.resource.data.revealsAt is timestamp
         && request.resource.data.revealsAt == request.resource.data.closesAt
@@ -71,7 +77,7 @@ service cloud.firestore {
         && request.resource.data.signature.size() <= 100000
         && request.resource.data.matchCount is int
         && request.resource.data.matchCount > 0
-        && request.resource.data.matchCount <= 306
+        && request.resource.data.matchCount <= 153
         && request.resource.data.updatedAt == request.time
         && request.resource.data.keys().hasOnly(['seasonId', 'signature', 'matchCount', 'updatedAt']);
     }

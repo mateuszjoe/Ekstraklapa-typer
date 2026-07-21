@@ -19,6 +19,7 @@ const requestTimeoutMs = 12_000;
 const runtimeDir = join(root, ".cache");
 const stateFile = join(runtimeDir, "ekstraklasa-match-center-state.json");
 const manualResultsFile = join(root, "manual-results.json");
+const typerMatchIds = new Set(baseMatches.map((match) => match.id));
 
 const NO_LONGER_LIVE = new Set(["FT", "AWD", "CANC", "PST"]);
 const mime = {
@@ -118,6 +119,9 @@ async function loadProviderState() {
   try {
     const saved = JSON.parse(await readFile(stateFile, "utf8"));
     providerState = { ...providerState, ...saved };
+    providerState.schedule = Array.isArray(providerState.schedule)
+      ? providerState.schedule.filter((fixture) => typerMatchIds.has(fixture?.localMatchId))
+      : [];
   } catch (error) {
     if (error.code !== "ENOENT") console.warn("Nie udało się odczytać cache Centrum Meczowego:", error.message);
   }
@@ -187,13 +191,14 @@ function normalizeFixture(item) {
   const homeId = resolveLocalTeamId(item.home_team_name, item.home_team_code);
   const awayId = resolveLocalTeamId(item.away_team_name, item.away_team_code);
   const localMatch = baseMatches.find((match) => match.home === homeId && match.away === awayId);
+  if (!localMatch) return null;
   const kickoffAt = item.postponed && item.postponed_datetime
     ? item.postponed_datetime
     : item.match_datetime || (item.date && item.local_time ? `${item.date}T${item.local_time}+02:00` : null);
 
   return {
     providerId: item.match_id,
-    localMatchId: localMatch?.id || null,
+    localMatchId: localMatch.id,
     kickoffAt,
     status: normalizeProviderStatus(item.status, item.postponed),
     elapsed: null,
@@ -216,8 +221,11 @@ function normalizeFixture(item) {
 }
 
 function mergeFixtures(fixtures) {
-  const byId = new Map(providerState.schedule.map((fixture) => [String(fixture.providerId), fixture]));
-  fixtures.forEach((fixture) => byId.set(String(fixture.providerId), fixture));
+  const currentFixtures = providerState.schedule.filter((fixture) => typerMatchIds.has(fixture?.localMatchId));
+  const byId = new Map(currentFixtures.map((fixture) => [String(fixture.providerId), fixture]));
+  fixtures
+    .filter((fixture) => fixture && typerMatchIds.has(fixture.localMatchId))
+    .forEach((fixture) => byId.set(String(fixture.providerId), fixture));
   providerState.schedule = [...byId.values()].sort((a, b) => {
     const first = new Date(a.kickoffAt || 0).getTime();
     const second = new Date(b.kickoffAt || 0).getTime();
@@ -289,7 +297,7 @@ async function refreshFullSchedule() {
   const params = new URLSearchParams({ season_id: providerState.seasonId });
   const payload = await apiFetch(`/v1/matches?${params}`);
   if (!Array.isArray(payload?.data)) throw new Error("Centrum Meczowe zwróciło nieprawidłową listę meczów");
-  providerState.schedule = payload.data.map(normalizeFixture);
+  providerState.schedule = payload.data.map(normalizeFixture).filter(Boolean);
   providerState.fullScheduleUpdatedAt = nowIso();
   providerState.scheduleUpdatedAt = nowIso();
   providerState.lastSuccessAt = nowIso();
@@ -306,7 +314,7 @@ async function pollCurrentWeek() {
   });
   const payload = await apiFetch(`/v1/matches?${params}`);
   if (!Array.isArray(payload?.data)) throw new Error("Centrum Meczowe zwróciło nieprawidłową listę meczów");
-  mergeFixtures(payload.data.map(normalizeFixture));
+  mergeFixtures(payload.data.map(normalizeFixture).filter(Boolean));
   providerState.scheduleUpdatedAt = nowIso();
   providerState.lastSuccessAt = nowIso();
 }
@@ -317,7 +325,7 @@ async function pollPlayingMatches() {
   const payload = await apiFetch(`/v1/matches?${params}`);
   if (!Array.isArray(payload?.data)) throw new Error("Centrum Meczowe zwróciło nieprawidłową listę meczów LIVE");
 
-  const liveFixtures = payload.data.map(normalizeFixture);
+  const liveFixtures = payload.data.map(normalizeFixture).filter(Boolean);
   const liveIds = new Set(liveFixtures.map((fixture) => String(fixture.providerId)));
   const previouslyLive = providerState.schedule.filter((fixture) => (
     fixture.status === "LIVE" && !liveIds.has(String(fixture.providerId))
@@ -411,7 +419,7 @@ async function readManualResults() {
 
 async function fixturesWithManualResults() {
   const manual = await readManualResults();
-  const fixtures = [...providerState.schedule];
+  const fixtures = providerState.schedule.filter((fixture) => typerMatchIds.has(fixture?.localMatchId));
   for (const [matchId, result] of Object.entries(manual.results || {})) {
     const match = baseMatches.find((item) => item.id === matchId);
     if (!match) continue;

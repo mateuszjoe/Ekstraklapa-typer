@@ -7,7 +7,7 @@ export default function Home() {
 
     const script = document.createElement("script");
     script.type = "module";
-    script.src = "/legacy/app.js?v=11";
+    script.src = "/legacy/app.js?v=12";
     script.dataset.ekstraklasaRuntime = "true";
     document.body.appendChild(script);
   }, []);
@@ -18,7 +18,7 @@ export default function Home() {
         <meta charSet="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <meta name="theme-color" content="#0d0d0d" />
-        <meta name="description" content="Ekstraklasa Typer 2026/27 — prosty typer 1X2 ze znajomymi." />
+        <meta name="description" content="Ekstraklasa Typer 2026/27 — typowanie 1X2 rundy jesiennej ze znajomymi." />
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
         <meta name="apple-mobile-web-app-title" content="Ekstraklasa Typer" />
@@ -43,7 +43,7 @@ export default function Home() {
 
       <footer>
         <div className="footer-brand"><img src="/assets/brand/logo-compact.png" alt="Ekstraklasa Typer" /></div>
-        <p>Typowanie 1X2 · Runda 1 i Runda 2</p>
+        <p>Typowanie 1X2 · Runda jesienna</p>
         <span>Sezon 2026/27</span>
       </footer>
 
