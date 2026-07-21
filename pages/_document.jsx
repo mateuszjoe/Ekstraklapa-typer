@@ -39,7 +39,7 @@ export default function Document() {
         <link rel="manifest" href="/manifest.webmanifest?v=14" />
         <link rel="preload" as="image" href="/assets/brand/app-icon-192.png?v=14" />
         <style dangerouslySetInnerHTML={{ __html: loaderCss }} />
-        <link rel="stylesheet" href="/styles.css?v=16" />
+        <link rel="stylesheet" href="/styles.css?v=17" />
       </Head>
       <body>
         <div id="appLoader" role="status" aria-live="polite" aria-label="Wczytywanie Ekstraklasa Typer">

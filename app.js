@@ -529,6 +529,14 @@ function settingsView() {
         <div class="settings-panel-heading"><span>04</span><div><h3>Gotowe avatary</h3><p>Wybierz jeden z 18 gotowych motywów.</p></div></div>
         <div class="stock-avatar-grid">${stockAvatars.map((avatar) => `<button class="avatar-choice stock-avatar-choice ${currentType === "stock" && currentValue === avatar.id ? "is-selected" : ""}" data-avatar-type="stock" data-avatar-value="${avatar.id}" aria-pressed="${currentType === "stock" && currentValue === avatar.id}" ${disabled}><img src="${escapeHtml(avatar.src)}" alt=""><span>${escapeHtml(avatar.label)}</span></button>`).join("")}</div>
       </article>
+
+      <article class="settings-panel settings-account-panel">
+        <div class="settings-panel-heading"><span>05</span><div><h3>Konto</h3><p>Zakończ sesję na tym urządzeniu. Twoje zapisane typy i ustawienia pozostaną na koncie.</p></div></div>
+        <div class="settings-account-row">
+          <div><strong>${escapeHtml(state.user.name)}</strong><span>${escapeHtml(state.user.email || "Konto Google")}</span></div>
+          <button type="button" class="settings-signout-button" data-sign-out>WYLOGUJ SIĘ</button>
+        </div>
+      </article>
     </div>
   </section>`;
 }

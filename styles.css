@@ -221,6 +221,12 @@ svg { width: 1.1em; height: 1.1em; fill: none; stroke: currentColor; stroke-widt
 .profile-name-save { min-height: 44px; justify-content: center; }
 .profile-name-save:disabled { cursor: wait; opacity: .58; transform: none; box-shadow: 3px 3px 0 var(--paper-strong); }
 .profile-name-help { grid-column: 1 / -1; color: var(--muted); font-size: 9px; line-height: 1.5; }
+.settings-account-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 16px 18px; color: white; background: var(--ink); border: 2px solid var(--ink); border-radius: 10px; box-shadow: 4px 4px 0 var(--yellow); }
+.settings-account-row > div { min-width: 0; display: grid; gap: 5px; }
+.settings-account-row strong { overflow-wrap: anywhere; font-size: 12px; }
+.settings-account-row span { overflow: hidden; color: #b9b2a7; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.settings-signout-button { min-height: 43px; flex: 0 0 auto; padding: 10px 18px; color: var(--ink); background: var(--yellow); border: 2px solid var(--yellow); border-radius: 8px; box-shadow: 4px 4px 0 var(--green); font-size: 10px; font-weight: 900; letter-spacing: .03em; transition: transform .15s, box-shadow .15s, background .15s; }
+.settings-signout-button:hover { background: var(--white); box-shadow: 2px 2px 0 var(--green); transform: translate(2px, 2px); }
 .avatar-source-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .avatar-source-card, .avatar-upload-card { position: relative; min-height: 94px; display: flex; align-items: center; gap: 14px; padding: 13px; color: var(--ink); text-align: left; background: var(--paper); border: 2px solid var(--line); border-radius: 10px; transition: transform .15s, border-color .15s, box-shadow .15s; }
 .avatar-source-card:hover, .avatar-upload-card:hover, .avatar-choice:hover { border-color: var(--ink); transform: translateY(-2px); }
@@ -569,6 +575,8 @@ footer { min-height: 96px; padding: 20px clamp(25px, 7vw, 110px); color: #b7b0a3
   .settings-panel-heading { gap: 9px; }
   .profile-name-form { grid-template-columns: 1fr; }
   .profile-name-help { grid-column: auto; }
+  .settings-account-row { align-items: stretch; flex-direction: column; }
+  .settings-signout-button { width: 100%; }
   .stock-avatar-grid { grid-template-columns: 1fr; }
   .rule-banner { gap: 10px; }
   .rule-stat { justify-content: flex-start; }
