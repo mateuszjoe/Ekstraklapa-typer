@@ -181,7 +181,9 @@ svg { width: 1.1em; height: 1.1em; fill: none; stroke: currentColor; stroke-widt
 .ranking-row small { background: var(--green); color: var(--ink); border-radius: 12px; padding: 2px 6px; font-size: 7px; font-weight: 900; }
 .ranking-row.me { background: #fff8d8; box-shadow: inset 5px 0 0 var(--green); }
 .ranking-row.me > b { color: var(--green-dark); }
-.demo-caption { color: var(--muted); text-align: center; font-size: 9px; margin-top: 14px; }
+.ranking-empty { grid-column: 1 / -1; display: grid; gap: 6px; padding: 34px 20px; text-align: center; color: var(--muted); }
+.ranking-empty strong { color: var(--ink); font-size: 13px; }
+.ranking-empty span { font-size: 9px; }
 .rules-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; }
 .rules-grid article { position: relative; padding: 27px; min-height: 240px; background: var(--white); border: 2px solid var(--ink); border-radius: 10px; box-shadow: 4px 4px 0 rgba(13,13,13,.08); }
 .rules-grid article > b { position: absolute; right: 20px; top: 17px; color: #e5dfd2; font: 700 35px Space Grotesk; }
@@ -205,11 +207,8 @@ svg { width: 1.1em; height: 1.1em; fill: none; stroke: currentColor; stroke-widt
 .provider span { width: 20px; font-size: 17px; }
 .provider:disabled { cursor: wait; opacity: .58; box-shadow: none; }
 .provider.google span { display: grid; place-items: center; width: 25px; height: 25px; border-radius: 50%; color: white; background: conic-gradient(from -45deg, #4285f4 0 25%, #34a853 0 50%, #fbbc05 0 75%, #ea4335 0); font: 900 13px Manrope; }
-.provider.demo { background: var(--yellow); color: var(--ink); border-color: var(--ink); box-shadow: 3px 3px 0 var(--green); }
 .provider.signout { margin-top: 20px; color: white; background: var(--ink); }
 .account-modal h2 { overflow-wrap: anywhere; }
-.or { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 8px; margin: 15px 0; }
-.or::before, .or::after { content: ""; height: 1px; flex: 1; background: var(--line); }
 .auth-modal > small { display: block; text-align: center; color: var(--muted); font-size: 8px; margin-top: 15px; }
 .match-modal { width: min(650px, calc(100vw - 28px)); }
 .modal-score { margin: 30px 0; display: grid; grid-template-columns: 1fr 100px 1fr; align-items: center; text-align: center; }

@@ -20,21 +20,19 @@ function loadSavedState() {
 }
 
 const saved = loadSavedState();
-const savedLocalUser = saved.user?.provider === "demo" ? saved.user : null;
-if (saved.user && !savedLocalUser) {
-  delete saved.user;
+const deprecatedLocalKeys = ["user", "predictions", "anonymousPredictions"];
+if (deprecatedLocalKeys.some((key) => key in saved)) {
+  deprecatedLocalKeys.forEach((key) => delete saved[key]);
   localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
 }
-const savedAnonymousPredictions = saved.anonymousPredictions || saved.predictions || {};
 const requestedView = location.hash.slice(1);
 const state = {
   view: VIEWS.has(requestedView) ? requestedView : "matches",
   leg: Number(saved.leg || 1),
   matchday: Number(saved.matchday || 1),
-  predictions: { ...savedAnonymousPredictions },
-  anonymousPredictions: { ...savedAnonymousPredictions },
+  predictions: {},
   predictionsByUser: saved.predictionsByUser || {},
-  user: savedLocalUser,
+  user: null,
   matches: baseMatches.map((match) => ({ ...match })),
   liveSignature: "",
   auth: null,
@@ -48,11 +46,6 @@ const state = {
 if (location.hash && !VIEWS.has(requestedView)) {
   history.replaceState(null, "", `${location.pathname}${location.search}#matches`);
 }
-
-const demoPlayers = [
-  ["Marek K.", 12, 18, 67], ["Ola W.", 11, 18, 61], ["Krzysztof P.", 10, 18, 56],
-  ["Ania S.", 9, 18, 50], ["Bartek M.", 8, 18, 44]
-];
 
 async function finishLoadingScreen() {
   const fontsReady = document.fonts?.ready || Promise.resolve();
@@ -77,15 +70,11 @@ async function finishLoadingScreen() {
 function save() {
   if (state.user?.provider === "google.com") {
     state.predictionsByUser[state.user.uid] = { ...state.predictions };
-  } else {
-    state.anonymousPredictions = { ...state.predictions };
   }
   localStorage.setItem(STORAGE_KEY, JSON.stringify({
     leg: state.leg,
     matchday: state.matchday,
-    anonymousPredictions: state.anonymousPredictions,
-    predictionsByUser: state.predictionsByUser,
-    user: state.user?.provider === "demo" ? state.user : null
+    predictionsByUser: state.predictionsByUser
   }));
 }
 
@@ -237,18 +226,19 @@ function matchesView() {
 function rankingView() {
   const ownPoints = state.matches.reduce((sum, match) => sum + pointsFor(match), 0);
   const ownTyped = Object.keys(state.predictions).length;
-  const players = state.user ? [[state.user.name, ownPoints, ownTyped, ownTyped ? Math.round(ownPoints / ownTyped * 100) : 0, true], ...demoPlayers] : demoPlayers;
+  const player = state.user
+    ? [state.user.name, ownPoints, ownTyped, ownTyped ? Math.round(ownPoints / ownTyped * 100) : 0]
+    : null;
   return `<section class="subpage-hero"><p class="eyebrow">KLASYFIKACJA</p><h1>Ranking typerów</h1><p>Każdy trafiony rezultat to dokładnie jeden punkt.</p></section>
     <section class="content-section narrow">
-      ${!state.user ? `<div class="notice">Zaloguj się, żeby pojawić się w rankingu i zapisywać typy między urządzeniami.</div>` : ""}
+      ${!state.user ? `<div class="notice">Zaloguj się przez Google, żeby pojawić się w rankingu i zapisywać typy między urządzeniami.</div>` : ""}
       <div class="ranking-card">
         <div class="ranking-head"><span>#</span><span>Gracz</span><span>Punkty</span><span>Typy</span><span>Skuteczność</span></div>
-        ${players.sort((a,b) => b[1]-a[1]).map((player,index) => {
+        ${player ? (() => {
           const playerName = String(player[0] || "Gracz");
-          return `<div class="ranking-row ${player[4] ? "me" : ""}"><b>${index + 1}</b><span><i>${escapeHtml(playerName.slice(0,1))}</i><strong>${escapeHtml(playerName)}</strong>${player[4] ? "<small>TY</small>" : ""}</span><strong>${player[1]}</strong><span>${player[2]}</span><span>${player[3]}%</span></div>`;
-        }).join("")}
+          return `<div class="ranking-row me"><b>—</b><span><i>${escapeHtml(playerName.slice(0,1))}</i><strong>${escapeHtml(playerName)}</strong><small>TY</small></span><strong>${player[1]}</strong><span>${player[2]}</span><span>${player[3]}%</span></div>`;
+        })() : `<div class="ranking-empty"><strong>Brak graczy do wyświetlenia</strong><span>Ranking pokazuje wyłącznie prawdziwe konta Google — bez fikcyjnych wpisów.</span></div>`}
       </div>
-      <p class="demo-caption">Pozostali gracze są danymi demonstracyjnymi do czasu podłączenia Firebase.</p>
     </section>`;
 }
 
@@ -288,6 +278,11 @@ function bindRendered() {
 }
 
 async function setPrediction(matchId, pick) {
+  if (!state.user || state.user.provider !== "google.com" || state.auth?.currentUser?.uid !== state.user.uid) {
+    document.querySelector("#authDialog")?.showModal();
+    notify("Zaloguj się przez Google, aby oddać typ");
+    return;
+  }
   const match = state.matches.find((item) => item.id === matchId);
   if (!match || isLocked(match)) return notify("Ten mecz już się rozpoczął — typ jest zamknięty.");
   state.predictions[matchId] = pick;
@@ -352,9 +347,7 @@ function openAccountDialog() {
   const dialog = document.querySelector("#accountDialog");
   if (!dialog || !state.user) return;
   dialog.querySelector("#accountName").textContent = state.user.name;
-  dialog.querySelector("#accountDetails").textContent = state.user.provider === "google.com"
-    ? state.user.email || "Zalogowano przez Google"
-    : "Tryb demonstracyjny · dane tylko na tym urządzeniu";
+  dialog.querySelector("#accountDetails").textContent = state.user.email || "Zalogowano przez Google";
   dialog.showModal();
 }
 
@@ -365,15 +358,6 @@ function updateCountdowns() {
     const days = Math.floor(delta / 86400000); const hours = Math.floor(delta % 86400000 / 3600000);
     node.textContent = days ? `Start za ${days} dni i ${hours} godz.` : `Start za ${hours} godz.`;
   });
-}
-
-function loginDemo() {
-  state.user = { uid: "demo-local", name: "Gracz Demo", provider: "demo" };
-  state.predictions = { ...state.anonymousPredictions };
-  save();
-  document.querySelector("#authDialog")?.close();
-  render();
-  notify("Uruchomiono tryb demonstracyjny na tym urządzeniu");
 }
 
 function isInAppBrowser() {
@@ -398,15 +382,13 @@ async function handleAuthState(user) {
   if (!user) {
     if (state.user?.provider === "google.com") {
       state.user = null;
-      state.predictions = { ...state.anonymousPredictions };
+      state.predictions = {};
       save();
     }
     render();
     return;
   }
 
-  const previousWasGoogle = state.user?.provider === "google.com";
-  const pendingLocal = previousWasGoogle ? {} : { ...state.anonymousPredictions };
   const cached = state.predictionsByUser[user.uid] || {};
   state.user = {
     uid: user.uid,
@@ -425,9 +407,8 @@ async function handleAuthState(user) {
 
   if (state.auth?.currentUser?.uid !== user.uid) return;
 
-  state.predictions = { ...cached, ...pendingLocal, ...remote };
+  state.predictions = { ...cached, ...remote };
   state.predictionsByUser[user.uid] = { ...state.predictions };
-  if (Object.keys(pendingLocal).length) state.anonymousPredictions = {};
   save();
   render();
   document.querySelector("#authDialog")?.close();
@@ -513,10 +494,9 @@ async function logout() {
   }
 
   state.user = null;
-  state.predictions = { ...state.anonymousPredictions };
+  state.predictions = {};
   save();
   render();
-  notify("Wyłączono tryb demonstracyjny");
 }
 
 async function saveRemotePrediction(matchId, pick) {
@@ -641,8 +621,7 @@ document.addEventListener("click", (event) => {
 
   const providerButton = event.target.closest?.("#authDialog [data-provider]");
   if (providerButton) {
-    if (providerButton.dataset.provider === "demo") loginDemo();
-    else loginGoogle();
+    loginGoogle();
     return;
   }
 

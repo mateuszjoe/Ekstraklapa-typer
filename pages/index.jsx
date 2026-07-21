@@ -7,7 +7,7 @@ export default function Home() {
 
     const script = document.createElement("script");
     script.type = "module";
-    script.src = "/legacy/app.js";
+    script.src = "/legacy/app.js?v=7";
     script.dataset.ekstraklasaRuntime = "true";
     document.body.appendChild(script);
   }, []);
@@ -53,8 +53,6 @@ export default function Home() {
         <h2>Zaloguj się i typuj</h2>
         <p className="modal-copy">Twoje typy będą dostępne na każdym urządzeniu. Jeden klik i jesteś w grze.</p>
         <button className="provider google" data-provider="google"><span>G</span> Kontynuuj przez Google</button>
-        <div className="or"><span>lub lokalnie</span></div>
-        <button className="provider demo" data-provider="demo">Uruchom konto demonstracyjne</button>
         <small>Logując się, akceptujesz zasady prywatnej ligi.</small>
       </dialog>
 

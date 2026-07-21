@@ -16,7 +16,7 @@ npm run dev
 
 Aplikacja będzie dostępna pod adresem `http://localhost:5173`.
 
-Bez dodatkowej konfiguracji działa pełny interfejs, terminarz, typowanie zapisywane lokalnie i konto demonstracyjne.
+Pełny interfejs i terminarz są dostępne publicznie. Oddawanie typów wymaga zalogowania prawdziwym kontem Google.
 
 Po publikacji przez HTTPS aplikację można dodać do ekranu głównego telefonu. Manifest wykorzystuje osobne ikony 192 × 192 i 512 × 512, a urządzenia Apple plik 180 × 180.
 
@@ -27,7 +27,6 @@ Aplikacja korzysta z osobnego projektu Firebase `ekstraklasa-typer-2026-27`. Pub
 - domena produkcyjna `ekstraklasa-typer.mateuszjoe.chatgpt.site` i `localhost` muszą znajdować się w Firebase Authentication → Authorized domains;
 - typy zalogowanego gracza zapisują się w Firestore i synchronizują między urządzeniami;
 - dostęp do dokumentów zabezpieczają reguły z `firestore.rules`;
-- konto demonstracyjne zapisuje dane wyłącznie w tej przeglądarce;
 - Facebook nie jest używany jako dostawca logowania.
 
 Konfigurację backendu wdraża się poleceniami `firebase deploy --only auth` oraz `firebase deploy --only firestore:rules`.
