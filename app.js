@@ -428,10 +428,7 @@ function prizePoolHtml() {
 
   const players = Math.max(0, state.participantCount);
   if (players < MINIMUM_PLAYERS) {
-    return `<div class="prize-pool-card">
-      <div class="prize-pool-head"><div><p class="eyebrow">PULA NAGRÓD</p><h3>${players} z ${MINIMUM_PLAYERS} graczy</h3></div><strong>${players}/${MINIMUM_PLAYERS}</strong></div>
-      <div class="prize-pool-waiting"><strong>Nie uzbierano minimalnej liczby graczy.</strong><span>Kwoty nagród pojawią się automatycznie po dołączeniu piątego gracza.</span></div>
-    </div>`;
+    return `<div class="prize-pool-card"><div class="prize-pool-waiting"><strong>Nie uzbierano minimalnej liczby graczy.</strong></div></div>`;
   }
 
   const totalPool = players * ENTRY_FEE;
