@@ -1,12 +1,12 @@
-const CACHE_NAME = "ekstraklapa-typer-v1";
+const CACHE_NAME = "ekstraklasa-typer-v2";
 const OFFLINE_ASSETS = [
   "./",
-  "./index.html",
   "./styles.css",
-  "./app.js",
-  "./data.js",
-  "./firebase-config.js",
   "./manifest.webmanifest",
+  "./assets/fonts/manrope-latin.woff2",
+  "./assets/fonts/manrope-latin-ext.woff2",
+  "./assets/fonts/space-grotesk-latin.woff2",
+  "./assets/fonts/space-grotesk-latin-ext.woff2",
   "./assets/brand/app-icon-192.png",
   "./assets/brand/app-icon-512.png",
   "./assets/brand/brand-mark.png"

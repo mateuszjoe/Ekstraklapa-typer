@@ -2,10 +2,6 @@ import { matches as baseMatches, teamById, teams, roundDatesByNumber } from "./d
 import { firebaseConfig } from "./firebase-config.js";
 
 const app = document.querySelector("#app");
-const authDialog = document.querySelector("#authDialog");
-const matchDialog = document.querySelector("#matchDialog");
-const toast = document.querySelector("#toast");
-const authButton = document.querySelector("#authButton");
 const STORAGE_KEY = "ekstraklasa-typer-state-v1";
 const FINAL = new Set(["FT", "AET", "PEN", "AWD", "WO", "FINISHED", "AWARDED"]);
 const LIVE = new Set(["1H", "HT", "2H", "ET", "BT", "P", "LIVE", "IN_PLAY", "PAUSED"]);
@@ -72,7 +68,6 @@ function pointsFor(match) {
 
 function setView(view) {
   state.view = view;
-  location.hash = view;
   document.querySelectorAll(".nav-link").forEach((node) => node.classList.toggle("is-active", node.dataset.view === view));
   document.querySelector(".main-nav").classList.remove("is-open");
   render();
@@ -203,6 +198,7 @@ function rulesView() {
 
 function render() {
   app.innerHTML = state.view === "ranking" ? rankingView() : state.view === "live" ? liveView() : state.view === "rules" ? rulesView() : matchesView();
+  document.querySelectorAll(".nav-link").forEach((node) => node.classList.toggle("is-active", node.dataset.view === state.view));
   updateAuthButton();
   bindRendered();
   updateCountdowns();
@@ -233,17 +229,19 @@ function showMatchCentre(matchId) {
   const match = state.matches.find((item) => item.id === matchId);
   const home = teamById[match.home], away = teamById[match.away];
   const status = LIVE.has(match.status) ? `LIVE${match.liveElapsed ? ` · ${match.liveElapsed}'` : ""}` : FINAL.has(match.status) ? "Mecz zakończony" : "Mecz zaplanowany";
+  const matchDialog = document.querySelector("#matchDialog");
   matchDialog.innerHTML = `<button class="modal-close" data-close>×</button><p class="eyebrow">WYNIK MECZU</p><div class="modal-score"><div><img src="${home.crest}" alt=""><b>${home.name}</b></div><strong>${Number.isFinite(match.homeScore) ? `${match.homeScore} : ${match.awayScore}` : "– : –"}</strong><div><img src="${away.crest}" alt=""><b>${away.name}</b></div></div><p class="no-events">${status}</p>`;
-  matchDialog.querySelector("[data-close]").addEventListener("click", () => matchDialog.close());
   matchDialog.showModal();
 }
 
 function notify(message) {
+  const toast = document.querySelector("#toast");
   toast.textContent = message; toast.classList.add("show");
   setTimeout(() => toast.classList.remove("show"), 2400);
 }
 
 function updateAuthButton() {
+  const authButton = document.querySelector("#authButton");
   authButton.innerHTML = state.user ? `<span class="avatar">${state.user.name.slice(0,1).toUpperCase()}</span><span>${state.user.name.split(" ")[0]}</span>` : `<span class="user-icon">◉</span><span>Zaloguj się</span>`;
 }
 
@@ -258,7 +256,7 @@ function updateCountdowns() {
 
 function loginDemo(provider = "demo") {
   state.user = { uid: `${provider}-local`, name: provider === "facebook" ? "Gracz Facebook" : provider === "google" ? "Gracz Google" : "Gracz Demo", provider };
-  save(); authDialog.close(); render(); notify("Zalogowano w trybie lokalnym");
+  save(); document.querySelector("#authDialog")?.close(); render(); notify("Zalogowano w trybie lokalnym");
 }
 
 async function initFirebase() {
@@ -284,7 +282,7 @@ async function login(provider) {
   if (!state.auth) return loginDemo(provider);
   const { GoogleAuthProvider, FacebookAuthProvider, signInWithPopup } = state.firebaseModules;
   const authProvider = provider === "facebook" ? new FacebookAuthProvider() : new GoogleAuthProvider();
-  try { await signInWithPopup(state.auth, authProvider); authDialog.close(); }
+  try { await signInWithPopup(state.auth, authProvider); document.querySelector("#authDialog")?.close(); }
   catch (error) { notify("Logowanie nie powiodło się. Sprawdź konfigurację Firebase."); }
 }
 
@@ -338,12 +336,47 @@ async function pollLive() {
   } catch { /* statyczny serwer lub brak adaptera — aplikacja nadal działa */ }
 }
 
-document.querySelectorAll(".nav-link").forEach((button) => button.addEventListener("click", () => setView(button.dataset.view)));
-document.querySelector("#menuButton").addEventListener("click", () => document.querySelector(".main-nav").classList.toggle("is-open"));
-authButton.addEventListener("click", () => state.user ? notify(`Zalogowany jako ${state.user.name}`) : authDialog.showModal());
-authDialog.querySelector("[data-close]").addEventListener("click", () => authDialog.close());
-authDialog.querySelectorAll("[data-provider]").forEach((button) => button.addEventListener("click", () => button.dataset.provider === "demo" ? loginDemo() : login(button.dataset.provider)));
-matchDialog.addEventListener("click", (event) => { if (event.target === matchDialog) matchDialog.close(); });
+document.addEventListener("click", (event) => {
+  const navButton = event.target.closest?.(".nav-link[data-view]");
+  if (navButton) {
+    event.preventDefault();
+    setView(navButton.dataset.view);
+    return;
+  }
+
+  const routeLink = event.target.closest?.("[data-route]");
+  if (routeLink) {
+    event.preventDefault();
+    setView(routeLink.dataset.route);
+    return;
+  }
+
+  if (event.target.closest?.("#menuButton")) {
+    document.querySelector(".main-nav")?.classList.toggle("is-open");
+    return;
+  }
+
+  if (event.target.closest?.("#authButton")) {
+    if (state.user) notify(`Zalogowany jako ${state.user.name}`);
+    else document.querySelector("#authDialog")?.showModal();
+    return;
+  }
+
+  const providerButton = event.target.closest?.("#authDialog [data-provider]");
+  if (providerButton) {
+    if (providerButton.dataset.provider === "demo") loginDemo();
+    else login(providerButton.dataset.provider);
+    return;
+  }
+
+  const closeButton = event.target.closest?.("dialog [data-close]");
+  if (closeButton) {
+    closeButton.closest("dialog")?.close();
+    return;
+  }
+
+  if (event.target.matches?.("#matchDialog")) event.target.close();
+}, { capture: true });
 window.addEventListener("hashchange", () => { const view = location.hash.slice(1); if (["matches","ranking","live","rules"].includes(view)) setView(view); });
 
 render();
@@ -353,5 +386,7 @@ setInterval(pollLive, 30000);
 setInterval(updateCountdowns, 60000);
 
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
-  window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(() => {}));
+  const registerServiceWorker = () => navigator.serviceWorker.register("./sw.js").catch(() => {});
+  if (document.readyState === "complete") registerServiceWorker();
+  else window.addEventListener("load", registerServiceWorker, { once: true });
 }

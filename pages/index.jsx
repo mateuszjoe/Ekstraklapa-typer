@@ -1,6 +1,17 @@
 import Head from "next/head";
+import { useEffect } from "react";
 
 export default function Home() {
+  useEffect(() => {
+    if (document.querySelector("script[data-ekstraklasa-runtime]")) return;
+
+    const script = document.createElement("script");
+    script.type = "module";
+    script.src = "/legacy/app.js";
+    script.dataset.ekstraklasaRuntime = "true";
+    document.body.appendChild(script);
+  }, []);
+
   return (
     <>
       <Head>
@@ -12,17 +23,10 @@ export default function Home() {
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
         <meta name="apple-mobile-web-app-title" content="Ekstraklasa Typer" />
         <title>Ekstraklasa Typer</title>
-        <link rel="icon" type="image/png" sizes="32x32" href="/assets/brand/favicon-32.png" />
-        <link rel="apple-touch-icon" sizes="180x180" href="/assets/brand/apple-touch-icon.png" />
-        <link rel="manifest" href="/manifest.webmanifest" />
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-        <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet" />
-        <link rel="stylesheet" href="/styles.css" />
       </Head>
 
       <header className="site-header">
-        <a className="brand" href="#mecze" data-route="matches" aria-label="Ekstraklasa Typer — strona główna">
+        <a className="brand" href="#matches" data-route="matches" aria-label="Ekstraklasa Typer — strona główna">
           <span className="brand-mark"><img src="/assets/brand/brand-mark.png" alt="" /></span>
           <span><b>EKSTRAKLASA</b><small>TYPER · 2026/27</small></span>
         </a>
@@ -46,7 +50,7 @@ export default function Home() {
 
       <dialog id="authDialog" className="modal auth-modal">
         <button className="modal-close" data-close aria-label="Zamknij">×</button>
-        <img className="modal-logo" src="/assets/ekstraklasa-2026.png" alt="Ekstraklasa" />
+        <img className="modal-logo" src="/assets/brand/brand-mark.png" alt="Ekstraklasa Typer" />
         <p className="eyebrow">DOŁĄCZ DO GRY</p>
         <h2>Zaloguj się i typuj</h2>
         <p className="modal-copy">Twoje typy będą dostępne na każdym urządzeniu. Jeden klik i jesteś w grze.</p>
@@ -59,7 +63,6 @@ export default function Home() {
 
       <dialog id="matchDialog" className="modal match-modal" />
       <div id="toast" className="toast" role="status" aria-live="polite" />
-      <script type="module" src="/legacy/app.js" />
     </>
   );
 }
