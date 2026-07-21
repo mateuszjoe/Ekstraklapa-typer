@@ -390,7 +390,8 @@ function matchesView() {
   const visible = state.matches
     .filter((match) => match.matchday === state.matchday && !LIVE.has(match.status))
     .sort((a, b) => new Date(a.kickoffAt) - new Date(b.kickoffAt));
-  const roundOptions = Array.from({ length: LAST_MATCHDAY }, (_, index) => index + 1);
+  const matchdayDate = new Intl.DateTimeFormat("pl-PL", { day: "2-digit", month: "long" })
+    .format(new Date(`${roundDatesByNumber[state.matchday]}T12:00:00`));
   const typerMatches = state.matches.filter((match) => typerMatchIds.has(match.id));
   return `${hero()}
     <section class="club-ribbon" aria-label="Kluby sezonu 2026/27">${teams.map((team) => `<img src="${team.crest}" alt="${team.name}" title="${team.name}">`).join("")}</section>
@@ -402,7 +403,11 @@ function matchesView() {
       </div>
       <div class="filters">
         <div class="stage-label"><strong>Runda jesienna</strong><small>kolejki 1–17</small></div>
-        <label class="select-wrap">${icon("calendar")}<select id="matchdaySelect">${roundOptions.map((round) => `<option value="${round}" ${state.matchday === round ? "selected" : ""}>${round}. kolejka · ${new Intl.DateTimeFormat("pl-PL", { day: "2-digit", month: "long" }).format(new Date(`${roundDatesByNumber[round]}T12:00:00`))}</option>`).join("")}</select></label>
+        <nav class="matchday-switcher" aria-label="Przełączanie kolejek">
+          <button type="button" class="matchday-switch-button is-previous" data-matchday-step="-1" aria-label="${state.matchday === 1 ? "To jest pierwsza kolejka" : `Pokaż ${state.matchday - 1}. kolejkę`}" ${state.matchday === 1 ? "disabled" : ""}>${icon("arrow")}<span>Poprzednia</span></button>
+          <div class="matchday-current" aria-live="polite" aria-atomic="true">${icon("calendar")}<span><strong>${state.matchday}. kolejka</strong><small>${matchdayDate}</small></span></div>
+          <button type="button" class="matchday-switch-button is-next" data-matchday-step="1" aria-label="${state.matchday === LAST_MATCHDAY ? "To jest ostatnia kolejka" : `Pokaż ${state.matchday + 1}. kolejkę`}" ${state.matchday === LAST_MATCHDAY ? "disabled" : ""}><span>Następna</span>${icon("arrow")}</button>
+        </nav>
       </div>
       <div class="round-note"><span>${visible.some((m) => !m.kickoffConfirmed) ? "Daty ramowe" : "Terminy potwierdzone"}</span>${visible.some((m) => !m.kickoffConfirmed) ? "Dokładne dni i godziny tej kolejki nie zostały jeszcze opublikowane. Typowanie uruchomi się po potwierdzeniu terminów." : "Godziny zgodne z oficjalnym terminarzem Ekstraklasy."}</div>
       <div class="matches-grid">${visible.map(matchCard).join("")}</div>
@@ -543,13 +548,22 @@ function render() {
 
 function bindRendered() {
   app.querySelectorAll("[data-pick]").forEach((button) => button.addEventListener("click", () => setPrediction(button.dataset.match, button.dataset.pick)));
-  app.querySelector("#matchdaySelect")?.addEventListener("change", (event) => {
-    const matchday = Number(event.target.value);
-    if (!Number.isInteger(matchday) || matchday < 1 || matchday > LAST_MATCHDAY) return;
+  app.querySelectorAll("[data-matchday-step]").forEach((button) => button.addEventListener("click", (event) => {
+    const step = Number(button.dataset.matchdayStep);
+    const matchday = state.matchday + step;
+    if (![-1, 1].includes(step) || !Number.isInteger(matchday) || matchday < 1 || matchday > LAST_MATCHDAY) return;
+    const restoreKeyboardFocus = event.detail === 0;
     state.matchday = matchday;
     save();
     render();
-  });
+    if (restoreKeyboardFocus) {
+      requestAnimationFrame(() => {
+        const sameDirection = app.querySelector(`[data-matchday-step="${step}"]`);
+        const fallbackDirection = app.querySelector(`[data-matchday-step="${-step}"]`);
+        (sameDirection?.disabled ? fallbackDirection : sameDirection)?.focus({ preventScroll: true });
+      });
+    }
+  }));
   app.querySelectorAll("[data-view-jump]").forEach((button) => button.addEventListener("click", () => setView(button.dataset.viewJump)));
   app.querySelector("[data-scroll-matches]")?.addEventListener("click", () => document.querySelector("#mecze")?.scrollIntoView({ behavior: "smooth" }));
   app.querySelectorAll("[data-match-centre]").forEach((button) => button.addEventListener("click", () => showMatchCentre(button.dataset.matchCentre)));

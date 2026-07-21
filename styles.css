@@ -126,8 +126,18 @@ svg { width: 1.1em; height: 1.1em; fill: none; stroke: currentColor; stroke-widt
 .stage-label { min-width: 180px; display: grid; gap: 2px; padding: 9px 17px; color: var(--ink); background: var(--yellow); border: 2px solid var(--ink); border-radius: 7px; box-shadow: 3px 3px 0 var(--ink); }
 .stage-label strong { font-size: 10px; font-weight: 900; }
 .stage-label small { font-size: 8px; font-weight: 600; opacity: .72; }
-.select-wrap { display: flex; align-items: center; gap: 8px; margin-right: 10px; color: var(--green-dark); }
-.select-wrap select { min-width: 210px; border: 0; background: transparent; color: var(--ink); font-size: 11px; font-weight: 700; outline: none; }
+.matchday-switcher { width: min(100%, 490px); display: grid; grid-template-columns: auto minmax(170px, 1fr) auto; align-items: stretch; gap: 8px; }
+.matchday-switch-button { min-height: 50px; padding: 0 13px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; color: var(--ink); background: #fbf8f0; border: 2px solid var(--ink); border-radius: 7px; font-size: 9px; font-weight: 900; text-transform: uppercase; transition: transform .15s, box-shadow .15s, background .15s; }
+.matchday-switch-button:hover:not(:disabled) { background: var(--yellow); box-shadow: 3px 3px 0 var(--green); transform: translate(-1px,-1px); }
+.matchday-switch-button:active:not(:disabled) { box-shadow: none; transform: translate(1px,1px); }
+.matchday-switch-button:disabled { color: #aaa398; background: var(--paper-strong); border-color: #cfc8bb; cursor: not-allowed; opacity: .7; }
+.matchday-switch-button svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; }
+.matchday-switch-button.is-previous svg { transform: rotate(180deg); }
+.matchday-current { min-width: 0; padding: 7px 14px; display: flex; align-items: center; justify-content: center; gap: 10px; color: white; background: var(--ink); border: 2px solid var(--ink); border-radius: 7px; box-shadow: 3px 3px 0 var(--yellow); }
+.matchday-current > svg { width: 19px; height: 19px; flex: 0 0 auto; fill: none; stroke: var(--yellow); stroke-width: 2; }
+.matchday-current > span { min-width: 0; display: grid; gap: 1px; }
+.matchday-current strong { font: 800 12px Space Grotesk; white-space: nowrap; }
+.matchday-current small { overflow: hidden; color: #cec8bc; font-size: 8px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .round-note { display: flex; gap: 14px; align-items: center; color: var(--muted); font-size: 10px; margin: 0 4px 18px; }
 .round-note span { border: 1px solid var(--green-dark); border-radius: 20px; color: var(--green-dark); background: var(--green-soft); padding: 4px 9px; font-weight: 900; white-space: nowrap; }
 .matches-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
@@ -484,8 +494,9 @@ footer { min-height: 96px; padding: 20px clamp(25px, 7vw, 110px); color: #b7b0a3
   .stats-inline { text-align: left; }
   .filters { align-items: stretch; flex-direction: column; gap: 10px; }
   .stage-label { width: 100%; }
-  .select-wrap { padding: 10px; }
-  .select-wrap select { flex: 1; }
+  .matchday-switcher { width: 100%; grid-template-columns: 48px minmax(0, 1fr) 48px; }
+  .matchday-switch-button { min-width: 48px; padding: 0; }
+  .matchday-switch-button span { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
   .matches-grid { grid-template-columns: 1fr; }
   .ranking-head, .ranking-row { grid-template-columns: 34px 1fr 60px; }
   .ranking-head span:nth-child(4), .ranking-head span:nth-child(5), .ranking-row > span:nth-child(4), .ranking-row > span:nth-child(5) { display: none; }
