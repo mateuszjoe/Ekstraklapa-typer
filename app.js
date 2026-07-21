@@ -214,7 +214,13 @@ function rulesView() {
       <article><b>01</b><span>${icon("calendar")}</span><h3>Wybierz 1, X lub 2</h3><p>1 oznacza wygraną gospodarzy, X remis, a 2 wygraną gości. Nie typujemy dokładnych wyników.</p></article>
       <article><b>02</b><span>${icon("lock")}</span><h3>Zdąż przed gwizdkiem</h3><p>Typ możesz zmieniać do rozpoczęcia meczu. Później zostaje automatycznie zablokowany.</p></article>
       <article><b>03</b><span>${icon("trophy")}</span><h3>Zdobądź 1 punkt</h3><p>Za każdy prawidłowy rezultat otrzymujesz jeden punkt. Wygrywa najwyższy wynik po 34. kolejce.</p></article>
-      <div class="rule-banner"><strong>100 zł</strong><span>wpisowe na sezon</span><strong>306</strong><span>meczów</span><strong>34</strong><span>kolejki</span><strong>1</strong><span>punkt za trafienie</span></div>
+      <div class="rule-banner">
+        <div class="rule-stat"><strong>100 zł</strong><span>wstępne wpisowe</span></div>
+        <div class="rule-stat"><strong>306</strong><span>meczów</span></div>
+        <div class="rule-stat"><strong>34</strong><span>kolejki</span></div>
+        <div class="rule-stat"><strong>1</strong><span>punkt za trafienie</span></div>
+      </div>
+      <p class="rule-pool-note"><strong>Ważne:</strong> szczegóły dotyczące podziału puli oraz ostateczna wysokość składki zostaną ustalone wkrótce.</p>
     </section>`;
 }
 
