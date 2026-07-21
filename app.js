@@ -1,5 +1,6 @@
 import { matches as baseMatches, teamById, teams, roundDatesByNumber } from "./data.js";
 import { firebaseConfig } from "./firebase-config.js";
+import { getOfficialLivePayload } from "./live-provider.js";
 
 const bootStartedAt = performance.now();
 const app = document.querySelector("#app");
@@ -109,6 +110,7 @@ const predictionWriteVersions = new Map();
 let chatViewportHandler = null;
 let playerPicksLoadId = 0;
 let trustedMatchesSyncPromise = null;
+let liveTransport = location.hostname.endsWith(".github.io") ? "official" : "server";
 
 if (location.hash && !VIEWS.has(requestedView)) {
   history.replaceState(null, "", `${location.pathname}${location.search}#matches`);
@@ -2298,12 +2300,25 @@ function normalizeName(value) {
   return value.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
 }
 
+async function loadLivePayloadForClient() {
+  if (liveTransport === "server") {
+    try {
+      const response = await fetch("./api/live");
+      const contentType = response.headers.get("content-type") || "";
+      if (!response.ok || !contentType.includes("application/json")) throw new Error(`LIVE HTTP ${response.status}`);
+      return await response.json();
+    } catch (error) {
+      console.warn("Serwerowy kanał LIVE jest niedostępny, używam oficjalnego API bezpośrednio:", error.message);
+      liveTransport = "official";
+    }
+  }
+  return getOfficialLivePayload();
+}
+
 async function pollLive() {
   let nextDelay = 5 * 60_000;
   try {
-    const response = await fetch("./api/live");
-    if (!response.ok) return;
-    const payload = await response.json();
+    const payload = await loadLivePayloadForClient();
     const providerInterval = Number(payload.pollIntervalSeconds) * 1000;
     if (Number.isFinite(providerInterval)) {
       nextDelay = Math.min(5 * 60_000, Math.max(30_000, providerInterval));
@@ -2343,7 +2358,17 @@ async function pollLive() {
     });
     syncTrustedMatchTimes();
     if (dataChanged || state.matches.some((match) => typerMatchIds.has(match.id) && LIVE.has(match.status))) render();
-  } catch { /* statyczny serwer lub brak adaptera — aplikacja nadal działa */ }
+  } catch (error) {
+    let liveStateChanged = false;
+    state.matches.forEach((match) => {
+      if (!LIVE.has(match.status)) return;
+      match.status = "SUSP";
+      match.liveElapsed = null;
+      liveStateChanged = true;
+    });
+    if (liveStateChanged) render();
+    console.warn("Kanał LIVE jest chwilowo niedostępny:", error.message);
+  }
   finally { setTimeout(pollLive, nextDelay); }
 }
 

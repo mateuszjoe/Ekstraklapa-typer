@@ -15,13 +15,12 @@ Projekt pobiera tylko dane potrzebne typerowi: termin, status i wynik. Nie pobie
 
 ## Ograniczanie ruchu
 
-1. `/api/live` składa odpowiedź z historycznych wyników, bieżącej kolejki oraz ewentualnych meczów ze statusem `playing`.
-2. Zakończone wyniki są cache'owane przez 5 minut; świeża bieżąca i poprzednia kolejka oraz mecze LIVE są nakładane na ten zapis.
-3. Podczas okna meczowego wynik odpowiedzi jest współdzielony przez 45 sekund, a poza nim przez 5 minut.
-4. Nagłówek `s-maxage` pozwala cache'owi produkcyjnemu obsłużyć wielu graczy jedną kopią odpowiedzi.
-5. Równoczesne odświeżenia w tej samej instancji są łączone w jedno zapytanie.
+1. Wersja GitHub Pages korzysta z wydzielonego modułu `live-provider.js`, który pobiera dane bezpośrednio z oficjalnego kanału CORS. Lokalny serwer udostępnia ten sam kontrakt przez `/api/live`.
+2. Adapter składa odpowiedź z historycznych wyników, bieżącej i poprzedniej kolejki oraz ewentualnych meczów ze statusem `playing`.
+3. Podczas okna meczowego dane są przechowywane przez 45 sekund, a poza nim przez 5 minut.
+4. Równoczesne odświeżenia w tej samej karcie lub instancji serwera są łączone w jedno zapytanie.
+5. Serwerowy `/api/live` dodatkowo korzysta z cache odpowiedzi, natomiast statyczny GitHub Pages zachowuje cache w pamięci każdej otwartej aplikacji.
 6. Po chwilowej awarii przez maksymalnie 5 minut może zostać zwrócony ostatni poprawny zapis. Potem stary status `LIVE` zmienia się na `SUSP`, aby mecz nie wisiał jako trwający bez końca.
-7. Przeglądarka odpytuje wyłącznie własne `/api/live`, nigdy zewnętrzne API bezpośrednio.
 
 ## Mapowanie statusów
 
@@ -39,7 +38,7 @@ Blok LIVE na stronie głównej pojawia się tylko wtedy, gdy co najmniej jeden m
 
 W bezpośrednim teście endpoint `site.api.espn.com/apis/site/v2/sports/soccer/pol.1/scoreboard` zwracał HTTP 400. Katalog lig ESPN nie zawierał Ekstraklasy, a zbiorczy feed nie zawierał meczów pierwszej kolejki sezonu 2026/27. ESPN nie jest więc obecnie źródłem danych tej aplikacji.
 
-## Kontrakt `/api/live`
+## Kontrakt danych LIVE
 
 Odpowiedź zawiera:
 
