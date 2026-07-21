@@ -351,3 +351,7 @@ initFirebase();
 pollLive();
 setInterval(pollLive, 30000);
 setInterval(updateCountdowns, 60000);
+
+if ("serviceWorker" in navigator && location.protocol !== "file:") {
+  window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(() => {}));
+}

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/brand/brand-mark.png" width="128" alt="Znak Ekstraklasa Typer" />
+</p>
+
 # Ekstraklasa Typer 2026/27
 
 Prywatny typer 1X2 dla sezonu Ekstraklasy 2026/27. Każdy poprawny rezultat (`1`, `X` albo `2`) daje 1 punkt. Nie ma typowania dokładnego wyniku ani prawdziwych pieniędzy.
@@ -13,6 +17,8 @@ npm run dev
 Aplikacja będzie dostępna pod adresem `http://localhost:5173`.
 
 Bez dodatkowej konfiguracji działa pełny interfejs, terminarz, typowanie zapisywane lokalnie i konto demonstracyjne.
+
+Po publikacji przez HTTPS aplikację można dodać do ekranu głównego telefonu. Manifest wykorzystuje osobne ikony 192 × 192 i 512 × 512, a urządzenia Apple plik 180 × 180.
 
 ## Logowanie Google i Facebook
 
