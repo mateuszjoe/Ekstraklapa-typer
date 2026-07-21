@@ -2468,7 +2468,23 @@ pollLive();
 setInterval(updateCountdowns, 60000);
 
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
-  const registerServiceWorker = () => navigator.serviceWorker.register("./sw.js").catch(() => {});
-  if (document.readyState === "complete") registerServiceWorker();
-  else window.addEventListener("load", registerServiceWorker, { once: true });
+  const localPreview = new Set(["localhost", "127.0.0.1", "::1"]).has(location.hostname);
+  if (localPreview) {
+    const clearLocalPwaState = async () => {
+      const registrations = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(registrations.map((registration) => registration.unregister()));
+      if (!("caches" in window)) return;
+      const cacheNames = await caches.keys();
+      await Promise.all(cacheNames
+        .filter((name) => name.startsWith("ekstraklasa-typer-"))
+        .map((name) => caches.delete(name)));
+    };
+    const cleanLocalPreview = () => clearLocalPwaState().catch(() => {});
+    if (document.readyState === "complete") cleanLocalPreview();
+    else window.addEventListener("load", cleanLocalPreview, { once: true });
+  } else {
+    const registerServiceWorker = () => navigator.serviceWorker.register("./sw.js").catch(() => {});
+    if (document.readyState === "complete") registerServiceWorker();
+    else window.addEventListener("load", registerServiceWorker, { once: true });
+  }
 }
