@@ -147,7 +147,7 @@ function matchCard(match) {
       <div class="team away"><img src="${away.crest}" alt="Herb ${away.name}"><span>${away.name}</span></div>
     </div>
     <div class="prediction-row" role="group" aria-label="Typ na mecz ${home.name} — ${away.name}">
-      ${[["1",home.short],["X","REMIS"],["2",away.short]].map(([pick,label]) => `<button data-pick="${pick}" data-match="${match.id}" class="pick ${prediction === pick ? "selected" : ""}" ${locked ? "disabled" : ""}><b>${pick}</b><small>${label}</small></button>`).join("")}
+      ${[["1",home.short],["X","REMIS"],["2",away.short]].map(([pick,label]) => `<button data-pick="${pick}" data-match="${match.id}" class="pick ${prediction === pick ? "selected" : ""}" aria-pressed="${prediction === pick}" ${locked ? "disabled" : ""}><b>${pick}</b><small>${label}</small></button>`).join("")}
     </div>
     ${(live || final) ? `<button class="match-centre-link" data-match-centre="${match.id}">Szczegóły wyniku ${icon("arrow")}</button>` : ""}
   </article>`;
@@ -166,7 +166,7 @@ function matchesView() {
         <div class="stats-inline"><span><b>${state.matches.filter((m) => state.predictions[m.id]).length}</b> oddanych typów</span><span><b>${state.matches.reduce((sum, m) => sum + pointsFor(m), 0)}</b> punktów</span></div>
       </div>
       <div class="filters">
-        <div class="segmented"><button data-leg="1" class="${state.leg === 1 ? "active" : ""}">Runda 1 <small>kolejki 1–17</small></button><button data-leg="2" class="${state.leg === 2 ? "active" : ""}">Runda 2 <small>kolejki 18–34</small></button></div>
+        <div class="segmented"><button data-leg="1" class="${state.leg === 1 ? "active" : ""}" aria-pressed="${state.leg === 1}">Runda 1 <small>kolejki 1–17</small></button><button data-leg="2" class="${state.leg === 2 ? "active" : ""}" aria-pressed="${state.leg === 2}">Runda 2 <small>kolejki 18–34</small></button></div>
         <label class="select-wrap">${icon("calendar")}<select id="matchdaySelect">${roundOptions.map((round) => `<option value="${round}" ${state.matchday === round ? "selected" : ""}>${round}. kolejka · ${new Intl.DateTimeFormat("pl-PL", { day: "2-digit", month: "long" }).format(new Date(`${roundDatesByNumber[round]}T12:00:00`))}</option>`).join("")}</select></label>
       </div>
       <div class="round-note"><span>${visible.some((m) => !m.kickoffConfirmed) ? "Daty ramowe" : "Terminy potwierdzone"}</span>${visible.some((m) => !m.kickoffConfirmed) ? "Dokładne dni i godziny tej kolejki nie zostały jeszcze opublikowane. Typy nie zostaną zablokowane na podstawie daty ramowej." : "Godziny zgodne z oficjalnym terminarzem Ekstraklasy."}</div>
