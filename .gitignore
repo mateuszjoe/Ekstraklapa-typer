@@ -5,5 +5,7 @@ node_modules/
 npm-debug.log*
 .cache/
 dist/
+public/
+.wrangler/
 .agents/
 .codex/

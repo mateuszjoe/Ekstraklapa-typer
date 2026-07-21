@@ -7,7 +7,18 @@
   "scripts": {
     "dev": "node server.mjs",
     "start": "node server.mjs",
-    "build": "node scripts/build.mjs",
+    "build": "node scripts/prepare-vinext.mjs && vite build && node scripts/finalize-vinext.mjs",
     "check": "node --check app.js && node --check data.js && node --check server.mjs && node scripts/check-data.mjs"
+  },
+  "dependencies": {
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.45.1",
+    "@vitejs/plugin-react": "^5.0.0",
+    "vinext": "^0.0.18",
+    "vite": "^7.1.0",
+    "wrangler": "^4.112.0"
   }
 }
