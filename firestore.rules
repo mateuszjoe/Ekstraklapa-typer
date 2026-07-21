@@ -2,8 +2,12 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() { return request.auth != null; }
-    function validOwnPrediction(predictionId) {
+    function googleSignedIn() {
       return signedIn()
+        && request.auth.token.firebase.sign_in_provider == 'google.com';
+    }
+    function validOwnPrediction(predictionId) {
+      return googleSignedIn()
         && request.resource.data.uid == request.auth.uid
         && request.resource.data.matchId is string
         && predictionId == request.auth.uid + '_' + request.resource.data.matchId
@@ -11,9 +15,33 @@ service cloud.firestore {
         && request.resource.data.updatedAt == request.time
         && request.resource.data.keys().hasOnly(['uid', 'matchId', 'pick', 'updatedAt']);
     }
+    function validOwnProfile(uid) {
+      return googleSignedIn()
+        && uid == request.auth.uid
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.avatarType in ['google', 'club', 'stock', 'upload']
+        && request.resource.data.avatarValue is string
+        && request.resource.data.avatarValue.size() <= 180000
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.keys().hasOnly(['uid', 'avatarType', 'avatarValue', 'updatedAt'])
+        && (
+          (request.resource.data.avatarType == 'google' && request.resource.data.avatarValue == '')
+          || (request.resource.data.avatarType == 'club' && request.resource.data.avatarValue in [
+            'cracovia', 'gks-katowice', 'gornik-zabrze', 'jagiellonia', 'korona', 'lech',
+            'legia', 'motor', 'piast', 'pogon', 'radomiak', 'rakow', 'slask', 'widzew',
+            'wieczysta', 'wisla-krakow', 'wisla-plock', 'zaglebie'
+          ])
+          || (request.resource.data.avatarType == 'stock' && request.resource.data.avatarValue in [
+            'bananowy-drybler', 'goat-osiedlowy', 'sedzia-var', 'krol-murawy',
+            'kibic-incognito', 'magik-pilki'
+          ])
+          || (request.resource.data.avatarType == 'upload'
+            && request.resource.data.avatarValue.matches('^data:image/(webp|jpeg);base64,[A-Za-z0-9+/=]+$'))
+        );
+    }
 
     match /predictions/{predictionId} {
-      allow read: if signedIn() && resource.data.uid == request.auth.uid;
+      allow read: if googleSignedIn() && resource.data.uid == request.auth.uid;
       allow create: if validOwnPrediction(predictionId);
       allow update: if signedIn()
         && resource.data.uid == request.auth.uid
@@ -22,7 +50,9 @@ service cloud.firestore {
     }
 
     match /profiles/{uid} {
-      allow read, write: if false;
+      allow read: if googleSignedIn() && uid == request.auth.uid;
+      allow create, update: if validOwnProfile(uid);
+      allow delete: if false;
     }
 
     match /live/{document} { allow read: if true; allow write: if false; }

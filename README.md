@@ -26,6 +26,7 @@ Aplikacja korzysta z osobnego projektu Firebase `ekstraklasa-typer-2026-27`. Pub
 
 - domena produkcyjna `ekstraklasa-typer.mateuszjoe.chatgpt.site` i `localhost` muszą znajdować się w Firebase Authentication → Authorized domains;
 - typy zalogowanego gracza zapisują się w Firestore i synchronizują między urządzeniami;
+- avatar profilu można ustawić jako zdjęcie Google, własną pomniejszoną grafikę, herb klubu albo jeden z gotowych avatarów;
 - dostęp do dokumentów zabezpieczają reguły z `firestore.rules`;
 - Facebook nie jest używany jako dostawca logowania.
 

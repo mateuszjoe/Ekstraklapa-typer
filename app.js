@@ -6,7 +6,10 @@ const app = document.querySelector("#app");
 const STORAGE_KEY = "ekstraklasa-typer-state-v1";
 const FINAL = new Set(["FT", "AET", "PEN", "AWD", "WO", "FINISHED", "AWARDED"]);
 const LIVE = new Set(["1H", "HT", "2H", "ET", "BT", "P", "LIVE", "IN_PLAY", "PAUSED"]);
-const VIEWS = new Set(["matches", "ranking", "rules"]);
+const VIEWS = new Set(["matches", "ranking", "rules", "settings"]);
+const DEFAULT_AVATAR = Object.freeze({ type: "google", value: "" });
+const MAX_AVATAR_FILE_SIZE = 8 * 1024 * 1024;
+const MAX_AVATAR_DATA_LENGTH = 180_000;
 
 function loadSavedState() {
   try {
@@ -17,6 +20,10 @@ function loadSavedState() {
     localStorage.removeItem(STORAGE_KEY);
     return {};
   }
+}
+
+function asRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
 const saved = loadSavedState();
@@ -31,7 +38,12 @@ const state = {
   leg: Number(saved.leg || 1),
   matchday: Number(saved.matchday || 1),
   predictions: {},
-  predictionsByUser: saved.predictionsByUser || {},
+  predictionsByUser: asRecord(saved.predictionsByUser),
+  avatar: { ...DEFAULT_AVATAR },
+  avatarsByUser: asRecord(saved.avatarsByUser),
+  avatarBusy: false,
+  avatarPending: false,
+  avatarOperationId: 0,
   user: null,
   matches: baseMatches.map((match) => ({ ...match })),
   liveSignature: "",
@@ -70,11 +82,14 @@ async function finishLoadingScreen() {
 function save() {
   if (state.user?.provider === "google.com") {
     state.predictionsByUser[state.user.uid] = { ...state.predictions };
+    if (state.avatar.type === "upload") delete state.avatarsByUser[state.user.uid];
+    else state.avatarsByUser[state.user.uid] = { ...state.avatar };
   }
   localStorage.setItem(STORAGE_KEY, JSON.stringify({
     leg: state.leg,
     matchday: state.matchday,
-    predictionsByUser: state.predictionsByUser
+    predictionsByUser: state.predictionsByUser,
+    avatarsByUser: state.avatarsByUser
   }));
 }
 
@@ -93,6 +108,48 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function stockAvatarSource({ emoji, background, accent }) {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192"><rect width="192" height="192" rx="42" fill="${background}"/><circle cx="96" cy="92" r="69" fill="#fffdf8" stroke="#0d0d0d" stroke-width="7"/><path d="M31 157c28-17 102-17 130 0" fill="none" stroke="${accent}" stroke-width="11" stroke-linecap="round"/><text x="96" y="119" text-anchor="middle" font-size="80" font-family="Segoe UI Emoji,Apple Color Emoji,Noto Color Emoji,sans-serif">${emoji}</text></svg>`;
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+}
+
+const stockAvatars = [
+  { id: "bananowy-drybler", label: "Bananowy drybler", emoji: "🍌", background: "#ffd000", accent: "#6ead32" },
+  { id: "goat-osiedlowy", label: "GOAT osiedlowy", emoji: "🐐", background: "#a9df77", accent: "#ffd000" },
+  { id: "sedzia-var", label: "Sędzia z VAR-u", emoji: "🥸", background: "#f2eee3", accent: "#e44735" },
+  { id: "krol-murawy", label: "Król murawy", emoji: "👑", background: "#ffd86b", accent: "#0d0d0d" },
+  { id: "kibic-incognito", label: "Kibic incognito", emoji: "🕶️", background: "#d5cef7", accent: "#6ead32" },
+  { id: "magik-pilki", label: "Magik piłki", emoji: "🧙", background: "#bfe5ff", accent: "#ffd000" }
+].map((avatar) => ({ ...avatar, src: stockAvatarSource(avatar) }));
+
+function normalizeAvatar(value) {
+  const type = value?.type || value?.avatarType;
+  const avatarValue = value?.value ?? value?.avatarValue ?? "";
+  if (type === "google" && avatarValue === "") return { type, value: "" };
+  if (type === "club" && typeof avatarValue === "string" && teamById[avatarValue]) return { type, value: avatarValue };
+  if (type === "stock" && stockAvatars.some((avatar) => avatar.id === avatarValue)) return { type, value: avatarValue };
+  if (type === "upload" && typeof avatarValue === "string" && /^data:image\/(?:webp|jpeg);base64,/i.test(avatarValue) && avatarValue.length <= MAX_AVATAR_DATA_LENGTH) {
+    return { type, value: avatarValue };
+  }
+  return null;
+}
+
+function avatarSource(avatar = state.avatar, user = state.user) {
+  const normalized = normalizeAvatar(avatar) || { ...DEFAULT_AVATAR };
+  if (normalized.type === "club") return teamById[normalized.value]?.crest || "";
+  if (normalized.type === "stock") return stockAvatars.find((item) => item.id === normalized.value)?.src || "";
+  if (normalized.type === "upload") return normalized.value;
+  return user?.photoURL || "";
+}
+
+function avatarVisualMarkup(className, label, avatar = state.avatar, user = state.user) {
+  const normalized = normalizeAvatar(avatar) || { ...DEFAULT_AVATAR };
+  const source = avatarSource(normalized, user);
+  const initial = String(user?.name || "G").slice(0, 1).toUpperCase();
+  const clubClass = normalized.type === "club" ? " is-club" : "";
+  return `<span class="${className} avatar-visual${clubClass}"><span aria-hidden="true">${escapeHtml(initial)}</span>${source ? `<img data-avatar-image src="${escapeHtml(source)}" alt="${escapeHtml(label || "Avatar")}">` : ""}</span>`;
 }
 
 function formatDay(match) {
@@ -236,7 +293,7 @@ function rankingView() {
         <div class="ranking-head"><span>#</span><span>Gracz</span><span>Punkty</span><span>Typy</span><span>Skuteczność</span></div>
         ${player ? (() => {
           const playerName = String(player[0] || "Gracz");
-          return `<div class="ranking-row me"><b>—</b><span><i>${escapeHtml(playerName.slice(0,1))}</i><strong>${escapeHtml(playerName)}</strong><small>TY</small></span><strong>${player[1]}</strong><span>${player[2]}</span><span>${player[3]}%</span></div>`;
+          return `<div class="ranking-row me"><b>—</b><span>${avatarVisualMarkup("ranking-avatar", `Avatar ${playerName}`)}<strong>${escapeHtml(playerName)}</strong><small>TY</small></span><strong>${player[1]}</strong><span>${player[2]}</span><span>${player[3]}%</span></div>`;
         })() : `<div class="ranking-empty"><strong>Brak graczy do wyświetlenia</strong><span>Ranking pokazuje wyłącznie prawdziwe konta Google — bez fikcyjnych wpisów.</span></div>`}
       </div>
     </section>`;
@@ -258,8 +315,57 @@ function rulesView() {
     </section>`;
 }
 
+function settingsView() {
+  const heroMarkup = `<section class="subpage-hero"><p class="eyebrow">TWÓJ PROFIL</p><h1>Ustawienia</h1><p>Wybierz twarz, z którą wchodzisz do gry.</p></section>`;
+  if (!state.user) {
+    return `${heroMarkup}<section class="content-section narrow"><div class="settings-locked"><div class="settings-lock-icon">G</div><h2>Zaloguj się przez Google</h2><p>Avatar jest częścią prawdziwego profilu gracza i synchronizuje się między urządzeniami.</p><button class="primary-button" data-open-auth>PRZEJDŹ DO LOGOWANIA ${icon("arrow")}</button></div></section>`;
+  }
+
+  const disabled = state.avatarBusy ? "disabled" : "";
+  const currentType = state.avatar.type;
+  const currentValue = state.avatar.value;
+  const googleAvatar = { type: "google", value: "" };
+  return `${heroMarkup}<section class="content-section settings-section">
+    <div class="settings-profile-card">
+      ${avatarVisualMarkup("settings-avatar-preview", `Avatar ${state.user.name}`)}
+      <div><p class="eyebrow">AKTUALNY AVATAR</p><h2>${escapeHtml(state.user.name)}</h2><span>${escapeHtml(state.user.email || "Konto Google")}</span></div>
+      <small>${state.avatarBusy ? "Zapisywanie…" : state.avatarPending ? "Oczekuje na synchronizację" : "Zapisany na Twoim koncie"}</small>
+    </div>
+    <div class="settings-panels">
+      <article class="settings-panel">
+        <div class="settings-panel-heading"><span>01</span><div><h3>Zdjęcie lub grafika</h3><p>Użyj zdjęcia Google albo wgraj własny plik. Grafikę automatycznie przytniemy do kwadratu.</p></div></div>
+        <div class="avatar-source-actions">
+          <button class="avatar-source-card ${currentType === "google" ? "is-selected" : ""}" data-avatar-type="google" data-avatar-value="" aria-pressed="${currentType === "google"}" ${disabled}>
+            ${avatarVisualMarkup("avatar-option-image", "Zdjęcie Google", googleAvatar)}<span><strong>Zdjęcie Google</strong><small>lub inicjał konta</small></span>
+          </button>
+          <label class="avatar-upload-card ${currentType === "upload" ? "is-selected" : ""} ${state.avatarBusy ? "is-disabled" : ""}">
+            <input id="avatarUpload" type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/heic,image/heif" ${disabled}>
+            <span class="upload-mark">↑</span><span><strong>Wgraj własną</strong><small>JPG, PNG lub WEBP · maks. 8 MB</small></span>
+          </label>
+        </div>
+      </article>
+
+      <article class="settings-panel">
+        <div class="settings-panel-heading"><span>02</span><div><h3>Twój klub Ekstraklasy</h3><p>Wybierz herb, który będzie reprezentował Cię w typerze.</p></div></div>
+        <div class="club-avatar-grid">${teams.map((team) => `<button class="avatar-choice club-avatar-choice ${currentType === "club" && currentValue === team.id ? "is-selected" : ""}" data-avatar-type="club" data-avatar-value="${team.id}" aria-pressed="${currentType === "club" && currentValue === team.id}" title="${escapeHtml(team.name)}" ${disabled}><img src="${team.crest}" alt=""><span>${escapeHtml(team.name)}</span></button>`).join("")}</div>
+      </article>
+
+      <article class="settings-panel">
+        <div class="settings-panel-heading"><span>03</span><div><h3>Śmieszne gotowce</h3><p>Gdy herb to za mało, wybierz avatara z lekkim poślizgiem.</p></div></div>
+        <div class="stock-avatar-grid">${stockAvatars.map((avatar) => `<button class="avatar-choice stock-avatar-choice ${currentType === "stock" && currentValue === avatar.id ? "is-selected" : ""}" data-avatar-type="stock" data-avatar-value="${avatar.id}" aria-pressed="${currentType === "stock" && currentValue === avatar.id}" ${disabled}><img src="${escapeHtml(avatar.src)}" alt=""><span>${escapeHtml(avatar.label)}</span></button>`).join("")}</div>
+      </article>
+    </div>
+  </section>`;
+}
+
 function render() {
-  app.innerHTML = state.view === "ranking" ? rankingView() : state.view === "rules" ? rulesView() : matchesView();
+  app.innerHTML = state.view === "ranking"
+    ? rankingView()
+    : state.view === "rules"
+      ? rulesView()
+      : state.view === "settings"
+        ? settingsView()
+        : matchesView();
   document.querySelectorAll(".nav-link").forEach((node) => node.classList.toggle("is-active", node.dataset.view === state.view));
   updateAuthButton();
   bindRendered();
@@ -275,6 +381,10 @@ function bindRendered() {
   app.querySelectorAll("[data-view-jump]").forEach((button) => button.addEventListener("click", () => setView(button.dataset.viewJump)));
   app.querySelector("[data-scroll-matches]")?.addEventListener("click", () => document.querySelector("#mecze")?.scrollIntoView({ behavior: "smooth" }));
   app.querySelectorAll("[data-match-centre]").forEach((button) => button.addEventListener("click", () => showMatchCentre(button.dataset.matchCentre)));
+  app.querySelector("[data-open-auth]")?.addEventListener("click", () => document.querySelector("#authDialog")?.showModal());
+  app.querySelectorAll("[data-avatar-type]").forEach((button) => button.addEventListener("click", () => selectAvatar(button.dataset.avatarType, button.dataset.avatarValue || "")));
+  app.querySelector("#avatarUpload")?.addEventListener("change", (event) => handleAvatarUpload(event.target.files?.[0]));
+  app.querySelectorAll("[data-avatar-image]").forEach((image) => image.addEventListener("error", () => image.remove(), { once: true }));
 }
 
 async function setPrediction(matchId, pick) {
@@ -322,6 +432,15 @@ function updateAuthButton() {
   if (state.user) {
     iconNode.className = "avatar";
     iconNode.textContent = state.user.name.slice(0, 1).toUpperCase();
+    const source = avatarSource();
+    if (state.avatar.type === "club") iconNode.classList.add("is-club");
+    if (source) {
+      const image = document.createElement("img");
+      image.src = source;
+      image.alt = "";
+      image.addEventListener("error", () => image.remove(), { once: true });
+      iconNode.append(image);
+    }
     labelNode.textContent = state.user.name.split(" ")[0];
   } else {
     iconNode.className = "user-icon";
@@ -348,6 +467,11 @@ function openAccountDialog() {
   if (!dialog || !state.user) return;
   dialog.querySelector("#accountName").textContent = state.user.name;
   dialog.querySelector("#accountDetails").textContent = state.user.email || "Zalogowano przez Google";
+  const avatarHost = dialog.querySelector("#accountAvatar");
+  if (avatarHost) {
+    avatarHost.innerHTML = avatarVisualMarkup("account-avatar-image", `Avatar ${state.user.name}`);
+    avatarHost.querySelector("[data-avatar-image]")?.addEventListener("error", (event) => event.currentTarget.remove(), { once: true });
+  }
   dialog.showModal();
 }
 
@@ -358,6 +482,183 @@ function updateCountdowns() {
     const days = Math.floor(delta / 86400000); const hours = Math.floor(delta % 86400000 / 3600000);
     node.textContent = days ? `Start za ${days} dni i ${hours} godz.` : `Start za ${hours} godz.`;
   });
+}
+
+async function selectAvatar(type, value) {
+  if (!state.user || state.auth?.currentUser?.uid !== state.user.uid) {
+    document.querySelector("#authDialog")?.showModal();
+    return;
+  }
+  if (state.avatarBusy) return;
+
+  const nextAvatar = normalizeAvatar({ type, value });
+  if (!nextAvatar) {
+    notify("Nie udało się wybrać tego avatara");
+    return;
+  }
+
+  const uid = state.user.uid;
+  const operationId = ++state.avatarOperationId;
+  const previousAvatar = { ...state.avatar };
+  state.avatar = nextAvatar;
+  state.avatarBusy = true;
+  state.avatarPending = false;
+  save();
+  render();
+
+  const saveResult = saveRemoteAvatar(uid, nextAvatar).then(
+    () => ({ status: "saved" }),
+    (error) => ({ status: "failed", error })
+  );
+  const result = await Promise.race([
+    saveResult,
+    new Promise((resolve) => setTimeout(() => resolve({ status: "pending" }), 6500))
+  ]);
+  if (state.auth?.currentUser?.uid !== uid || state.avatarOperationId !== operationId) return;
+
+  if (result.status === "failed") {
+    console.error("Nie udało się zapisać avatara:", result.error);
+    state.avatar = previousAvatar;
+    state.avatarBusy = false;
+    state.avatarPending = false;
+    save();
+    render();
+    notify("Nie udało się zapisać avatara. Spróbuj ponownie.");
+    return;
+  }
+
+  if (result.status === "saved") {
+    state.avatarBusy = false;
+    state.avatarPending = false;
+    render();
+    notify("Avatar zapisany");
+    return;
+  }
+
+  state.avatarBusy = false;
+  state.avatarPending = true;
+  render();
+  notify("Avatar ustawiony — synchronizacja czeka na internet");
+  saveResult.then((lateResult) => {
+    if (state.auth?.currentUser?.uid !== uid || state.avatarOperationId !== operationId) return;
+    state.avatarPending = lateResult.status !== "saved";
+    render();
+    if (lateResult.status === "saved") notify("Avatar zsynchronizowany");
+    else {
+      console.error("Opóźniony zapis avatara nie powiódł się:", lateResult.error);
+      notify("Nie udało się zsynchronizować avatara — wybierz go ponownie");
+    }
+  });
+}
+
+function loadImageFileFallback(file) {
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => resolve({ image, cleanup: () => URL.revokeObjectURL(objectUrl) });
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error("Nieobsługiwany format obrazu"));
+    };
+    image.src = objectUrl;
+  });
+}
+
+async function decodeImageFile(file) {
+  if ("ImageDecoder" in window && typeof ImageDecoder.isTypeSupported === "function") {
+    try {
+      if (await ImageDecoder.isTypeSupported(file.type)) {
+        const metadataDecoder = new ImageDecoder({ data: await file.arrayBuffer(), type: file.type });
+        await metadataDecoder.tracks.ready;
+        const track = metadataDecoder.tracks.selectedTrack;
+        const width = track?.codedWidth || 0;
+        const height = track?.codedHeight || 0;
+        metadataDecoder.close();
+        if (width && height) {
+          const scale = Math.min(1, 1024 / Math.max(width, height));
+          const decoder = new ImageDecoder({
+            data: await file.arrayBuffer(),
+            type: file.type,
+            desiredWidth: Math.max(1, Math.round(width * scale)),
+            desiredHeight: Math.max(1, Math.round(height * scale))
+          });
+          const result = await decoder.decode({ frameIndex: 0 });
+          return { image: result.image, cleanup: () => { result.image.close(); decoder.close(); } };
+        }
+      }
+    } catch (error) {
+      console.warn("ImageDecoder nie odczytał avatara, używam bezpiecznego fallbacku:", error);
+    }
+  }
+
+  if (typeof createImageBitmap === "function") {
+    const bitmap = await createImageBitmap(file, { resizeWidth: 1024, resizeQuality: "high" });
+    return { image: bitmap, cleanup: () => bitmap.close() };
+  }
+
+  if (file.size > 3 * 1024 * 1024) throw new Error("Na tym urządzeniu wybierz grafikę mniejszą niż 3 MB");
+  return loadImageFileFallback(file);
+}
+
+function renderAvatarCanvas(image, size) {
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const context = canvas.getContext("2d", { alpha: false });
+  context.fillStyle = "#fffdf8";
+  context.fillRect(0, 0, size, size);
+  const imageWidth = image.displayWidth || image.codedWidth || image.naturalWidth || image.width;
+  const imageHeight = image.displayHeight || image.codedHeight || image.naturalHeight || image.height;
+  const sourceSize = Math.min(imageWidth, imageHeight);
+  const sourceX = Math.max(0, (imageWidth - sourceSize) / 2);
+  const sourceY = Math.max(0, (imageHeight - sourceSize) / 2);
+  context.drawImage(image, sourceX, sourceY, sourceSize, sourceSize, 0, 0, size, size);
+  return canvas;
+}
+
+async function avatarDataFromFile(file) {
+  if (!file || !file.type.startsWith("image/")) throw new Error("Wybierz plik graficzny");
+  if (file.size > MAX_AVATAR_FILE_SIZE) throw new Error("Plik jest większy niż 8 MB");
+  const { image, cleanup } = await decodeImageFile(file);
+  try {
+    const imageWidth = image.displayWidth || image.codedWidth || image.naturalWidth || image.width;
+    const imageHeight = image.displayHeight || image.codedHeight || image.naturalHeight || image.height;
+    if (!imageWidth || !imageHeight) throw new Error("Nie udało się odczytać grafiki");
+    for (const size of [256, 224, 192]) {
+      const canvas = renderAvatarCanvas(image, size);
+      for (const quality of [.84, .7, .56]) {
+        const webp = canvas.toDataURL("image/webp", quality);
+        const data = webp.startsWith("data:image/webp") ? webp : canvas.toDataURL("image/jpeg", quality);
+        if (data.length <= MAX_AVATAR_DATA_LENGTH) return data;
+      }
+    }
+    throw new Error("Grafiki nie udało się wystarczająco zmniejszyć");
+  } finally {
+    cleanup();
+  }
+}
+
+async function handleAvatarUpload(file) {
+  if (!file || state.avatarBusy || !state.user) return;
+  const uid = state.user.uid;
+  const preparationId = ++state.avatarOperationId;
+  state.avatarBusy = true;
+  state.avatarPending = false;
+  render();
+  notify("Przygotowuję avatar…");
+  try {
+    const data = await avatarDataFromFile(file);
+    if (state.auth?.currentUser?.uid !== uid || state.avatarOperationId !== preparationId) return;
+    state.avatarBusy = false;
+    await selectAvatar("upload", data);
+  } catch (error) {
+    console.error("Nie udało się przygotować avatara:", error);
+    if (state.auth?.currentUser?.uid === uid && state.avatarOperationId === preparationId) {
+      state.avatarBusy = false;
+      render();
+      notify(error.message || "Nie udało się przygotować grafiki");
+    }
+  }
 }
 
 function isInAppBrowser() {
@@ -377,12 +678,31 @@ function authErrorMessage(error) {
   return messages[error?.code] || "Logowanie Google nie powiodło się. Spróbuj ponownie.";
 }
 
+function isGoogleAccount(user) {
+  return Boolean(user?.providerData?.some((provider) => provider.providerId === "google.com"));
+}
+
 async function handleAuthState(user) {
   state.authStatus = "ready";
+  state.avatarOperationId += 1;
+  state.avatarBusy = false;
+  state.avatarPending = false;
+  if (user && !isGoogleAccount(user)) {
+    state.user = null;
+    state.predictions = {};
+    state.avatar = { ...DEFAULT_AVATAR };
+    render();
+    notify("Ta liga obsługuje wyłącznie prawdziwe konta Google");
+    if (state.auth?.currentUser?.uid === user.uid && state.firebaseModules?.signOut) {
+      state.firebaseModules.signOut(state.auth).catch((error) => console.error("Nie udało się odrzucić nieobsługiwanej sesji:", error));
+    }
+    return;
+  }
   if (!user) {
     if (state.user?.provider === "google.com") {
       state.user = null;
       state.predictions = {};
+      state.avatar = { ...DEFAULT_AVATAR };
       save();
     }
     render();
@@ -390,24 +710,34 @@ async function handleAuthState(user) {
   }
 
   const cached = state.predictionsByUser[user.uid] || {};
+  const cachedAvatar = normalizeAvatar(state.avatarsByUser[user.uid]) || { ...DEFAULT_AVATAR };
   state.user = {
     uid: user.uid,
     name: user.displayName || user.email || "Gracz",
     email: user.email || "",
+    photoURL: user.photoURL || "",
     provider: "google.com"
   };
+  state.avatar = cachedAvatar;
 
   let remote = {};
-  try {
-    remote = await loadRemotePredictions(user.uid);
-  } catch (error) {
-    console.error("Nie udało się pobrać typów z Firestore:", error);
-    notify("Zalogowano przez Google, ale synchronizacja typów jest chwilowo niedostępna");
+  let remoteAvatar = null;
+  const [predictionsResult, avatarResult] = await Promise.allSettled([
+    loadRemotePredictions(user.uid),
+    loadRemoteAvatar(user.uid)
+  ]);
+  if (predictionsResult.status === "fulfilled") remote = predictionsResult.value;
+  else console.error("Nie udało się pobrać typów z Firestore:", predictionsResult.reason);
+  if (avatarResult.status === "fulfilled") remoteAvatar = avatarResult.value;
+  else console.error("Nie udało się pobrać avatara z Firestore:", avatarResult.reason);
+  if (predictionsResult.status === "rejected" || avatarResult.status === "rejected") {
+    notify("Zalogowano przez Google, ale synchronizacja danych jest chwilowo niedostępna");
   }
 
   if (state.auth?.currentUser?.uid !== user.uid) return;
 
   state.predictions = { ...cached, ...remote };
+  state.avatar = remoteAvatar || cachedAvatar;
   state.predictionsByUser[user.uid] = { ...state.predictions };
   save();
   render();
@@ -435,7 +765,17 @@ async function initFirebase() {
     ]);
     const firebaseApp = initializeApp(firebaseConfig);
     state.auth = authModule.getAuth(firebaseApp);
-    state.db = firestore.getFirestore(firebaseApp);
+    try {
+      const cacheOptions = typeof firestore.persistentMultipleTabManager === "function"
+        ? { tabManager: firestore.persistentMultipleTabManager() }
+        : {};
+      state.db = firestore.initializeFirestore(firebaseApp, {
+        localCache: firestore.persistentLocalCache(cacheOptions)
+      });
+    } catch (error) {
+      console.warn("Trwały cache Firestore jest niedostępny, używam cache w pamięci:", error);
+      state.db = firestore.getFirestore(firebaseApp);
+    }
     state.firebaseModules = { ...authModule, ...firestore };
     authModule.onAuthStateChanged(state.auth, (user) => {
       handleAuthState(user).catch((error) => {
@@ -495,6 +835,10 @@ async function logout() {
 
   state.user = null;
   state.predictions = {};
+  state.avatar = { ...DEFAULT_AVATAR };
+  state.avatarBusy = false;
+  state.avatarPending = false;
+  state.avatarOperationId += 1;
   save();
   render();
 }
@@ -519,6 +863,26 @@ async function loadRemotePredictions(uid) {
     if (typeof data.matchId === "string" && ["1", "X", "2"].includes(data.pick)) predictions[data.matchId] = data.pick;
   });
   return predictions;
+}
+
+async function saveRemoteAvatar(uid, avatar) {
+  if (!state.db || !state.firebaseModules || state.auth?.currentUser?.uid !== uid) throw new Error("Brak aktywnej sesji Google");
+  const normalized = normalizeAvatar(avatar);
+  if (!normalized) throw new Error("Nieprawidłowy avatar");
+  const { doc, setDoc, serverTimestamp } = state.firebaseModules;
+  await setDoc(doc(state.db, "profiles", uid), {
+    uid,
+    avatarType: normalized.type,
+    avatarValue: normalized.value,
+    updatedAt: serverTimestamp()
+  });
+}
+
+async function loadRemoteAvatar(uid) {
+  const { doc, getDoc } = state.firebaseModules;
+  const snapshot = await getDoc(doc(state.db, "profiles", uid));
+  if (!snapshot.exists()) return null;
+  return normalizeAvatar(snapshot.data());
 }
 
 async function syncPredictionsToRemote() {
@@ -622,6 +986,12 @@ document.addEventListener("click", (event) => {
   const providerButton = event.target.closest?.("#authDialog [data-provider]");
   if (providerButton) {
     loginGoogle();
+    return;
+  }
+
+  if (event.target.closest?.("[data-account-settings]")) {
+    document.querySelector("#accountDialog")?.close();
+    setView("settings");
     return;
   }
 

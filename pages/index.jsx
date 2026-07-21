@@ -7,7 +7,7 @@ export default function Home() {
 
     const script = document.createElement("script");
     script.type = "module";
-    script.src = "/legacy/app.js?v=7";
+    script.src = "/legacy/app.js?v=8";
     script.dataset.ekstraklasaRuntime = "true";
     document.body.appendChild(script);
   }, []);
@@ -33,6 +33,7 @@ export default function Home() {
           <button className="nav-link is-active" data-view="matches">Mecze</button>
           <button className="nav-link" data-view="ranking">Ranking</button>
           <button className="nav-link" data-view="rules">Zasady</button>
+          <button className="nav-link" data-view="settings">Ustawienia</button>
         </nav>
         <button id="authButton" className="auth-button"><span className="user-icon">◉</span><span>Zaloguj się</span></button>
         <button id="menuButton" className="menu-button" aria-label="Otwórz menu">☰</button>
@@ -59,9 +60,11 @@ export default function Home() {
       <dialog id="accountDialog" className="modal auth-modal account-modal">
         <button className="modal-close" data-close aria-label="Zamknij">×</button>
         <img className="modal-logo" src="/assets/brand/logo-compact.png" alt="Ekstraklasa Typer" />
+        <div id="accountAvatar" className="account-avatar-host" />
         <p className="eyebrow">TWOJE KONTO</p>
         <h2 id="accountName">Gracz</h2>
         <p className="modal-copy" id="accountDetails">Zalogowano przez Google</p>
+        <button className="provider account-settings" data-account-settings>Ustawienia profilu</button>
         <button className="provider signout" data-sign-out>Wyloguj się</button>
       </dialog>
 
