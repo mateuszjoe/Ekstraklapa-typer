@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Ekstraklapa Typer</string>
+    <string name="launch_url" translatable="false">https://mateuszjoe.github.io/Ekstraklapa-typer/?source=android-app</string>
+    <string name="web_manifest_url" translatable="false">https://mateuszjoe.github.io/Ekstraklapa-typer/manifest.webmanifest</string>
+    <string name="provider_authority" translatable="false">pl.ekstraklapatyper.app.fileprovider</string>
+    <string name="asset_statements" translatable="false">[{\"relation\":[\"delegate_permission/common.handle_all_urls\"],\"target\":{\"namespace\":\"web\",\"site\":\"https://mateuszjoe.github.io\"}}]</string>
+</resources>

@@ -10,3 +10,7 @@ public/
 .wrangler/
 .agents/
 .codex/
+.local-secrets/
+android/.gradle/
+android/local.properties
+android/**/build/
