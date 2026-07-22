@@ -40,11 +40,28 @@ Aplikacja korzysta z osobnego projektu Firebase `ekstraklasa-typer-2026-27`. Pub
 - nazwę gracza można zmienić w ustawieniach, a profil synchronizuje ją między urządzeniami;
 - avatar profilu można ustawić jako zdjęcie Google, własną pomniejszoną grafikę, herb klubu albo jeden z gotowych avatarów;
 - pływający chat graczy działa w czasie rzeczywistym i obsługuje odpowiedzi, reakcje oraz automatycznie pomniejszone grafiki;
+- pełne powiadomienia Web Push są przypisane do urządzenia i docierają również po zamknięciu strony lub aplikacji; obejmują chat, nowych graczy, przypomnienia o kolejce, wynik i punkt za mecz oraz podsumowanie kolejki;
 - licznik uczestników jest zwiększany transakcyjnie tylko raz dla danego konta Google, a sekcja zasad wylicza aktualną pulę i trzy nagrody;
 - dostęp do dokumentów zabezpieczają reguły z `firestore.rules`;
 - Facebook nie jest używany jako dostawca logowania.
 
-Konfigurację backendu wdraża się poleceniami `firebase deploy --only auth` oraz `firebase deploy --only firestore:rules`.
+Konfigurację podstawowego backendu wdraża się poleceniami `firebase deploy --only auth` oraz `firebase deploy --only firestore:rules`.
+
+### Backend powiadomień
+
+Produkcyjny backend działa bez Firebase Functions i planu Blaze. Kod znajduje się w `notifications-worker/`, konfiguracja w `notifications-wrangler.jsonc`, a bezpłatny Cloudflare Worker korzysta z D1, crona oraz Cloudflare Queue. Żądania strony tylko weryfikują dane i zapisują zadanie, natomiast szyfrowanie oraz wysyłka Web Push odbywają się asynchronicznie w consumerze kolejki. Worker sprawdza token Firebase i prawdziwe dokumenty uczestnika, typu oraz wiadomości w Firestore. Trwała kolejka D1, dzierżawy i tabela dostarczeń zapobiegają pomijaniu odbiorców oraz niekontrolowanym duplikatom.
+
+Publiczny klucz VAPID znajduje się w `firebase-config.js` i Workerze. Prywatny klucz pozostaje wyłącznie w ignorowanym katalogu `.local-secrets/` i zaszyfrowanych sekretach Cloudflare. Pierwsze wdrożenie:
+
+```powershell
+npm install
+npx wrangler queues create ekstraklasa-typer-notifications --config notifications-wrangler.jsonc
+npx wrangler d1 execute ekstraklasa-typer-notifications --remote --file notifications-worker/schema.sql --config notifications-wrangler.jsonc
+npx wrangler secret put VAPID_PRIVATE_KEY --config notifications-wrangler.jsonc
+npx wrangler deploy --config notifications-wrangler.jsonc
+```
+
+Endpoint rejestracji wymaga zalogowanego, zweryfikowanego konta Google i uczestnictwa w sezonie. Typy trafiają do D1 dopiero po porównaniu z własnym dokumentem w Firestore, a wiadomość chatu może zgłosić wyłącznie jej autor.
 
 Potwierdzone terminy, na których Firestore opiera zamykanie i odkrywanie typów, synchronizuje administrator:
 

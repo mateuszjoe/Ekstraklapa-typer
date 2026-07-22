@@ -1,0 +1,41 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ekstraklapa-typer-notifications",
+  "main": "./notifications-worker/index.js",
+  "compatibility_date": "2026-07-22",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "ekstraklapa-typer-notifications",
+      "database_id": "519990e3-ee5c-4955-83c0-3059332e690d"
+    }
+  ],
+  "vars": {
+    "FIREBASE_API_KEY": "AIzaSyD3kgRWw3BROjcmulITWFXKcePgvhtpIDY",
+    "APP_URL": "https://mateuszjoe.github.io/Ekstraklapa-typer/"
+  },
+  "queues": {
+    // Queue consumers receive Cloudflare's 30-second default CPU budget.
+    // Keeping it implicit avoids applying a paid-only-looking limit to fetch.
+    "producers": [
+      {
+        "binding": "NOTIFICATION_QUEUE",
+        "queue": "ekstraklasa-typer-notifications"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "ekstraklasa-typer-notifications",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 5,
+        "retry_delay": 30,
+        "max_concurrency": 3
+      }
+    ]
+  },
+  "triggers": {
+    "crons": ["* * * * *"]
+  }
+}

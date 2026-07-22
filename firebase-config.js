@@ -9,4 +9,9 @@ export const firebaseConfig = {
   appId: "1:400732734545:web:8711cb73b12cc23b2f6470"
 };
 
+export const webPushPublicKey = "BHxWAMhHw3KJBpTqgJZK38Kr-fPA_dvKIYurfBjxTfuw9ie4D9I0cpYR8S9-5FEmzDYoLoBwdutcR_kLW7cADd0";
+
+// Publiczny adres bezpłatnego backendu powiadomień Cloudflare.
+export const notificationApiBase = "https://ekstraklapa-typer-notifications.mateuszjoe.workers.dev";
+
 export const adminEmails = [];

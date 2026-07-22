@@ -1,5 +1,5 @@
 import { matches as baseMatches, teamById, teams, roundDatesByNumber } from "./data.js";
-import { firebaseConfig } from "./firebase-config.js";
+import { firebaseConfig, notificationApiBase, webPushPublicKey } from "./firebase-config.js";
 import { getOfficialLivePayload } from "./live-provider.js";
 
 const bootStartedAt = performance.now();
@@ -10,6 +10,18 @@ const APK_PROMPT_CAMPAIGN = "android-v3";
 const APK_PROMPT_STORAGE_KEY = "ekstraklasa-typer:apk-prompt";
 const APK_PROMPT_COOLDOWN_MS = 14 * 24 * 60 * 60 * 1000;
 const APK_DOWNLOAD_URL = "./downloads/Typer-v1.0.2.apk";
+const CHAT_PUSH_STATE_CACHE = "ekstraklapa-typer-push-state-v1";
+const CHAT_PUSH_STATE_URL = new URL("./__chat-push-state__", location.href).href;
+const NOTIFICATION_PRIMER_KEY = "ekstraklasa-typer:notification-primer:v1";
+const NOTIFICATION_PRIMER_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
+const NOTIFICATION_OUTBOX_KEY = "ekstraklasa-typer:notification-outbox:v1";
+const NOTIFICATION_OUTBOX_MAX_ITEMS = 220;
+const NOTIFICATION_OUTBOX_PICK_BATCH_SIZE = 10;
+const NOTIFICATION_OUTBOX_MAX_REQUESTS = 4;
+const NOTIFICATION_OUTBOX_CHAT_TTL_MS = 9 * 60 * 1000;
+const NOTIFICATION_OUTBOX_PLAYER_TTL_MS = 14 * 60 * 1000;
+const NOTIFICATION_OUTBOX_PICK_TTL_MS = 45 * 24 * 60 * 60 * 1000;
+const APP_SERVICE_WORKER_VERSION = "27";
 const FINAL = new Set(["FT", "AET", "PEN", "AWD", "WO", "FINISHED", "AWARDED"]);
 const LIVE = new Set(["1H", "HT", "2H", "ET", "BT", "P", "LIVE", "IN_PLAY", "PAUSED"]);
 const VIEWS = new Set(["matches", "ranking", "rules", "settings"]);
@@ -43,7 +55,17 @@ function asRecord(value) {
 }
 
 const saved = loadSavedState();
-const openChatFromNotification = new URLSearchParams(location.search).get("chat") === "open";
+const notificationQuery = new URLSearchParams(location.search);
+const openChatFromNotification = notificationQuery.get("chat") === "open";
+const notificationMatchday = Number(notificationQuery.get("matchday"));
+let notificationMatchId = notificationQuery.get("match") || "";
+const openSummaryFromNotification = notificationQuery.get("summary") === "open";
+const notificationPlayerId = notificationQuery.get("player") || "";
+let launchedFromNotification = openChatFromNotification
+  || Boolean(notificationMatchId)
+  || openSummaryFromNotification
+  || (Number.isInteger(notificationMatchday) && notificationMatchday >= 1 && notificationMatchday <= LAST_MATCHDAY)
+  || Boolean(notificationPlayerId);
 let legacyPredictionsByUser = asRecord(saved.predictionsByUser);
 const deprecatedLocalKeys = ["user", "predictions", "anonymousPredictions"];
 if (deprecatedLocalKeys.some((key) => key in saved)) {
@@ -52,9 +74,11 @@ if (deprecatedLocalKeys.some((key) => key in saved)) {
 }
 const requestedView = location.hash.slice(1);
 const savedMatchday = Number(saved.matchday);
-const initialMatchday = Number.isInteger(savedMatchday) && savedMatchday >= 1 && savedMatchday <= LAST_MATCHDAY
-  ? savedMatchday
-  : 1;
+const initialMatchday = Number.isInteger(notificationMatchday) && notificationMatchday >= 1 && notificationMatchday <= LAST_MATCHDAY
+  ? notificationMatchday
+  : Number.isInteger(savedMatchday) && savedMatchday >= 1 && savedMatchday <= LAST_MATCHDAY
+    ? savedMatchday
+    : 1;
 const typerMatchIds = new Set(baseMatches.map((match) => match.id));
 const state = {
   view: VIEWS.has(requestedView) ? requestedView : "matches",
@@ -92,7 +116,10 @@ const state = {
   chatReactions: {},
   chatProfiles: {},
   chatOpen: false,
-  chatNotificationsEnabled: saved.chatNotificationsEnabled === true,
+  chatNotificationsByUser: asRecord(saved.chatNotificationsByUser),
+  chatNotificationsEnabled: false,
+  chatNotificationsSyncPending: false,
+  chatNotificationsBusy: false,
   chatSending: false,
   chatLastReadMs: 0,
   chatRemoteReadMs: 0,
@@ -116,7 +143,18 @@ const state = {
 
 let seasonStatsUnsubscribe = null;
 let chatUnsubscribes = [];
-let chatNotificationsPrimed = false;
+let serviceWorkerRegistrationPromise = null;
+let chatPushOperation = Promise.resolve();
+let chatPushSessionRevision = 0;
+let chatPushPendingOperations = 0;
+let chatPushSessionClosing = false;
+let notificationPickSyncOperation = Promise.resolve();
+let notificationFullPickSyncKey = "";
+let notificationFullPickSyncPromise = null;
+let notificationFullPickSyncCompletedAt = 0;
+let notificationOutboxFlushOperation = Promise.resolve();
+let notificationOutboxRetryTimer = null;
+let notificationOutboxRetryDueAt = 0;
 const chatProfileLoads = new Set();
 const predictionWriteQueues = new Map();
 const predictionWriteVersions = new Map();
@@ -126,6 +164,13 @@ let rankingLoadPromise = null;
 let rankingLoadRevision = 0;
 let rankingReloadPending = false;
 let trustedMatchesSyncPromise = null;
+let notificationDeepLinkHandled = false;
+let notificationPrimerTimer = null;
+let notificationPrimerRetries = 0;
+let notificationPrimerBusy = false;
+let notificationRouteApplying = false;
+let firstLivePollSettled = false;
+let notificationLoginPromptShown = false;
 let liveTransport = location.hostname.endsWith(".github.io") ? "official" : "server";
 
 if (location.hash && !VIEWS.has(requestedView)) {
@@ -159,7 +204,7 @@ function save() {
   const nextSavedState = {
     matchday: state.matchday,
     avatarsByUser: state.avatarsByUser,
-    chatNotificationsEnabled: state.chatNotificationsEnabled
+    chatNotificationsByUser: state.chatNotificationsByUser
   };
   if (Object.keys(legacyPredictionsByUser).length) {
     nextSavedState.predictionsByUser = legacyPredictionsByUser;
@@ -592,14 +637,20 @@ function settingsView() {
   const googleAvatar = { type: "google", value: "" };
   const notificationState = chatNotificationState();
   const notificationEnabled = notificationState === "enabled";
-  const notificationBlocked = notificationState === "denied" || notificationState === "unsupported";
+  const notificationBusy = notificationState === "busy";
+  const notificationPending = notificationState === "pending";
+  const notificationBlocked = notificationBusy || notificationState === "unsupported";
   const notificationCopy = notificationState === "unsupported"
     ? "To urządzenie nie obsługuje powiadomień webowych."
     : notificationState === "denied"
       ? "Powiadomienia są zablokowane w ustawieniach aplikacji lub przeglądarki."
+      : notificationBusy
+        ? "Łączymy to urządzenie z bezpiecznym kanałem powiadomień."
+      : notificationPending
+        ? "Urządzenie zachowało zgodę, ale kanał czeka na ponowne połączenie z backendem."
       : notificationEnabled
-        ? "Dostaniesz informację o nowej wiadomości, gdy Typer jest uruchomiony i zminimalizowany."
-        : "Włącz powiadomienia o nowych wiadomościach w szatni graczy.";
+        ? "Dostaniesz wiadomości z chatu, przypomnienia o kolejce, wyniki i podsumowania punktów także po zamknięciu Typera."
+        : "Włącz powiadomienia o chacie, nowych graczach, starcie kolejki, wynikach meczów i zdobytych punktach.";
   return `${heroMarkup}<section class="content-section settings-section">
     <div class="settings-profile-card">
       ${avatarVisualMarkup("settings-avatar-preview", `Avatar ${state.user.name}`)}
@@ -640,10 +691,10 @@ function settingsView() {
       </article>
 
       <article class="settings-panel settings-notification-panel">
-        <div class="settings-panel-heading"><span>05</span><div><h3>Powiadomienia czatu</h3><p>${notificationCopy}</p></div></div>
+        <div class="settings-panel-heading"><span>05</span><div><h3>Powiadomienia</h3><p>${notificationCopy}</p></div></div>
         <div class="settings-notification-row">
-          <span class="settings-notification-status ${notificationEnabled ? "is-enabled" : ""}">${notificationEnabled ? "Włączone" : notificationState === "denied" ? "Zablokowane" : notificationState === "unsupported" ? "Niedostępne" : "Wyłączone"}</span>
-          <button type="button" class="settings-notification-button" data-chat-notifications ${notificationBlocked ? "disabled" : ""}>${notificationEnabled ? "WYŁĄCZ" : "WŁĄCZ POWIADOMIENIA"}</button>
+          <span class="settings-notification-status ${notificationEnabled ? "is-enabled" : ""}">${notificationBusy ? "Łączenie…" : notificationPending ? "Oczekuje" : notificationEnabled ? "Włączone" : notificationState === "denied" ? "Zablokowane" : notificationState === "unsupported" ? "Niedostępne" : "Wyłączone"}</span>
+          <button type="button" class="settings-notification-button" data-chat-notifications ${notificationBlocked ? "disabled" : ""}>${notificationBusy ? "ŁĄCZENIE…" : notificationPending ? "SPRÓBUJ PONOWNIE" : notificationEnabled ? "WYŁĄCZ" : "WŁĄCZ POWIADOMIENIA"}</button>
         </div>
       </article>
 
@@ -760,17 +811,138 @@ function setPrediction(matchId, pick) {
 
 function showMatchCentre(matchId) {
   const match = state.matches.find((item) => item.id === matchId);
+  if (!match || !typerMatchIds.has(match.id)) {
+    notify("Nie udało się odnaleźć tego meczu.");
+    return false;
+  }
   const home = teamById[match.home], away = teamById[match.away];
   const status = LIVE.has(match.status) ? `LIVE${match.liveElapsed ? ` · ${match.liveElapsed}'` : ""}` : FINAL.has(match.status) ? "Mecz zakończony" : "Mecz zaplanowany";
   const matchDialog = document.querySelector("#matchDialog");
-  matchDialog.innerHTML = `<button class="modal-close" data-close>×</button><p class="eyebrow">WYNIK MECZU</p><div class="modal-score"><div><img src="${home.crest}" alt=""><b>${home.name}</b></div><strong>${Number.isFinite(match.homeScore) ? `${match.homeScore} : ${match.awayScore}` : "– : –"}</strong><div><img src="${away.crest}" alt=""><b>${away.name}</b></div></div><p class="no-events">${status}</p>`;
-  matchDialog.showModal();
+  if (!home || !away || !matchDialog) return false;
+  const pick = state.user ? state.predictions[match.id] : null;
+  const result = resultOf(match);
+  const points = pick && result ? (pick === result ? 1 : 0) : null;
+  const pickSummary = state.user
+    ? `<div class="match-pick-summary${points === 1 ? " is-hit" : points === 0 ? " is-miss" : ""}"><span>Twój typ</span><strong>${pick || "—"}</strong><small>${points === 1 ? "+1 pkt · trafiony" : points === 0 ? "0 pkt · nietrafiony" : pick ? "Czeka na rozliczenie" : "Brak oddanego typu"}</small></div>`
+    : "";
+  matchDialog.dataset.matchId = match.id;
+  matchDialog.innerHTML = `<button class="modal-close" data-close>×</button><p class="eyebrow">WYNIK MECZU</p><div class="modal-score"><div><img src="${home.crest}" alt=""><b>${home.name}</b></div><strong>${Number.isFinite(match.homeScore) ? `${match.homeScore} : ${match.awayScore}` : "– : –"}</strong><div><img src="${away.crest}" alt=""><b>${away.name}</b></div></div><p class="no-events">${status}</p>${pickSummary}`;
+  if (!matchDialog.open) matchDialog.showModal();
+  return true;
 }
 
 function notify(message) {
   const toast = document.querySelector("#toast");
   toast.textContent = message; toast.classList.add("show");
   setTimeout(() => toast.classList.remove("show"), 2400);
+}
+
+function clearNotificationRoute(hash = state.view || "matches") {
+  const query = new URLSearchParams(location.search);
+  ["chat", "match", "matchday", "summary", "player", "notification"].forEach((key) => query.delete(key));
+  const queryString = query.toString();
+  history.replaceState(null, "", `${location.pathname}${queryString ? `?${queryString}` : ""}#${hash}`);
+}
+
+function discardInvalidNotificationMatchRoute() {
+  notificationMatchId = "";
+  const query = new URLSearchParams(location.search);
+  query.delete("match");
+  const queryString = query.toString();
+  history.replaceState(null, "", `${location.pathname}${queryString ? `?${queryString}` : ""}${location.hash || "#matches"}`);
+  launchedFromNotification = openChatFromNotification
+    || openSummaryFromNotification
+    || (Number.isInteger(notificationMatchday) && notificationMatchday >= 1 && notificationMatchday <= LAST_MATCHDAY)
+    || Boolean(notificationPlayerId);
+  if (!launchedFromNotification) scheduleNotificationPrimer(300);
+}
+
+async function tryApplyNotificationRoute() {
+  if (!launchedFromNotification || notificationDeepLinkHandled || notificationRouteApplying) return;
+  notificationRouteApplying = true;
+  try {
+    const validMatchday = Number.isInteger(notificationMatchday) && notificationMatchday >= 1 && notificationMatchday <= LAST_MATCHDAY
+      ? notificationMatchday
+      : null;
+
+    if (notificationMatchId) {
+      if (!firstLivePollSettled || state.authStatus === "loading") return;
+      if (state.user && !state.userDataReady) return;
+      if (!typerMatchIds.has(notificationMatchId)) {
+        discardInvalidNotificationMatchRoute();
+      } else {
+        const match = state.matches.find((item) => item.id === notificationMatchId);
+        if (match) state.matchday = validMatchday || match.matchday;
+        setView("matches");
+        if (!showMatchCentre(notificationMatchId)) {
+          discardInvalidNotificationMatchRoute();
+        } else {
+          notificationDeepLinkHandled = true;
+          clearNotificationRoute("matches");
+          return;
+        }
+      }
+    }
+
+    if (openSummaryFromNotification) {
+      if (state.authStatus === "loading" || !firstLivePollSettled) return;
+      if (!state.user) {
+        if (!notificationLoginPromptShown) {
+          notificationLoginPromptShown = true;
+          openAuthDialog();
+          notify("Zaloguj się, aby zobaczyć podsumowanie swoich punktów.");
+        }
+        return;
+      }
+      if (!state.userDataReady || !state.participantReady) return;
+      const summaryMatchday = validMatchday || state.matchday;
+      state.matchday = summaryMatchday;
+      setView("matches");
+      await openPlayerPicks(state.user.uid, summaryMatchday);
+      if (state.playerPicksUid !== state.user.uid) return;
+      notificationDeepLinkHandled = true;
+      clearNotificationRoute("matches");
+      return;
+    }
+
+    if (openChatFromNotification) {
+      setView("matches");
+      toggleChat(true);
+      notificationDeepLinkHandled = true;
+      clearNotificationRoute("matches");
+      return;
+    }
+
+    if (notificationPlayerId) {
+      if (state.authStatus === "loading") return;
+      if (!state.user) {
+        if (!notificationLoginPromptShown) {
+          notificationLoginPromptShown = true;
+          openAuthDialog();
+          notify("Zaloguj się, aby zobaczyć profil nowego gracza.");
+        }
+        return;
+      }
+      if (!state.userDataReady || !state.participantReady) return;
+      setView("ranking");
+      await openPlayerPicks(notificationPlayerId, validMatchday || defaultPlayerPicksMatchday());
+      if (state.playerPicksUid !== notificationPlayerId) return;
+      notificationDeepLinkHandled = true;
+      clearNotificationRoute("ranking");
+      return;
+    }
+
+    if (validMatchday) {
+      state.matchday = validMatchday;
+      save();
+      setView("matches");
+      requestAnimationFrame(() => document.querySelector("#mecze")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+      notificationDeepLinkHandled = true;
+      clearNotificationRoute("matches");
+    }
+  } finally {
+    notificationRouteApplying = false;
+  }
 }
 
 function openAuthDialog() {
@@ -908,7 +1080,7 @@ function shouldShowAndroidAppPrompt() {
 }
 
 function showAndroidAppPrompt() {
-  if (!shouldShowAndroidAppPrompt()) return;
+  if (launchedFromNotification || !shouldShowAndroidAppPrompt()) return;
   const dialog = document.createElement("dialog");
   dialog.id = "androidAppDialog";
   dialog.className = "modal android-app-modal";
@@ -947,30 +1119,831 @@ function showAndroidAppPrompt() {
 }
 
 function chatNotificationsSupported() {
-  return "Notification" in window && "serviceWorker" in navigator;
+  return location.protocol === "https:"
+    && "Notification" in window
+    && "serviceWorker" in navigator
+    && "PushManager" in window
+    && Boolean(window.crypto?.subtle)
+    && Boolean(webPushPublicKey)
+    && Boolean(notificationApiBase);
 }
 
 function chatNotificationState() {
   if (!chatNotificationsSupported()) return "unsupported";
   if (Notification.permission === "denied") return "denied";
+  if (state.chatNotificationsBusy) return "busy";
+  if (state.chatNotificationsSyncPending) return "pending";
   return state.chatNotificationsEnabled && Notification.permission === "granted" ? "enabled" : "disabled";
 }
 
-async function toggleChatNotifications() {
-  if (!chatNotificationsSupported()) {
-    notify("To urządzenie nie obsługuje powiadomień webowych.");
+function webPushKeyBytes(value = webPushPublicKey) {
+  const padding = "=".repeat((4 - value.length % 4) % 4);
+  const decoded = atob(`${value}${padding}`.replaceAll("-", "+").replaceAll("_", "/"));
+  return Uint8Array.from(decoded, (character) => character.charCodeAt(0));
+}
+
+function samePushKey(left, right) {
+  if (!left || !right) return false;
+  const leftBytes = new Uint8Array(left);
+  const rightBytes = new Uint8Array(right);
+  return leftBytes.length === rightBytes.length && leftBytes.every((value, index) => value === rightBytes[index]);
+}
+
+async function readLocalChatPushState() {
+  if (!("caches" in window)) return {};
+  try {
+    const cache = await caches.open(CHAT_PUSH_STATE_CACHE);
+    const response = await cache.match(CHAT_PUSH_STATE_URL);
+    const value = response ? await response.json() : {};
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+async function withChatPushStateLock(operation) {
+  if (navigator.locks?.request) {
+    return navigator.locks.request("ekstraklapa-typer-chat-push-state", { mode: "exclusive" }, operation);
+  }
+  return operation();
+}
+
+async function writeLocalChatPushStateUnlocked(patch) {
+  if (!("caches" in window)) throw new Error("Pamięć stanu powiadomień nie jest dostępna.");
+  const cache = await caches.open(CHAT_PUSH_STATE_CACHE);
+  const previous = await readLocalChatPushState();
+  const next = {
+    ...previous,
+    ...patch,
+    updatedAt: new Date().toISOString()
+  };
+  await cache.put(CHAT_PUSH_STATE_URL, new Response(JSON.stringify(next), {
+    headers: { "content-type": "application/json; charset=utf-8" }
+  }));
+  return next;
+}
+
+async function writeLocalChatPushState(patch) {
+  return withChatPushStateLock(() => writeLocalChatPushStateUnlocked(patch));
+}
+
+async function ensureAppServiceWorkerRegistration() {
+  if (!("serviceWorker" in navigator) || location.protocol === "file:") {
+    throw new Error("Service worker nie jest obsługiwany na tym urządzeniu.");
+  }
+  if (!serviceWorkerRegistrationPromise) {
+    serviceWorkerRegistrationPromise = navigator.serviceWorker.register(`./sw.js?v=${APP_SERVICE_WORKER_VERSION}`, {
+      updateViaCache: "none"
+    }).then(async (registration) => {
+      await registration.update().catch(() => {});
+      const candidate = registration.installing || registration.waiting;
+      if (candidate && candidate.state !== "activated") {
+        await Promise.race([
+          new Promise((resolve) => {
+            const handleStateChange = () => {
+              if (candidate.state === "activated" || candidate.state === "redundant") {
+                candidate.removeEventListener("statechange", handleStateChange);
+                resolve();
+              }
+            };
+            candidate.addEventListener("statechange", handleStateChange);
+            handleStateChange();
+          }),
+          new Promise((resolve) => setTimeout(resolve, 5000))
+        ]);
+      }
+      const readyRegistration = await bounded(navigator.serviceWorker.ready, 7000);
+      if (!readyRegistration?.active) throw new Error("Service worker nie został aktywowany na czas.");
+      const activeVersion = new URL(readyRegistration.active.scriptURL).searchParams.get("v");
+      if (activeVersion !== APP_SERVICE_WORKER_VERSION) {
+        throw new Error("Nowa wersja obsługi powiadomień nie została jeszcze aktywowana. Odśwież aplikację.");
+      }
+      return readyRegistration;
+    }).catch((error) => {
+      serviceWorkerRegistrationPromise = null;
+      throw error;
+    });
+  }
+  return serviceWorkerRegistrationPromise;
+}
+
+async function appPushSubscription(create = false) {
+  const registration = await ensureAppServiceWorkerRegistration();
+  const expectedKey = webPushKeyBytes();
+  let subscription = await registration.pushManager.getSubscription();
+  let createdNow = false;
+  if (subscription && !samePushKey(subscription.options.applicationServerKey, expectedKey)) {
+    await subscription.unsubscribe();
+    subscription = null;
+  }
+  if (!subscription && create) {
+    subscription = await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: expectedKey
+    });
+    createdNow = true;
+  }
+  return { subscription, createdNow };
+}
+
+function serializablePushSubscription(subscription) {
+  const value = subscription?.toJSON?.();
+  if (!value?.endpoint || !value?.keys?.p256dh || !value?.keys?.auth) {
+    throw new Error("Przeglądarka nie zwróciła kompletnej subskrypcji Web Push.");
+  }
+  return {
+    endpoint: value.endpoint,
+    keys: { p256dh: value.keys.p256dh, auth: value.keys.auth }
+  };
+}
+
+async function callPushBackend(name, data) {
+  const paths = {
+    registerPushSubscription: "/api/push/register",
+    unregisterPushSubscription: "/api/push/unregister"
+  };
+  const path = paths[name];
+  if (!path) throw new Error("Nieznana operacja backendu powiadomień.");
+  return { data: await notificationApiRequest(path, data) };
+}
+
+async function notificationApiRequest(path, data = {}, options = {}) {
+  const base = String(notificationApiBase || "").replace(/\/$/, "");
+  const currentUser = state.auth?.currentUser;
+  if (!base || !currentUser) throw new Error("Backend powiadomień nie jest gotowy.");
+  const token = await currentUser.getIdToken();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 12000);
+  try {
+    const response = await fetch(`${base}${path}`, {
+      method: "POST",
+      mode: "cors",
+      credentials: "omit",
+      cache: "no-store",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify(data),
+      keepalive: options.keepalive === true,
+      signal: controller.signal
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = new Error(payload?.error || payload?.message || `Backend powiadomień: HTTP ${response.status}`);
+      error.status = response.status;
+      throw error;
+    }
+    return payload;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function reportNotificationSyncError(label, error) {
+  if (error?.name === "AbortError") console.warn(`${label}: backend nie odpowiedział na czas.`);
+  else console.warn(label, error);
+}
+
+function notificationOutboxId(type, uid, data) {
+  if (!uid) return "";
+  if (type === "player") return `player:${uid}`;
+  if (type === "chat" && typeof data?.messageId === "string" && data.messageId) return `chat:${uid}:${data.messageId}`;
+  if (type === "pick" && typerMatchIds.has(data?.matchId) && ["1", "X", "2"].includes(data?.pick)) {
+    return `pick:${uid}:${data.matchId}`;
+  }
+  return "";
+}
+
+function notificationOutboxSignature(type, data) {
+  if (type === "player") return "joined";
+  if (type === "chat") return String(data?.messageId || "");
+  if (type === "pick") return `${data?.matchId || ""}:${data?.pick || ""}`;
+  return "";
+}
+
+function notificationOutboxTtl(type) {
+  if (type === "chat") return NOTIFICATION_OUTBOX_CHAT_TTL_MS;
+  if (type === "player") return NOTIFICATION_OUTBOX_PLAYER_TTL_MS;
+  return NOTIFICATION_OUTBOX_PICK_TTL_MS;
+}
+
+function normalizeNotificationOutboxItem(value, now = Date.now()) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || typeof value.uid !== "string") return null;
+  const type = ["chat", "player", "pick"].includes(value.type) ? value.type : "";
+  const data = asRecord(value.data);
+  const id = notificationOutboxId(type, value.uid, data);
+  const signature = notificationOutboxSignature(type, data);
+  if (!id || !signature) return null;
+  const createdAt = Number.isFinite(value.createdAt) ? value.createdAt : now;
+  const expiresAt = Number.isFinite(value.expiresAt) ? value.expiresAt : createdAt + notificationOutboxTtl(type);
+  if (expiresAt <= now) return null;
+  return {
+    id,
+    uid: value.uid,
+    type,
+    data,
+    signature,
+    createdAt,
+    updatedAt: Number.isFinite(value.updatedAt) ? value.updatedAt : createdAt,
+    expiresAt,
+    attempts: Math.max(0, Math.min(12, Number(value.attempts) || 0)),
+    nextAttemptAt: Math.max(0, Number(value.nextAttemptAt) || 0),
+    sentAt: Math.max(0, Number(value.sentAt) || 0)
+  };
+}
+
+function readNotificationOutbox() {
+  const now = Date.now();
+  try {
+    const stored = JSON.parse(localStorage.getItem(NOTIFICATION_OUTBOX_KEY) || "[]");
+    if (!Array.isArray(stored)) return [];
+    return stored.map((item) => normalizeNotificationOutboxItem(item, now)).filter(Boolean);
+  } catch (error) {
+    console.warn("Pominięto uszkodzoną kolejkę powiadomień:", error);
+    return [];
+  }
+}
+
+function writeNotificationOutbox(items) {
+  const now = Date.now();
+  const normalized = items.map((item) => normalizeNotificationOutboxItem(item, now)).filter(Boolean);
+  const pending = normalized.filter((item) => !item.sentAt).sort((a, b) => b.updatedAt - a.updatedAt);
+  const receipts = normalized.filter((item) => item.sentAt).sort((a, b) => b.sentAt - a.sentAt);
+  try {
+    localStorage.setItem(NOTIFICATION_OUTBOX_KEY, JSON.stringify(
+      [...pending, ...receipts].slice(0, NOTIFICATION_OUTBOX_MAX_ITEMS)
+    ));
+  } catch (error) {
+    console.warn("Nie udało się zapisać kolejki powiadomień:", error);
+  }
+}
+
+function clearNotificationOutboxForUser(uid) {
+  if (!uid) return;
+  writeNotificationOutbox(readNotificationOutbox().filter((item) => item.uid !== uid));
+}
+
+function enqueueNotificationOutbox(type, uid, data, options = {}) {
+  const id = notificationOutboxId(type, uid, data);
+  const signature = notificationOutboxSignature(type, data);
+  if (!id || !signature) return false;
+  const now = Date.now();
+  const items = readNotificationOutbox();
+  const previous = items.find((item) => item.id === id);
+  if (previous?.signature === signature) {
+    if (!previous.sentAt && options.schedule !== false) scheduleNotificationOutboxFlush(500);
+    return true;
+  }
+  const next = items.filter((item) => item.id !== id);
+  next.push({
+    id,
+    uid,
+    type,
+    data: { ...data },
+    signature,
+    createdAt: now,
+    updatedAt: now,
+    expiresAt: now + notificationOutboxTtl(type),
+    attempts: 0,
+    nextAttemptAt: 0,
+    sentAt: 0
+  });
+  writeNotificationOutbox(next);
+  if (options.schedule !== false) scheduleNotificationOutboxFlush(250);
+  return true;
+}
+
+function updateNotificationOutboxItems(selected, operation) {
+  if (!selected.length) return;
+  const selectedById = new Map(selected.map((item) => [item.id, item.signature]));
+  const next = [];
+  readNotificationOutbox().forEach((item) => {
+    if (selectedById.get(item.id) !== item.signature) {
+      next.push(item);
+      return;
+    }
+    const updated = operation(item);
+    if (updated) next.push(updated);
+  });
+  writeNotificationOutbox(next);
+}
+
+function markNotificationOutboxSent(selected) {
+  const now = Date.now();
+  updateNotificationOutboxItems(selected, (item) => {
+    if (item.type === "pick") return null;
+    return {
+      ...item,
+      sentAt: now,
+      updatedAt: now,
+      nextAttemptAt: 0,
+      expiresAt: now + (item.type === "player" ? 180 * 24 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000)
+    };
+  });
+}
+
+function discardNotificationOutboxItems(selected) {
+  updateNotificationOutboxItems(selected, () => null);
+}
+
+function retryNotificationOutboxItems(selected, error) {
+  const now = Date.now();
+  updateNotificationOutboxItems(selected, (item) => {
+    const attempts = item.attempts + 1;
+    const rateLimited = error?.status === 429;
+    const delay = rateLimited
+      ? 60_000
+      : Math.min(5 * 60_000, 5000 * (2 ** Math.min(attempts - 1, 6)));
+    return { ...item, attempts, updatedAt: now, nextAttemptAt: now + delay };
+  });
+}
+
+function rejectedPicksFromResponse(payload) {
+  if (!Array.isArray(payload?.rejected)) return [];
+  return payload.rejected.map((entry) => {
+    if (typeof entry === "string") return { matchId: entry, retryable: false, reason: "rejected" };
+    return {
+      matchId: typeof entry?.matchId === "string" ? entry.matchId : "",
+      retryable: entry?.retryable === true,
+      reason: entry?.reason || entry?.code || "rejected"
+    };
+  }).filter((entry) => entry.matchId);
+}
+
+function enqueueCurrentNotificationPick(uid, entry, options = {}) {
+  if (!uid || state.user?.uid !== uid || state.predictions?.[entry?.matchId] !== entry?.pick) return false;
+  return enqueueNotificationOutbox("pick", uid, entry, options);
+}
+
+function handlePartialPickSync(entries, payload, { outbox = false, uid = state.user?.uid } = {}) {
+  const rejected = rejectedPicksFromResponse(payload);
+  if (!rejected.length) {
+    if (Number.isInteger(payload?.count) && payload.count < entries.length) {
+      throw new Error("Backend zwrócił niepełny wynik synchronizacji typów bez listy odrzuceń.");
+    }
+    if (outbox) markNotificationOutboxSent(entries);
     return;
   }
-  if (state.chatNotificationsEnabled && Notification.permission === "granted") {
-    state.chatNotificationsEnabled = false;
-    save();
-    render();
-    notify("Powiadomienia czatu wyłączone.");
+  const rejectedById = new Map(rejected.map((entry) => [entry.matchId, entry]));
+  const accepted = entries.filter((entry) => !rejectedById.has(entry.data?.matchId || entry.matchId));
+  const retryable = entries.filter((entry) => rejectedById.get(entry.data?.matchId || entry.matchId)?.retryable);
+  const permanent = entries.filter((entry) => {
+    const rejection = rejectedById.get(entry.data?.matchId || entry.matchId);
+    return rejection && !rejection.retryable;
+  });
+  if (outbox) {
+    markNotificationOutboxSent(accepted);
+    discardNotificationOutboxItems(permanent);
+    if (retryable.length) retryNotificationOutboxItems(retryable, { status: 503 });
+  } else {
+    retryable.forEach((entry) => enqueueCurrentNotificationPick(uid, entry, { schedule: false }));
+  }
+  rejected.forEach((entry) => console.warn(`Backend odrzucił synchronizację typu ${entry.matchId}: ${entry.reason}`));
+}
+
+function notificationOutboxPath(item) {
+  if (item.type === "chat") return "/api/events/chat-message";
+  if (item.type === "player") return "/api/events/player-joined";
+  return "/api/picks/sync";
+}
+
+function scheduleNotificationOutboxFlush(delay = 1000) {
+  if (!state.user?.uid) return;
+  const dueAt = Date.now() + Math.max(0, delay);
+  if (notificationOutboxRetryTimer && notificationOutboxRetryDueAt <= dueAt) return;
+  clearTimeout(notificationOutboxRetryTimer);
+  notificationOutboxRetryDueAt = dueAt;
+  notificationOutboxRetryTimer = setTimeout(() => {
+    notificationOutboxRetryTimer = null;
+    notificationOutboxRetryDueAt = 0;
+    flushNotificationOutbox(state.user?.uid).catch((error) => reportNotificationSyncError("Nie udało się opróżnić kolejki powiadomień", error));
+  }, Math.max(0, dueAt - Date.now()));
+}
+
+function pendingNotificationOutboxForUser(uid) {
+  const now = Date.now();
+  return readNotificationOutbox()
+    .filter((item) => item.uid === uid && !item.sentAt)
+    .sort((a, b) => {
+      const aReady = a.nextAttemptAt <= now ? 0 : 1;
+      const bReady = b.nextAttemptAt <= now ? 0 : 1;
+      if (aReady !== bReady) return aReady - bReady;
+      const typePriority = (item) => item.type === "pick" ? 1 : 0;
+      if (typePriority(a) !== typePriority(b)) return typePriority(a) - typePriority(b);
+      return a.createdAt - b.createdAt;
+    });
+}
+
+async function performNotificationOutboxFlush(uid) {
+  if (!uid || !navigator.onLine || state.auth?.currentUser?.uid !== uid || state.user?.uid !== uid) return;
+  let requests = 0;
+  while (requests < NOTIFICATION_OUTBOX_MAX_REQUESTS) {
+    const pending = pendingNotificationOutboxForUser(uid);
+    const ready = pending.filter((item) => item.nextAttemptAt <= Date.now());
+    if (!ready.length) break;
+    const first = ready[0];
+    const selected = first.type === "pick"
+      ? ready.filter((item) => item.type === "pick" && (!first.attempts ? item.attempts === 0 : item.id === first.id))
+        .slice(0, first.attempts ? 1 : NOTIFICATION_OUTBOX_PICK_BATCH_SIZE)
+      : [first];
+    const path = notificationOutboxPath(first);
+    const body = first.type === "pick"
+      ? { picks: selected.map((item) => item.data) }
+      : first.data;
+    requests += 1;
+    try {
+      const payload = await notificationApiRequest(path, body, { keepalive: true });
+      if (first.type === "pick") handlePartialPickSync(selected, payload, { outbox: true });
+      else markNotificationOutboxSent(selected);
+    } catch (error) {
+      const permanent = [400, 404, 409, 410, 422].includes(error?.status);
+      if (permanent && (first.type !== "pick" || selected.length === 1)) {
+        discardNotificationOutboxItems(selected);
+        reportNotificationSyncError("Backend trwale odrzucił element kolejki powiadomień", error);
+        continue;
+      }
+      retryNotificationOutboxItems(selected, error);
+      reportNotificationSyncError("Element kolejki powiadomień zostanie ponowiony", error);
+      if (!permanent) break;
+    }
+  }
+  const remaining = pendingNotificationOutboxForUser(uid);
+  if (!remaining.length) return;
+  const earliest = Math.min(...remaining.map((item) => item.nextAttemptAt || Date.now()));
+  scheduleNotificationOutboxFlush(Math.max(12_000, earliest - Date.now()));
+}
+
+function flushNotificationOutbox(uid = state.user?.uid) {
+  const queued = notificationOutboxFlushOperation.catch(() => {}).then(() => performNotificationOutboxFlush(uid));
+  notificationOutboxFlushOperation = queued.catch(() => {});
+  return queued;
+}
+
+async function syncNotificationPicks(picks = state.confirmedPredictions) {
+  if (!state.participantReady || !state.user || state.auth?.currentUser?.uid !== state.user.uid) return;
+  const uid = state.user.uid;
+  const entries = Object.entries(asRecord(picks))
+    .filter(([matchId, pick]) => typerMatchIds.has(matchId) && ["1", "X", "2"].includes(pick))
+    .map(([matchId, pick]) => ({ matchId, pick }));
+  const errors = [];
+  for (let index = 0; index < entries.length; index += NOTIFICATION_OUTBOX_PICK_BATCH_SIZE) {
+    if (state.auth?.currentUser?.uid !== uid || state.user?.uid !== uid) return;
+    const chunk = entries.slice(index, index + NOTIFICATION_OUTBOX_PICK_BATCH_SIZE);
+    try {
+      const payload = await notificationApiRequest("/api/picks/sync", { picks: chunk });
+      handlePartialPickSync(chunk, payload, { uid });
+    } catch (error) {
+      chunk.forEach((entry) => enqueueCurrentNotificationPick(uid, entry, { schedule: false }));
+      errors.push(error);
+      const isolatedRejection = [400, 404, 409, 410, 422].includes(error?.status);
+      if (!isolatedRejection) {
+        entries.slice(index + NOTIFICATION_OUTBOX_PICK_BATCH_SIZE)
+          .forEach((entry) => enqueueCurrentNotificationPick(uid, entry, { schedule: false }));
+        break;
+      }
+    }
+  }
+  if (pendingNotificationOutboxForUser(uid).length) scheduleNotificationOutboxFlush(2000);
+  if (errors.length) {
+    throw new AggregateError(errors, `Nie udało się od razu zsynchronizować ${errors.length} partii typów.`);
+  }
+}
+
+function queueNotificationPicksSync(picks = state.confirmedPredictions, uid = state.user?.uid) {
+  const snapshot = { ...asRecord(picks) };
+  const signature = Object.entries(snapshot)
+    .filter(([matchId, pick]) => typerMatchIds.has(matchId) && ["1", "X", "2"].includes(pick))
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([matchId, pick]) => `${matchId}:${pick}`)
+    .join("|");
+  const syncKey = `${uid || ""}:${signature}`;
+  if (notificationFullPickSyncKey === syncKey) {
+    if (notificationFullPickSyncPromise) return notificationFullPickSyncPromise;
+    if (Date.now() - notificationFullPickSyncCompletedAt < 5 * 60 * 1000) return Promise.resolve();
+  }
+  notificationFullPickSyncKey = syncKey;
+  const queued = notificationPickSyncOperation.catch(() => {}).then(() => {
+    if (!uid || state.user?.uid !== uid || state.auth?.currentUser?.uid !== uid) return;
+    return syncNotificationPicks(snapshot);
+  });
+  notificationPickSyncOperation = queued.catch(() => {});
+  notificationFullPickSyncPromise = queued;
+  queued.then(() => {
+    if (notificationFullPickSyncKey === syncKey) notificationFullPickSyncCompletedAt = Date.now();
+  }).finally(() => {
+    if (notificationFullPickSyncPromise === queued) notificationFullPickSyncPromise = null;
+  }).catch(() => {});
+  return queued;
+}
+
+function queueNotificationPickSync(matchId, pick, uid = state.user?.uid) {
+  if (uid) enqueueNotificationOutbox("pick", uid, { matchId, pick });
+  const queued = notificationPickSyncOperation.catch(() => {}).then(() => {
+    if (!uid || state.user?.uid !== uid || state.auth?.currentUser?.uid !== uid) return;
+    return flushNotificationOutbox(uid);
+  });
+  notificationPickSyncOperation = queued.catch(() => {});
+  return queued;
+}
+
+async function announceSeasonParticipant() {
+  const uid = state.user?.uid;
+  if (!uid || !enqueueNotificationOutbox("player", uid, {})) return;
+  await flushNotificationOutbox(uid);
+}
+
+async function announceChatMessage(messageId) {
+  const uid = state.user?.uid;
+  if (!uid || !messageId || !enqueueNotificationOutbox("chat", uid, { messageId })) return;
+  await flushNotificationOutbox(uid);
+}
+
+function setChatNotificationPreference(uid, enabled) {
+  if (!uid) return;
+  if (enabled) state.chatNotificationsByUser[uid] = true;
+  else delete state.chatNotificationsByUser[uid];
+  if (state.user?.uid === uid) state.chatNotificationsEnabled = enabled;
+  save();
+}
+
+function chatPushSessionIsCurrent(uid, revision) {
+  return revision === chatPushSessionRevision
+    && !chatPushSessionClosing
+    && state.auth?.currentUser?.uid === uid
+    && state.user?.uid === uid
+    && state.participantReady;
+}
+
+function queueChatPushOperation(operation) {
+  chatPushPendingOperations += 1;
+  state.chatNotificationsBusy = true;
+  if (state.view === "settings") render();
+  const queued = chatPushOperation.catch(() => {}).then(operation);
+  chatPushOperation = queued.catch(() => {});
+  return queued.finally(() => {
+    chatPushPendingOperations = Math.max(0, chatPushPendingOperations - 1);
+    state.chatNotificationsBusy = chatPushPendingOperations > 0;
+    if (state.view === "settings") render();
+  });
+}
+
+async function detachLocalChatPush() {
+  let muted = false;
+  try {
+    await writeLocalChatPushState({
+      muted: true,
+      endpoint: "",
+      rotationToken: "",
+      needsSync: false,
+      rotationAttempts: 0
+    });
+    muted = true;
+  } catch (error) {
+    console.warn("Nie udało się zapisać lokalnego wyciszenia push:", error);
+  }
+
+  const registration = "serviceWorker" in navigator
+    ? await navigator.serviceWorker.getRegistration()
+    : null;
+  const subscription = await registration?.pushManager?.getSubscription?.();
+  const endpoint = subscription?.endpoint || "";
+  let detached = !subscription;
+  if (subscription) {
+    try {
+      detached = await subscription.unsubscribe();
+    } catch (error) {
+      console.warn("Nie udało się wypisać lokalnej subskrypcji push:", error);
+    }
+  }
+  if (!detached && registration) {
+    try {
+      detached = await registration.unregister();
+      if (detached) serviceWorkerRegistrationPromise = null;
+    } catch (error) {
+      console.warn("Nie udało się awaryjnie wyrejestrować service workera:", error);
+    }
+  }
+  if (!muted && !detached) {
+    throw new Error("Nie udało się bezpiecznie odłączyć powiadomień tego konta.");
+  }
+  return endpoint;
+}
+
+async function bounded(promise, timeoutMs = 5000) {
+  let timeoutId;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error("Przekroczono czas operacji push.")), timeoutMs);
+      })
+    ]);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function enableChatPush(uid, options = {}) {
+  if (chatPushSessionClosing || state.chatNotificationsBusy || !uid || state.auth?.currentUser?.uid !== uid || !state.participantReady) return false;
+  const revision = chatPushSessionRevision;
+  return queueChatPushOperation(async () => {
+    let subscription = null;
+    let createdNow = false;
+    let backendRegistered = false;
+    try {
+      if (!chatPushSessionIsCurrent(uid, revision)) return false;
+      ({ subscription, createdNow } = await appPushSubscription(true));
+      if (!subscription || !chatPushSessionIsCurrent(uid, revision)) {
+        await subscription?.unsubscribe().catch(() => {});
+        return false;
+      }
+      const subscriptionData = serializablePushSubscription(subscription);
+      await withChatPushStateLock(async () => {
+        if (!chatPushSessionIsCurrent(uid, revision)) throw new Error("Sesja zmieniła się przed rejestracją push.");
+        const localState = await readLocalChatPushState();
+        const reusableRotationToken = localState.endpoint === subscription.endpoint
+          && /^[A-Za-z0-9_-]{43}$/.test(localState.rotationToken || "")
+          ? localState.rotationToken
+          : "";
+        const registrationResult = await callPushBackend("registerPushSubscription", {
+          subscription: subscriptionData,
+          rotationToken: reusableRotationToken
+        });
+        backendRegistered = true;
+        const rotationToken = typeof registrationResult?.data?.rotationToken === "string"
+          ? registrationResult.data.rotationToken
+          : "";
+        if (!/^[A-Za-z0-9_-]{43}$/.test(rotationToken)) {
+          throw new Error("Backend nie zwrócił bezpiecznego tokenu odnowienia push.");
+        }
+        if (!chatPushSessionIsCurrent(uid, revision)) throw new Error("Sesja zmieniła się podczas rejestracji push.");
+        await writeLocalChatPushStateUnlocked({
+          muted: false,
+          endpoint: subscription.endpoint,
+          rotationToken,
+          needsSync: false,
+          rotationAttempts: 0
+        });
+      });
+      if (!chatPushSessionIsCurrent(uid, revision)) {
+        await detachLocalChatPush().catch(() => {});
+        if (state.auth?.currentUser?.uid === uid) {
+          await callPushBackend("unregisterPushSubscription", { endpoint: subscription.endpoint }).catch(() => {});
+        }
+        return false;
+      }
+      setChatNotificationPreference(uid, true);
+      state.chatNotificationsSyncPending = false;
+      queueNotificationPicksSync(state.confirmedPredictions, uid).catch((error) => reportNotificationSyncError("Nie udało się zsynchronizować typów po włączeniu powiadomień", error));
+      if (!options.silent) notify("Powiadomienia Typera są włączone.");
+      return true;
+    } catch (error) {
+      const sessionChanged = !chatPushSessionIsCurrent(uid, revision);
+      console.error("Nie udało się włączyć powiadomień Typera:", error);
+      if (backendRegistered && subscription && state.auth?.currentUser?.uid === uid) {
+        await callPushBackend("unregisterPushSubscription", { endpoint: subscription.endpoint }).catch(() => {});
+      }
+      if (sessionChanged || createdNow) {
+        await subscription?.unsubscribe().catch(() => {});
+        if (!sessionChanged) {
+          setChatNotificationPreference(uid, false);
+          state.chatNotificationsSyncPending = false;
+        }
+      } else {
+        setChatNotificationPreference(uid, true);
+        state.chatNotificationsSyncPending = true;
+      }
+      if (!options.silent && !sessionChanged) notify("Nie udało się połączyć urządzenia z kanałem push.");
+      return false;
+    }
+  });
+}
+
+async function disableChatPush(uid, options = {}) {
+  chatPushSessionRevision += 1;
+  chatPushSessionClosing = true;
+  state.chatNotificationsBusy = true;
+  state.chatNotificationsSyncPending = false;
+  if (!options.preservePreference) setChatNotificationPreference(uid, false);
+  let firstEndpoint = "";
+  try {
+    firstEndpoint = await detachLocalChatPush();
+  } catch (error) {
+    chatPushSessionClosing = false;
+    state.chatNotificationsBusy = chatPushPendingOperations > 0;
+    state.chatNotificationsSyncPending = true;
+    if (!options.preservePreference) setChatNotificationPreference(uid, true);
+    if (state.view === "settings") render();
+    console.error("Nie udało się bezpiecznie wyłączyć powiadomień:", error);
+    if (!options.silent) notify("Nie udało się bezpiecznie odłączyć powiadomień. Spróbuj ponownie.");
+    return false;
+  }
+  return queueChatPushOperation(async () => {
+    let backendError = null;
+    const endpoints = new Set([firstEndpoint]);
+    endpoints.add(await detachLocalChatPush().catch(() => ""));
+    endpoints.delete("");
+    if (uid && state.auth?.currentUser?.uid === uid) {
+      for (const endpoint of endpoints) {
+        try {
+          await callPushBackend("unregisterPushSubscription", { endpoint });
+        } catch (error) {
+          backendError ||= error;
+        }
+      }
+    }
+    if (backendError) console.warn("Urządzenie odłączono lokalnie; backend usunie wygasłą subskrypcję:", backendError);
+    if (!options.silent) notify("Powiadomienia Typera wyłączone.");
+    return true;
+  }).finally(() => {
+    chatPushSessionClosing = false;
+  });
+}
+
+async function reconcileChatPush(uid) {
+  state.chatNotificationsEnabled = state.chatNotificationsByUser[uid] === true;
+  state.chatNotificationsSyncPending = false;
+  if (!chatNotificationsSupported()) return;
+  if (!state.chatNotificationsEnabled || Notification.permission !== "granted") {
+    await disableChatPush(uid, { silent: true, render: false });
     return;
+  }
+  await enableChatPush(uid, { silent: true });
+}
+
+async function retryChatPushIfNeeded() {
+  const uid = state.user?.uid;
+  if (!uid || !state.participantReady || state.chatNotificationsByUser[uid] !== true
+    || !chatNotificationsSupported() || Notification.permission !== "granted"
+    || state.chatNotificationsBusy || chatPushSessionClosing) return;
+  const localState = await readLocalChatPushState();
+  const localStateReady = localState.muted === false
+    && typeof localState.endpoint === "string"
+    && localState.endpoint.startsWith("https://")
+    && /^[A-Za-z0-9_-]{43}$/.test(localState.rotationToken || "");
+  if (!state.chatNotificationsSyncPending && localState.needsSync !== true && localStateReady) return;
+  await enableChatPush(uid, { silent: true });
+}
+
+async function detachChatPushBeforeLogout(uid) {
+  chatPushSessionRevision += 1;
+  chatPushSessionClosing = true;
+  state.chatNotificationsBusy = true;
+  state.chatNotificationsSyncPending = false;
+  setChatNotificationPreference(uid, false);
+  let firstEndpoint = "";
+  try {
+    firstEndpoint = await detachLocalChatPush();
+  } catch (error) {
+    chatPushSessionClosing = false;
+    state.chatNotificationsBusy = chatPushPendingOperations > 0;
+    state.chatNotificationsSyncPending = true;
+    setChatNotificationPreference(uid, true);
+    throw error;
+  }
+  const endpoints = new Set([firstEndpoint]);
+  await bounded(chatPushOperation, 5000).catch(() => {});
+  endpoints.add(await detachLocalChatPush().catch(() => ""));
+  endpoints.delete("");
+  if (state.auth?.currentUser?.uid === uid) {
+    for (const endpoint of endpoints) {
+      await bounded(callPushBackend("unregisterPushSubscription", { endpoint }), 5000).catch((error) => {
+        console.warn("Subskrypcja push została odłączona lokalnie, ale backend odpowiadał zbyt długo:", error);
+      });
+    }
+  }
+}
+
+async function detachChatPushWithoutSession() {
+  chatPushSessionRevision += 1;
+  chatPushSessionClosing = true;
+  state.chatNotificationsEnabled = false;
+  state.chatNotificationsSyncPending = false;
+  try {
+    await detachLocalChatPush();
+  } finally {
+    chatPushSessionClosing = false;
+  }
+}
+
+async function toggleChatNotifications() {
+  if (chatPushSessionClosing || state.chatNotificationsBusy) return { completed: false, enabled: state.chatNotificationsEnabled };
+  if (!chatNotificationsSupported()) {
+    notify("To urządzenie nie obsługuje pełnych powiadomień push.");
+    return { completed: false, enabled: false };
+  }
+  if (state.chatNotificationsSyncPending && Notification.permission === "granted") {
+    const enabled = await enableChatPush(state.user?.uid);
+    return { completed: enabled, enabled };
+  }
+  if (state.chatNotificationsEnabled && Notification.permission === "granted") {
+    const disabled = await disableChatPush(state.user?.uid);
+    return { completed: true, enabled: !disabled };
   }
   if (Notification.permission === "denied") {
     notify("Powiadomienia są zablokowane w ustawieniach aplikacji lub przeglądarki.");
-    return;
+    return { completed: true, enabled: false };
   }
   let permission = "denied";
   try {
@@ -978,32 +1951,94 @@ async function toggleChatNotifications() {
   } catch (error) {
     console.warn("Nie udało się poprosić o zgodę na powiadomienia:", error);
     notify("Nie udało się otworzyć zgody na powiadomienia.");
-    return;
+    return { completed: false, enabled: false };
   }
-  state.chatNotificationsEnabled = permission === "granted";
-  save();
-  render();
-  notify(permission === "granted" ? "Powiadomienia czatu włączone." : "Nie przyznano zgody na powiadomienia.");
+  if (permission !== "granted") {
+    setChatNotificationPreference(state.user?.uid, false);
+    state.chatNotificationsSyncPending = false;
+    render();
+    notify("Nie przyznano zgody na powiadomienia.");
+    return { completed: true, enabled: false };
+  }
+  const enabled = await enableChatPush(state.user?.uid);
+  return { completed: enabled, enabled };
 }
 
-async function showChatNotification(message) {
-  if (!state.chatNotificationsEnabled || !chatNotificationsSupported() || Notification.permission !== "granted") return;
-  if (!message || message.uid === state.user?.uid || !document.hidden) return;
-  if (Date.now() - firestoreTimeMs(message.createdAt) > 120_000) return;
-  const profile = profileForUid(message.uid);
-  const title = profile.name && profile.name !== "Gracz" ? profile.name : "Nowa wiadomość w szatni";
-  const body = compactChatMessage(message);
+function notificationPrimerStorageKey(uid = state.user?.uid) {
+  return uid ? `${NOTIFICATION_PRIMER_KEY}:${uid}` : "";
+}
+
+function rememberNotificationPrimer(action) {
+  const key = notificationPrimerStorageKey();
+  if (!key) return;
   try {
-    const registration = await navigator.serviceWorker.ready;
-    await registration.showNotification(title, {
-      body,
-      icon: "./assets/brand/app-icon-192.png?v=14",
-      badge: "./assets/brand/favicon-32.png?v=14",
-      tag: `chat-${message.id}`,
-      data: { url: new URL("./?chat=open#matches", registration.scope).href }
-    });
-  } catch (error) {
-    console.warn("Nie udało się pokazać powiadomienia czatu:", error);
+    localStorage.setItem(key, JSON.stringify({ action, at: Date.now() }));
+  } catch {}
+}
+
+function notificationPrimerRecentlyDismissed() {
+  const key = notificationPrimerStorageKey();
+  if (!key) return true;
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || "null");
+    return ["later", "asked"].includes(value?.action)
+      && Number.isFinite(value.at)
+      && Date.now() - value.at < NOTIFICATION_PRIMER_COOLDOWN_MS;
+  } catch {
+    return false;
+  }
+}
+
+function shouldShowNotificationPrimer() {
+  if (launchedFromNotification || !state.user || !state.userDataReady || !state.participantReady) return false;
+  if (notificationPrimerBusy || chatPushSessionClosing || state.chatNotificationsBusy) return false;
+  if (!chatNotificationsSupported() || Notification.permission === "denied" || state.chatNotificationsEnabled) return false;
+  if (notificationPrimerRecentlyDismissed()) return false;
+  return !document.querySelector("dialog[open]");
+}
+
+function scheduleNotificationPrimer(delay = 1000, retry = false) {
+  if (!retry) notificationPrimerRetries = 0;
+  clearTimeout(notificationPrimerTimer);
+  if (launchedFromNotification || !state.user) return;
+  notificationPrimerTimer = setTimeout(() => {
+    const dialog = document.querySelector("#notificationPrimerDialog");
+    if (!dialog || dialog.open) return;
+    if (!shouldShowNotificationPrimer()) {
+      if (state.user && state.userDataReady && state.participantReady && !notificationPrimerRecentlyDismissed()
+        && globalThis.Notification?.permission !== "denied"
+        && (document.querySelector("dialog[open]") || chatPushSessionClosing || state.chatNotificationsBusy)) {
+        notificationPrimerRetries += 1;
+        if (notificationPrimerRetries < 20) scheduleNotificationPrimer(1500, true);
+      }
+      return;
+    }
+    dialog.showModal();
+  }, delay);
+}
+
+function dismissNotificationPrimer() {
+  if (notificationPrimerBusy || state.chatNotificationsBusy) return;
+  rememberNotificationPrimer("later");
+  document.querySelector("#notificationPrimerDialog")?.close();
+}
+
+async function enableNotificationsFromPrimer() {
+  const dialog = document.querySelector("#notificationPrimerDialog");
+  if (!dialog?.open || notificationPrimerBusy || chatPushSessionClosing || state.chatNotificationsBusy || !chatNotificationsSupported()) return;
+  notificationPrimerBusy = true;
+  const controls = [...dialog.querySelectorAll("button")];
+  controls.forEach((button) => { button.disabled = true; });
+  dialog.setAttribute("aria-busy", "true");
+  try {
+    const result = await toggleChatNotifications();
+    if (!result?.completed) return;
+    rememberNotificationPrimer("asked");
+    dialog.close();
+  } finally {
+    notificationPrimerBusy = false;
+    dialog.removeAttribute("aria-busy");
+    controls.forEach((button) => { button.disabled = false; });
   }
 }
 
@@ -1169,7 +2204,7 @@ async function loadPlayerPicksMatchday(matchday) {
   renderPlayerPicksDialog();
 }
 
-async function openPlayerPicks(uid) {
+async function openPlayerPicks(uid, requestedMatchday = defaultPlayerPicksMatchday()) {
   if (!uid) return;
   if (!state.user || state.auth?.currentUser?.uid !== state.user.uid) {
     openAuthDialog();
@@ -1177,11 +2212,15 @@ async function openPlayerPicks(uid) {
     return;
   }
   if (!state.participantReady) {
-    const activated = await activateSeasonParticipant(state.user.uid, { notifyOnError: true });
+    const sessionUid = state.user.uid;
+    const activated = await activateSeasonParticipant(sessionUid, { notifyOnError: true });
     if (!activated) return;
+    if (state.auth?.currentUser?.uid !== sessionUid || state.user?.uid !== sessionUid) return;
   }
   state.playerPicksUid = uid;
-  state.playerPicksMatchday = defaultPlayerPicksMatchday();
+  state.playerPicksMatchday = Number.isInteger(requestedMatchday) && requestedMatchday >= 1 && requestedMatchday <= LAST_MATCHDAY
+    ? requestedMatchday
+    : defaultPlayerPicksMatchday();
   document.querySelector("#accountDialog")?.close();
   if (state.chatOpen) toggleChat(false);
   const dialog = mountPlayerPicksDialog();
@@ -1726,7 +2765,7 @@ async function sendChatMessage() {
       image,
       replyToId: replyTo?.id || "",
       createdAt: serverTimestamp()
-    }).then(() => ({ status: "saved" }), (error) => ({ status: "failed", error }));
+    }).then((reference) => ({ status: "saved", messageId: reference.id }), (error) => ({ status: "failed", error }));
     if (state.auth?.currentUser?.uid !== uid) return;
     state.chatDraft = "";
     state.chatImage = "";
@@ -1741,12 +2780,18 @@ async function sendChatMessage() {
     if (result.status === "failed") {
       throw result.error;
     }
+    if (result.status === "saved") {
+      announceChatMessage(result.messageId).catch((error) => reportNotificationSyncError("Nie udało się rozesłać powiadomienia z chatu", error));
+    }
     if (result.status === "pending") {
       notify("Wiadomość czeka na połączenie z internetem");
       writeResult.then((lateResult) => {
         if (lateResult.status === "failed" && state.auth?.currentUser?.uid === uid) {
           console.error("Opóźniona wysyłka wiadomości nie powiodła się:", lateResult.error);
           notify("Nie udało się zsynchronizować wiadomości");
+        }
+        if (lateResult.status === "saved" && state.auth?.currentUser?.uid === uid) {
+          announceChatMessage(lateResult.messageId).catch((error) => reportNotificationSyncError("Nie udało się rozesłać opóźnionego powiadomienia z chatu", error));
         }
       });
     }
@@ -2070,7 +3115,6 @@ function ensureChatProfile(uid) {
 function stopChatRealtime() {
   chatUnsubscribes.forEach((unsubscribe) => unsubscribe());
   chatUnsubscribes = [];
-  chatNotificationsPrimed = false;
   chatProfileLoads.clear();
   state.chat = [];
   state.chatLive = [];
@@ -2111,9 +3155,6 @@ function startChatRealtime(uid) {
   chatUnsubscribes.push(onSnapshot(messageQuery, (snapshot) => {
     const previousLive = state.chatLive;
     const nextLive = snapshot.docs.map(normalizeChatMessage).reverse();
-    const addedMessages = chatNotificationsPrimed
-      ? snapshot.docChanges().filter((change) => change.type === "added").map((change) => normalizeChatMessage(change.doc))
-      : [];
     const nextIds = new Set(nextLive.map((message) => message.id));
     const older = new Map(state.chatOlder.map((message) => [message.id, message]));
     nextLive.forEach((message) => older.delete(message.id));
@@ -2132,8 +3173,6 @@ function startChatRealtime(uid) {
     state.chatStatus = "ready";
     rebuildChatList();
     updateChatWidget();
-    chatNotificationsPrimed = true;
-    addedMessages.forEach((message) => showChatNotification(message));
   }, (error) => {
     console.error("Chat realtime jest niedostępny:", error);
     state.chatStatus = "error";
@@ -2354,6 +3393,7 @@ async function handleAuthState(user) {
   const previousUid = state.user?.uid || null;
   state.userDataReady = false;
   if (previousUid && (!user || previousUid !== user.uid)) {
+    await detachChatPushWithoutSession();
     state.predictions = {};
     state.confirmedPredictions = {};
     state.playerPicksCache = {};
@@ -2363,6 +3403,7 @@ async function handleAuthState(user) {
     return;
   }
   if (!user) {
+    await detachChatPushWithoutSession();
     document.querySelector("#playerPicksDialog")?.close();
     state.playerPicksUid = null;
     state.playerPicksCache = {};
@@ -2386,6 +3427,7 @@ async function handleAuthState(user) {
   rankingReloadPending = false;
   stopChatRealtime();
   if (user && !isGoogleAccount(user)) {
+    await detachChatPushWithoutSession();
     state.user = null;
     state.predictions = {};
     state.confirmedPredictions = {};
@@ -2406,6 +3448,7 @@ async function handleAuthState(user) {
     state.avatar = { ...DEFAULT_AVATAR };
     save();
     render();
+    tryApplyNotificationRoute().catch((error) => console.warn("Nie udało się otworzyć widoku z powiadomienia:", error));
     return;
   }
 
@@ -2418,6 +3461,8 @@ async function handleAuthState(user) {
     provider: "google.com"
   };
   state.avatar = cachedAvatar;
+  state.chatNotificationsEnabled = state.chatNotificationsByUser[user.uid] === true;
+  state.chatNotificationsSyncPending = false;
 
   let remote = {};
   let remoteProfile = null;
@@ -2475,9 +3520,24 @@ async function handleAuthState(user) {
   state.userDataReady = true;
   save();
   render();
+  Promise.allSettled([
+    announceSeasonParticipant(),
+    queueNotificationPicksSync(state.confirmedPredictions, user.uid)
+  ]).then((results) => {
+    results.forEach((result, index) => {
+      if (result.status === "rejected") reportNotificationSyncError(index === 0
+        ? "Nie udało się zsynchronizować powiadomienia o graczu"
+        : "Nie udało się zsynchronizować typów z powiadomieniami", result.reason);
+    });
+  });
   if (state.view === "ranking" && state.participantReady) void loadRankingData();
   if (state.participantReady) startChatRealtime(user.uid);
+  if (state.participantReady) reconcileChatPush(user.uid).catch((error) => {
+    console.warn("Nie udało się uzgodnić stanu powiadomień tego urządzenia:", error);
+  });
   document.querySelector("#authDialog")?.close();
+  scheduleNotificationPrimer(1200);
+  tryApplyNotificationRoute().catch((error) => console.warn("Nie udało się otworzyć widoku z powiadomienia:", error));
 
   syncTrustedMatchTimes().then(() => {
     if (state.view === "ranking" && state.user?.uid === user.uid && state.participantReady) void loadRankingData();
@@ -2563,8 +3623,11 @@ async function loginGoogle() {
 async function logout() {
   document.querySelector("#accountDialog")?.close();
   if (state.auth?.currentUser && state.firebaseModules?.signOut) {
+    const uid = state.auth.currentUser.uid;
     try {
+      await detachChatPushBeforeLogout(uid);
       await state.firebaseModules.signOut(state.auth);
+      clearNotificationOutboxForUser(uid);
       state.user = null;
       state.predictions = {};
       state.confirmedPredictions = {};
@@ -2576,10 +3639,15 @@ async function logout() {
     } catch (error) {
       console.error("Wylogowanie nie powiodło się:", error);
       notify("Nie udało się wylogować. Spróbuj ponownie.");
+    } finally {
+      chatPushSessionClosing = false;
+      state.chatNotificationsBusy = chatPushPendingOperations > 0;
+      if (state.auth?.currentUser?.uid === uid) updateAuthButton();
     }
     return;
   }
 
+  clearNotificationOutboxForUser(state.user?.uid);
   state.user = null;
   state.predictions = {};
   state.confirmedPredictions = {};
@@ -2611,6 +3679,7 @@ async function saveRemotePrediction(uid, matchId, pick) {
     pick,
     updatedAt: serverTimestamp()
   });
+  queueNotificationPickSync(matchId, pick, uid).catch((error) => reportNotificationSyncError("Nie udało się zsynchronizować typu z powiadomieniami", error));
 }
 
 async function loadRemotePredictions(uid) {
@@ -2863,6 +3932,8 @@ async function pollLive() {
     });
     const trustedMatchSync = syncTrustedMatchTimes();
     if (dataChanged || state.matches.some((match) => typerMatchIds.has(match.id) && LIVE.has(match.status))) render();
+    const openMatchDialog = document.querySelector("#matchDialog[open]");
+    if (dataChanged && openMatchDialog?.dataset.matchId) showMatchCentre(openMatchDialog.dataset.matchId);
     if (dataChanged && state.view === "ranking" && state.user && state.participantReady) {
       Promise.resolve(trustedMatchSync).finally(() => {
         if (state.view === "ranking" && state.user && state.participantReady) void loadRankingData();
@@ -2879,7 +3950,11 @@ async function pollLive() {
     if (liveStateChanged) render();
     console.warn("Kanał LIVE jest chwilowo niedostępny:", error.message);
   }
-  finally { setTimeout(pollLive, nextDelay); }
+  finally {
+    firstLivePollSettled = true;
+    tryApplyNotificationRoute().catch((error) => console.warn("Nie udało się otworzyć widoku z powiadomienia:", error));
+    setTimeout(pollLive, nextDelay);
+  }
 }
 
 document.addEventListener("click", (event) => {
@@ -2953,6 +4028,14 @@ document.addEventListener("click", (event) => {
 document.querySelectorAll("#authDialog, #accountDialog").forEach((dialog) => {
   dialog.addEventListener("close", () => document.querySelector("#authButton")?.setAttribute("aria-expanded", "false"));
 });
+document.querySelector("#notificationPrimerDialog [data-enable-notifications]")?.addEventListener("click", enableNotificationsFromPrimer);
+document.querySelectorAll("#notificationPrimerDialog [data-notification-later]").forEach((button) => {
+  button.addEventListener("click", dismissNotificationPrimer);
+});
+document.querySelector("#notificationPrimerDialog")?.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  dismissNotificationPrimer();
+});
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && document.querySelector(".main-nav")?.classList.contains("is-open")) {
     setMainMenuOpen(false, true);
@@ -2973,21 +4056,19 @@ window.addEventListener("online", () => {
   if (state.user && !state.participantReady && !state.participantActivationBusy) {
     activateSeasonParticipant(state.user.uid, { notifyOnError: false });
   }
+  retryChatPushIfNeeded().catch(() => {});
+  flushNotificationOutbox(state.user?.uid).catch((error) => reportNotificationSyncError("Nie udało się ponowić kolejki powiadomień po odzyskaniu sieci", error));
 });
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState !== "visible" || !navigator.onLine) return;
   state.chatReadRetryAt = 0;
   markChatRead();
+  retryChatPushIfNeeded().catch(() => {});
+  flushNotificationOutbox(state.user?.uid).catch((error) => reportNotificationSyncError("Nie udało się ponowić kolejki powiadomień po powrocie do aplikacji", error));
 });
 
 render();
-if (openChatFromNotification) {
-  toggleChat(true);
-  const cleanSearch = new URLSearchParams(location.search);
-  cleanSearch.delete("chat");
-  const query = cleanSearch.toString();
-  history.replaceState(null, "", `${location.pathname}${query ? `?${query}` : ""}${location.hash || "#matches"}`);
-}
+tryApplyNotificationRoute().catch((error) => console.warn("Nie udało się otworzyć widoku z powiadomienia:", error));
 finishLoadingScreen().then(() => setTimeout(showAndroidAppPrompt, 700));
 state.firebaseReady = initFirebase();
 pollLive();
@@ -3009,9 +4090,7 @@ if ("serviceWorker" in navigator && location.protocol !== "file:") {
     if (document.readyState === "complete") cleanLocalPreview();
     else window.addEventListener("load", cleanLocalPreview, { once: true });
   } else {
-    const registerServiceWorker = () => navigator.serviceWorker.register("./sw.js?v=24", {
-      updateViaCache: "none"
-    }).catch(() => {});
+    const registerServiceWorker = () => ensureAppServiceWorkerRegistration().catch(() => {});
     if (document.readyState === "complete") registerServiceWorker();
     else window.addEventListener("load", registerServiceWorker, { once: true });
   }
