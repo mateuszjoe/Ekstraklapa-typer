@@ -21,7 +21,7 @@ const NOTIFICATION_OUTBOX_MAX_REQUESTS = 4;
 const NOTIFICATION_OUTBOX_CHAT_TTL_MS = 9 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PLAYER_TTL_MS = 14 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PICK_TTL_MS = 45 * 24 * 60 * 60 * 1000;
-const APP_SERVICE_WORKER_VERSION = "27";
+const APP_SERVICE_WORKER_VERSION = "28";
 const FINAL = new Set(["FT", "AET", "PEN", "AWD", "WO", "FINISHED", "AWARDED"]);
 const LIVE = new Set(["1H", "HT", "2H", "ET", "BT", "P", "LIVE", "IN_PLAY", "PAUSED"]);
 const VIEWS = new Set(["matches", "ranking", "rules", "settings"]);
@@ -2102,9 +2102,9 @@ function playerPickRowHtml(uid, match) {
   return `<article class="player-pick-row${hit === true ? " is-hit" : hit === false ? " is-miss" : ""}">
     <div class="player-pick-match-meta"><span>${formatDay(match)} · ${formatTime(match)}</span><b>${score}</b></div>
     <div class="player-pick-teams">
-      <span><img src="${home.crest}" alt="">${escapeHtml(home.name)}</span>
+      <span><img src="${home.crest}" alt=""><span class="player-pick-team-name">${escapeHtml(home.name)}</span></span>
       <i>VS</i>
-      <span><img src="${away.crest}" alt="">${escapeHtml(away.name)}</span>
+      <span><img src="${away.crest}" alt=""><span class="player-pick-team-name">${escapeHtml(away.name)}</span></span>
     </div>
     <div class="player-pick-result ${display.status}">${pickMarkup}</div>
   </article>`;
@@ -2141,7 +2141,21 @@ function renderPlayerPicksDialog() {
     ${!ownProfile ? `<p class="player-picks-privacy">Przed pierwszym gwizdkiem cudzy typ pozostaje ukryty także bezpośrednio w bazie danych.</p>` : ""}`;
   dialog.querySelectorAll("[data-avatar-image]").forEach((image) => image.addEventListener("error", () => image.remove(), { once: true }));
   dialog.querySelectorAll(".player-round-group > div").forEach((group, index) => {
-    group.scrollLeft = roundScrollPositions[index] || 0;
+    const savedScrollPosition = roundScrollPositions[index];
+    group.scrollLeft = Number.isFinite(savedScrollPosition) ? savedScrollPosition : 0;
+    const activeButton = group.querySelector("button.active");
+    if (!activeButton) return;
+    requestAnimationFrame(() => {
+      const activeLeft = activeButton.offsetLeft;
+      const activeRight = activeLeft + activeButton.offsetWidth;
+      const visibleLeft = group.scrollLeft;
+      const visibleRight = visibleLeft + group.clientWidth;
+      if (activeLeft >= visibleLeft && activeRight <= visibleRight) return;
+      group.scrollTo({
+        left: Math.max(0, activeLeft - ((group.clientWidth - activeButton.offsetWidth) / 2)),
+        behavior: "auto",
+      });
+    });
   });
   const list = dialog.querySelector(".player-picks-list");
   if (list) list.scrollTop = listScrollPosition;
