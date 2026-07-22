@@ -40,7 +40,7 @@
       @keyframes loader-dot { 0%, 70%, 100% { opacity: .25; transform: translateY(0); } 35% { opacity: 1; transform: translateY(-3px); } }
       @media (prefers-reduced-motion: reduce) { .loader-emblem::before, .loader-emblem img, .loader-track i, .loader-status i { animation: none; } }
     </style>
-    <link rel="stylesheet" href="./styles.css?v=23" />
+    <link rel="stylesheet" href="./styles.css?v=24" />
   </head>
   <body>
     <div id="appLoader" role="status" aria-live="polite" aria-label="Wczytywanie Ekstraklapa Typer">
@@ -59,10 +59,11 @@
         <img class="brand-logo" src="./assets/brand/logo-horizontal.png" alt="" />
       </a>
       <nav id="mainNav" class="main-nav" aria-label="Główna nawigacja">
-        <button type="button" class="nav-link is-active" data-view="matches">Mecze</button>
-        <button type="button" class="nav-link" data-view="ranking">Ranking</button>
-        <button type="button" class="nav-link" data-view="rules">Zasady</button>
-        <button type="button" class="nav-link" data-view="settings">Ustawienia</button>
+        <a href="#matches/1" class="nav-link is-active" data-view="matches">Mecze</a>
+        <a href="#ekstraklasa" class="nav-link" data-view="ekstraklasa">Ekstraklasa</a>
+        <a href="#ranking" class="nav-link" data-view="ranking">Ranking</a>
+        <a href="#rules" class="nav-link" data-view="rules">Zasady</a>
+        <a href="#settings" class="nav-link" data-view="settings">Ustawienia</a>
         <div class="nav-account-summary" hidden><span>Zalogowano jako</span><strong id="mobileAccountName">Gracz</strong></div>
         <button type="button" class="nav-link nav-signout" data-sign-out hidden>Wyloguj się</button>
       </nav>
@@ -108,10 +109,10 @@
       </div>
       <p class="eyebrow">POWIADOMIENIA TYPERA</p>
       <h2 id="notificationPrimerTitle">Nie przegap kolejki i swoich punktów</h2>
-      <p class="modal-copy" id="notificationPrimerCopy">Włącz powiadomienia, a damy Ci znać o nadchodzącej kolejce, wynikach i zdobytych punktach, nowych graczach oraz wiadomościach na chacie.</p>
+      <p class="modal-copy" id="notificationPrimerCopy">Włącz powiadomienia, a damy Ci znać o nadchodzącej kolejce, podanych składach, wynikach i zdobytych punktach, nowych graczach oraz wiadomościach na chacie.</p>
       <ul class="notification-primer-list" aria-label="Rodzaje powiadomień">
         <li><span aria-hidden="true">01</span><strong>Start kolejki</strong><small>Czas na oddanie typów</small></li>
-        <li><span aria-hidden="true">02</span><strong>Wyniki i punkty</strong><small>Mecz oraz podsumowanie kolejki</small></li>
+        <li><span aria-hidden="true">02</span><strong>Składy, wyniki i punkty</strong><small>Podane składy, wynik meczu i podsumowanie kolejki</small></li>
         <li><span aria-hidden="true">03</span><strong>Typer i chat</strong><small>Nowi gracze i wiadomości</small></li>
       </ul>
       <div class="notification-primer-actions">
@@ -123,6 +124,6 @@
 
     <dialog id="matchDialog" class="modal match-modal"></dialog>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="./app.js?v=27"></script>
+    <script type="module" src="./app.js?v=28"></script>
   </body>
 </html>

@@ -53,6 +53,26 @@ CREATE TABLE IF NOT EXISTS match_results (
 CREATE INDEX IF NOT EXISTS match_results_matchday
   ON match_results(matchday, match_id);
 
+-- The official provider may expose a partial lineup first. `published` becomes
+-- 1 only once both complete starting elevens are present and never goes back.
+CREATE TABLE IF NOT EXISTS match_lineups (
+  match_id TEXT PRIMARY KEY,
+  provider_match_id TEXT NOT NULL UNIQUE,
+  matchday INTEGER NOT NULL,
+  kickoff_at INTEGER NOT NULL,
+  payload_json TEXT NOT NULL,
+  published INTEGER NOT NULL DEFAULT 0,
+  published_at INTEGER,
+  updated_at INTEGER NOT NULL,
+  CHECK (matchday BETWEEN 1 AND 17),
+  CHECK (published IN (0, 1)),
+  CHECK (kickoff_at > 0),
+  CHECK (length(payload_json) >= 2)
+);
+
+CREATE INDEX IF NOT EXISTS match_lineups_publication
+  ON match_lineups(published, kickoff_at, matchday);
+
 -- An event key is a stable idempotency key. A short lease lets a later Queue
 -- delivery retry an interrupted dispatch without sending completed work twice.
 CREATE TABLE IF NOT EXISTS notification_events (

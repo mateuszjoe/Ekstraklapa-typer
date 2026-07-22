@@ -8,10 +8,18 @@ Aplikacja korzysta z publicznego API oficjalnego Centrum Meczowego Ekstraklasy:
 
 - `GET https://api.centrum-meczowe.ekstraklasa.org/v1/seasons/current`
 - `GET https://api.centrum-meczowe.ekstraklasa.org/v1/matches`
+- `GET https://api.centrum-meczowe.ekstraklasa.org/v1/team_season_standings`
+- `GET https://api.centrum-meczowe.ekstraklasa.org/v1/match_details/lineups/{matchId}`
 
 To ten sam kanał, którego używa oficjalna strona `ekstraklasa.org`. Zwraca 306 meczów całego sezonu 2026/27 oraz statusy `fixture`, `playing`, `played`, `postponed`, `suspended`, `cancelled` i `awarded`. Typer filtruje ten feed do 153 meczów rundy jesiennej, czyli kolejek 1–17. Kanał nie wymaga klucza, konta ani płatnego planu. Nie jest jednak udokumentowaną usługą z gwarancją SLA, dlatego cała integracja jest zamknięta w adapterze i może zostać później wymieniona.
 
-Projekt pobiera tylko dane potrzebne typerowi: termin, status i wynik. Nie pobiera zdarzeń, składów, strzelców, kartek ani zmian.
+Kanał LIVE pobiera tylko termin, status i wynik. Osobny adapter ligi pobiera tabelę i oficjalne składy, ale nadal nie pobiera strzelców, kartek, zmian, kontuzji ani innych zdarzeń meczowych.
+
+## Tabela i składy
+
+`league-provider.js` normalizuje pełny sezon do lokalnych identyfikatorów 18 klubów. Odpowiedź ligi zawiera 306 unikalnych spotkań, aktualną tabelę i formę z pięciu ostatnich wyników. Frontend używa cache'u pięciominutowego i w pierwszej kolejności odpytuje Cloudflare Worker; bezpośredni kanał CORS jest awaryjnym fallbackiem.
+
+Składy są sprawdzane serwerowo od 120 minut przed rozpoczęciem meczu. Odpowiedź jest publikowana w aplikacji dopiero, gdy obie drużyny mają po 11 unikalnych zawodników z miejscami formacji 1–11. Worker zapisuje pierwszą publikację w D1, deduplikuje powiadomienia i wygasza je najpóźniej wraz z pierwszym gwizdkiem.
 
 ## Ograniczanie ruchu
 

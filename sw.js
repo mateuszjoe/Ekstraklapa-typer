@@ -1,4 +1,4 @@
-const CACHE_NAME = "ekstraklasa-typer-v28";
+const CACHE_NAME = "ekstraklasa-typer-v29";
 const PUSH_STATE_CACHE = "ekstraklasa-typer-push-state-v1";
 const PUSH_STATE_URL = new URL("./__chat-push-state__", self.registration.scope).href;
 const VAPID_PUBLIC_KEY = "BHxWAMhHw3KJBpTqgJZK38Kr-fPA_dvKIYurfBjxTfuw9ie4D9I0cpYR8S9-5FEmzDYoLoBwdutcR_kLW7cADd0";
@@ -8,11 +8,12 @@ const MAX_ROTATION_RETRIES = 4;
 const OFFLINE_ASSETS = [
   "./",
   "./?app=typer-v2",
-  "./styles.css?v=23",
-  "./app.js?v=27",
+  "./styles.css?v=24",
+  "./app.js?v=28",
   "./data.js",
   "./firebase-config.js",
   "./live-provider.js",
+  "./league-provider.js",
   "./manifest.webmanifest?v=18",
   "./assets/fonts/manrope-latin.woff2",
   "./assets/fonts/manrope-latin-ext.woff2",
@@ -86,6 +87,12 @@ const NOTIFICATION_TYPES = Object.freeze({
     body: "Zobacz zdobyte punkty i swoją pozycję w rankingu.",
     url: "./#ranking",
     idFields: ["matchday", "roundId", "matchdayId"]
+  }),
+  "lineup-published": Object.freeze({
+    title: "Składy zostały podane",
+    body: "Sprawdź wyjściowe jedenastki przed pierwszym gwizdkiem.",
+    url: "./#ekstraklasa",
+    idFields: ["localMatchId", "matchId", "providerMatchId"]
   })
 });
 

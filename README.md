@@ -40,7 +40,7 @@ Aplikacja korzysta z osobnego projektu Firebase `ekstraklasa-typer-2026-27`. Pub
 - nazwę gracza można zmienić w ustawieniach, a profil synchronizuje ją między urządzeniami;
 - avatar profilu można ustawić jako zdjęcie Google, własną pomniejszoną grafikę, herb klubu albo jeden z gotowych avatarów;
 - pływający chat graczy działa w czasie rzeczywistym i obsługuje odpowiedzi, reakcje oraz automatycznie pomniejszone grafiki;
-- pełne powiadomienia Web Push są przypisane do urządzenia i docierają również po zamknięciu strony lub aplikacji; obejmują chat, nowych graczy, przypomnienia o kolejce, wynik i punkt za mecz oraz podsumowanie kolejki;
+- pełne powiadomienia Web Push są przypisane do urządzenia i docierają również po zamknięciu strony lub aplikacji; obejmują chat, nowych graczy, przypomnienia o kolejce, opublikowane składy, wynik i punkt za mecz oraz podsumowanie kolejki;
 - licznik uczestników jest zwiększany transakcyjnie tylko raz dla danego konta Google, a sekcja zasad wylicza aktualną pulę i trzy nagrody;
 - dostęp do dokumentów zabezpieczają reguły z `firestore.rules`;
 - Facebook nie jest używany jako dostawca logowania.
@@ -81,9 +81,15 @@ Wyniki pochodzą z publicznego API oficjalnego Centrum Meczowego Ekstraklasy. Ka
 - równoczesne odświeżenia są łączone w jedno zapytanie;
 - po chwilowej awarii przez maksymalnie 5 minut dostępny jest ostatni poprawny zapis; starszy status LIVE jest wygaszany;
 - blok LIVE pojawia się na głównej stronie wyłącznie podczas meczu;
-- nie są pobierane gole, kartki, zmiany, kontuzje ani składy.
+- nie są pobierane gole, kartki, zmiany ani kontuzje; oficjalne składy są pobierane osobnym, cache'owanym kanałem dopiero przed meczem.
 
 Źródło jest publiczne i używane przez oficjalną stronę ligi, ale nie ma opublikowanego SLA. Adapter jest odseparowany od interfejsu, aby można go było podmienić bez przebudowy typowania. Szczegóły są opisane w `docs/LIVE-DATA.md`.
+
+### Tabela, drużyny i składy
+
+Zakładka `Ekstraklasa` korzysta z wydzielonego adaptera `league-provider.js`. Pokazuje oficjalną tabelę, terminarz, formę i ostatnie wyniki każdej drużyny oraz centrum meczu ze składami. Nazwy i herby prowadzą do trwałych adresów `#ekstraklasa/druzyna/...`, a mecze do `#ekstraklasa/mecz/...`; pozostałe widoki również mają własne adresy, więc odświeżenie i cofanie nie zmieniają bieżącej podstrony.
+
+Worker od 120 minut przed pierwszym gwizdkiem sprawdza oficjalny kanał składów. Skład zostaje uznany za opublikowany dopiero po potwierdzeniu dwóch różnych drużyn i 11 unikalnych zawodników podstawowych po każdej stronie. Pierwsza poprawna publikacja jest zapisywana w D1 i uruchamia jedno powiadomienie Web Push na gracza; późniejsze korekty aktualizują widok bez ponownego alarmu.
 
 ### Ręczna korekta wyniku
 

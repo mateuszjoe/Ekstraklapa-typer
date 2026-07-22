@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { matches as baseMatches, teamById } from "./data.js";
+import { getOfficialLeaguePayload, getOfficialMatchLineup, isOfficialMatchId } from "./league-provider.js";
 
 const root = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const localEnv = await loadLocalEnv(join(root, ".env"));
@@ -510,6 +511,37 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/live") {
       res.writeHead(200, { "content-type": mime[".json"], "cache-control": "no-store" });
       res.end(JSON.stringify(await publicPayload()));
+      return;
+    }
+    if (url.pathname === "/api/league" && req.method === "GET") {
+      try {
+        const league = await getOfficialLeaguePayload();
+        res.writeHead(200, {
+          "content-type": mime[".json"],
+          "cache-control": "public, max-age=60, stale-while-revalidate=300"
+        });
+        res.end(JSON.stringify(league));
+      } catch (error) {
+        error.status = 502;
+        throw error;
+      }
+      return;
+    }
+    if (url.pathname === "/api/league/lineups" && req.method === "GET") {
+      const providerMatchId = String(url.searchParams.get("provider") || "").trim();
+      if (!isOfficialMatchId(providerMatchId)) {
+        const error = new Error("Nieprawidłowy identyfikator meczu.");
+        error.status = 400;
+        throw error;
+      }
+      try {
+        const lineup = await getOfficialMatchLineup(providerMatchId);
+        res.writeHead(200, { "content-type": mime[".json"], "cache-control": "no-store" });
+        res.end(JSON.stringify(lineup));
+      } catch (error) {
+        error.status = 502;
+        throw error;
+      }
       return;
     }
     if (url.pathname === "/api/admin/result" && req.method === "POST") {

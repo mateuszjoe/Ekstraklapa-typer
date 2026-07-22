@@ -1,6 +1,12 @@
 import webpushPackage from "web-push";
 import { matches, teams } from "../data.js";
 import { getOfficialLivePayload } from "../live-provider.js";
+import {
+  getOfficialLeaguePayload,
+  getOfficialMatchLineup,
+  isOfficialMatchId,
+  isPublishedLineup
+} from "../league-provider.js";
 
 const webpush = webpushPackage?.default || webpushPackage;
 const SEASON_ID = "2026-27";
@@ -14,12 +20,20 @@ const MAX_SUBSCRIPTIONS_PER_USER = 5;
 // Queue consumers have a separate CPU budget. Eighteen deliveries leave room
 // below the 50-subrequest limit for D1 claims, delivery receipts and requeueing.
 const MAX_PUSH_BATCH = 18;
-const MAX_TICK_ENQUEUES = 8;
-const MAX_TICK_DISPATCH_MESSAGES = 12;
+// A full private group (roughly 20 players) should receive a newly published
+// lineup during the same minute, while remaining below the tick subrequest cap.
+const MAX_TICK_ENQUEUES = 24;
+const MAX_TICK_DISPATCH_MESSAGES = 24;
+const MAX_LINEUP_POLLS_PER_TICK = 3;
 const EVENT_LEASE_MS = 90 * 1000;
 const MAX_EVENT_ATTEMPTS = 4;
 const QUEUE_RETRY_SECONDS = 30;
 const RESULT_BASELINE_STATE_KEY = "notification_result_baseline_at";
+const LEAGUE_FIXTURES_STATE_KEY = "official_league_fixtures_v1";
+const NEXT_LEAGUE_REFRESH_STATE_KEY = "next_official_league_refresh_at";
+const LEAGUE_REFRESH_MS = 5 * 60 * 1000;
+const LINEUP_POLL_WINDOW_MS = 120 * 60 * 1000;
+const FRESH_STORED_LINEUP_MS = 45 * 1000;
 const FINAL_STATUSES = new Set(["FT", "AWD"]);
 const VALID_PICKS = new Set(["1", "X", "2"]);
 const MATCH_BY_ID = new Map(matches.map((match) => [match.id, match]));
@@ -73,8 +87,11 @@ function corsHeaders(request, env) {
   return headers;
 }
 
-function jsonResponse(request, env, body, status = 200) {
-  return new Response(JSON.stringify(body), { status, headers: corsHeaders(request, env) });
+function jsonResponse(request, env, body, status = 200, extraHeaders = {}) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders(request, env), ...extraHeaders }
+  });
 }
 
 async function jsonBody(request) {
@@ -663,8 +680,10 @@ async function recipients(env, eventKey, {
   return { rows: rows.slice(0, limit), capped: rows.length > limit };
 }
 
-function pushTopic(eventKey) {
-  return String(eventKey).replace(/[^A-Za-z0-9_-]/g, "-").slice(-32) || "typer";
+async function pushTopic(eventKey) {
+  // Web Push topics collapse notifications with the same value. Hashing the
+  // complete event key prevents different event kinds for one uid colliding.
+  return (await sha256(`push-topic:${String(eventKey)}`)).slice(0, 32);
 }
 
 function pushPayload(env, payload) {
@@ -682,6 +701,12 @@ function pushPayload(env, payload) {
 function pushTtlSeconds(payload) {
   if (["match-result", "matchday-summary"].includes(payload.type)) return 72 * 60 * 60;
   if (["chat-message", "player-joined"].includes(payload.type)) return 24 * 60 * 60;
+  if (payload.type === "lineup-published") {
+    const kickoffAt = new Date(payload.kickoffAt || 0).getTime();
+    if (Number.isFinite(kickoffAt)) {
+      return Math.max(1, Math.min(2 * 60 * 60, Math.floor((kickoffAt - Date.now()) / 1000)));
+    }
+  }
   if (payload.type === "matchday-reminder") {
     const startsAt = new Date(payload.startsAt || 0).getTime();
     if (Number.isFinite(startsAt)) {
@@ -706,12 +731,13 @@ async function dispatchEvent(env, eventKey, kind, payload, recipientFilter = {},
     const pending = selected.rows;
     if (budget) budget.remaining = Math.max(0, budget.remaining - pending.length);
     const body = JSON.stringify(pushPayload(env, payload));
+    const topic = await pushTopic(eventKey);
     const outcomes = await Promise.all(pending.map(async (row) => {
       try {
         await webpush.sendNotification({
           endpoint: row.endpoint,
           keys: { p256dh: row.p256dh, auth: row.auth_secret }
-        }, body, { TTL: pushTtlSeconds(payload), urgency: "high", topic: pushTopic(eventKey) });
+        }, body, { TTL: pushTtlSeconds(payload), urgency: "high", topic });
         await env.DB.prepare(`
           INSERT OR REPLACE INTO notification_deliveries
             (event_key, subscription_id, status, updated_at)
@@ -1040,6 +1066,245 @@ async function processReminders(env, fixtures = [], enqueueBudget) {
   }
 }
 
+function leagueFixtureSnapshot(payload) {
+  return (payload?.matches || [])
+    .filter((match) => match.localMatchId
+      && Number.isInteger(Number(match.matchday))
+      && Number(match.matchday) >= 1
+      && Number(match.matchday) <= 17
+      && isOfficialMatchId(match.providerId))
+    .map((match) => ({
+      providerId: String(match.providerId),
+      localMatchId: String(match.localMatchId),
+      matchday: Number(match.matchday),
+      kickoffAt: match.kickoffAt || null,
+      status: String(match.status || "NS"),
+      home: String(match.home || ""),
+      away: String(match.away || "")
+    }));
+}
+
+function parsedStoredFixtures(value) {
+  try {
+    const fixtures = JSON.parse(value || "[]");
+    if (!Array.isArray(fixtures)) return [];
+    return fixtures.filter((fixture) => fixture
+      && MATCH_BY_ID.has(fixture.localMatchId)
+      && isOfficialMatchId(fixture.providerId)
+      && Number(fixture.matchday) >= 1
+      && Number(fixture.matchday) <= 17);
+  } catch {
+    return [];
+  }
+}
+
+async function refreshOfficialLeagueFixtures(env) {
+  let fixtures = parsedStoredFixtures(await stateValue(env, LEAGUE_FIXTURES_STATE_KEY));
+  const nextRefreshAt = Number(await stateValue(env, NEXT_LEAGUE_REFRESH_STATE_KEY)) || 0;
+  if (fixtures.length && Date.now() < nextRefreshAt) return fixtures;
+  try {
+    const league = await getOfficialLeaguePayload();
+    const refreshed = leagueFixtureSnapshot(league);
+    if (refreshed.length !== matches.length) {
+      throw new Error(`Expected ${matches.length} local fixtures, received ${refreshed.length}`);
+    }
+    fixtures = refreshed;
+    await setStateValue(env, LEAGUE_FIXTURES_STATE_KEY, JSON.stringify(fixtures));
+    await setStateValue(env, NEXT_LEAGUE_REFRESH_STATE_KEY, Date.now() + LEAGUE_REFRESH_MS);
+  } catch (error) {
+    console.error("Official league fixture refresh failed", error);
+    await setStateValue(env, NEXT_LEAGUE_REFRESH_STATE_KEY, Date.now() + 2 * 60 * 1000);
+  }
+  return fixtures;
+}
+
+function lineupMatchesFixture(lineup, fixture, { requireBoth = Boolean(lineup?.published) } = {}) {
+  if (!lineup || !fixture || String(lineup.providerMatchId || "") !== String(fixture.providerId || "")) return false;
+  if (!Array.isArray(lineup.teams)) return false;
+  const seenSides = new Set();
+  for (const team of lineup.teams) {
+    const side = String(team?.side || "");
+    if (!["home", "away"].includes(side)
+      || seenSides.has(side)
+      || String(team?.teamId || "") !== String(fixture[side] || "")) return false;
+    seenSides.add(side);
+  }
+  return !requireBoth || (
+    seenSides.has("home")
+    && seenSides.has("away")
+    && seenSides.size === 2
+    && isPublishedLineup(lineup.teams)
+  );
+}
+
+function parsedStoredLineup(row, fixture) {
+  if (!row?.payload_json) return null;
+  try {
+    const lineup = JSON.parse(row.payload_json);
+    const published = Number(row.published || 0) === 1;
+    if (Boolean(lineup?.published) !== published
+      || !lineupMatchesFixture(lineup, fixture, { requireBoth: published })) return null;
+    return lineup;
+  } catch {
+    return null;
+  }
+}
+
+async function touchMatchLineupPoll(env, fixture) {
+  const kickoffAt = new Date(fixture.kickoffAt || 0).getTime();
+  if (!Number.isFinite(kickoffAt) || kickoffAt <= 0) return;
+  const now = Date.now();
+  const emptyPayload = JSON.stringify({
+    providerMatchId: fixture.providerId,
+    published: false,
+    updatedAt: new Date(now).toISOString(),
+    teams: []
+  });
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO match_lineups
+      (match_id, provider_match_id, matchday, kickoff_at, payload_json,
+       published, published_at, updated_at)
+    VALUES (?1, ?2, ?3, ?4, ?5, 0, NULL, ?6)
+  `).bind(
+    fixture.localMatchId,
+    fixture.providerId,
+    fixture.matchday,
+    kickoffAt,
+    emptyPayload,
+    now
+  ).run();
+  await env.DB.prepare(`
+    UPDATE match_lineups
+    SET kickoff_at = ?3, updated_at = ?4
+    WHERE match_id = ?1 AND provider_match_id = ?2 AND published = 0
+  `).bind(fixture.localMatchId, fixture.providerId, kickoffAt, now).run();
+}
+
+async function persistMatchLineup(env, fixture, lineup) {
+  const kickoffAt = new Date(fixture.kickoffAt || 0).getTime();
+  if (!Number.isFinite(kickoffAt) || kickoffAt <= 0) return { firstPublication: false };
+  if (!lineupMatchesFixture(lineup, fixture, { requireBoth: Boolean(lineup?.published) })) {
+    throw new Error(`Official lineup does not match fixture ${fixture.localMatchId}`);
+  }
+  const now = Date.now();
+  const payloadJson = JSON.stringify(lineup);
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO match_lineups
+      (match_id, provider_match_id, matchday, kickoff_at, payload_json,
+       published, published_at, updated_at)
+    VALUES (?1, ?2, ?3, ?4, ?5, 0, NULL, ?6)
+  `).bind(
+    fixture.localMatchId,
+    fixture.providerId,
+    fixture.matchday,
+    kickoffAt,
+    payloadJson,
+    now
+  ).run();
+
+  if (!lineup.published) {
+    await env.DB.prepare(`
+      UPDATE match_lineups
+      SET kickoff_at = ?3, payload_json = ?4, updated_at = ?5
+      WHERE match_id = ?1 AND provider_match_id = ?2 AND published = 0
+    `).bind(fixture.localMatchId, fixture.providerId, kickoffAt, payloadJson, now).run();
+    return { firstPublication: false };
+  }
+
+  const firstPublication = await env.DB.prepare(`
+    UPDATE match_lineups
+    SET kickoff_at = ?3, payload_json = ?4, published = 1,
+        published_at = ?5, updated_at = ?6
+    WHERE match_id = ?1 AND provider_match_id = ?2 AND published = 0
+  `).bind(fixture.localMatchId, fixture.providerId, kickoffAt, payloadJson, now, now).run();
+  if (firstPublication.meta?.changes !== 1) {
+    await env.DB.prepare(`
+      UPDATE match_lineups
+      SET kickoff_at = ?3, payload_json = ?4, updated_at = ?5
+      WHERE match_id = ?1 AND provider_match_id = ?2 AND published = 1
+    `).bind(fixture.localMatchId, fixture.providerId, kickoffAt, payloadJson, now).run();
+  }
+  return { firstPublication: firstPublication.meta?.changes === 1 };
+}
+
+async function pollUpcomingLineups(env, fixtures) {
+  const now = Date.now();
+  const candidates = fixtures
+    .filter((fixture) => ["NS", "PST"].includes(fixture.status))
+    .map((fixture) => ({ ...fixture, kickoffMs: new Date(fixture.kickoffAt || 0).getTime() }))
+    .filter((fixture) => Number.isFinite(fixture.kickoffMs)
+      && now >= fixture.kickoffMs - LINEUP_POLL_WINDOW_MS
+      && now < fixture.kickoffMs)
+    .sort((left, right) => left.kickoffMs - right.kickoffMs);
+  if (!candidates.length) return 0;
+
+  const storedResult = await env.DB.prepare("SELECT match_id, published, updated_at FROM match_lineups").all();
+  const stored = new Map((storedResult.results || []).map((row) => [row.match_id, row]));
+  const pending = candidates
+    .filter((fixture) => Number(stored.get(fixture.localMatchId)?.published || 0) !== 1)
+    .sort((left, right) => (
+      Number(stored.get(left.localMatchId)?.updated_at || 0) - Number(stored.get(right.localMatchId)?.updated_at || 0)
+      || left.kickoffMs - right.kickoffMs
+    ))
+    .slice(0, MAX_LINEUP_POLLS_PER_TICK);
+  const publications = await Promise.all(pending.map(async (fixture) => {
+    try {
+      // Touch every attempted candidate before the external request. Failed
+      // requests therefore rotate behind untouched/older candidates instead
+      // of starving the fourth and subsequent simultaneous fixtures.
+      await touchMatchLineupPoll(env, fixture);
+      const lineup = await getOfficialMatchLineup(fixture.providerId, { force: true });
+      const stored = await persistMatchLineup(env, fixture, lineup);
+      return stored.firstPublication ? 1 : 0;
+    } catch (error) {
+      console.error("Official lineup poll failed", {
+        localMatchId: fixture.localMatchId,
+        providerMatchId: fixture.providerId,
+        error
+      });
+      return 0;
+    }
+  }));
+  return publications.reduce((total, value) => total + value, 0);
+}
+
+async function processPublishedLineupNotifications(env, fixtures, enqueueBudget) {
+  if (enqueueBudget.remaining <= 0) return;
+  const fixturesById = new Map(fixtures.map((fixture) => [fixture.localMatchId, fixture]));
+  const result = await env.DB.prepare(`
+    SELECT match_id, provider_match_id, matchday, kickoff_at, published_at
+    FROM match_lineups
+    WHERE published = 1 AND kickoff_at > ?1
+    ORDER BY kickoff_at, match_id
+  `).bind(Date.now()).all();
+  for (const row of result.results || []) {
+    if (enqueueBudget.remaining <= 0) break;
+    const fixture = fixturesById.get(row.match_id);
+    const publishedAt = Number(row.published_at) || 0;
+    if (!fixture || publishedAt <= 0) continue;
+    const eventPrefix = `lineup-published:${row.match_id}:`;
+    const uids = await subscriberUidsMissingEvent(env, eventPrefix, enqueueBudget.remaining, publishedAt);
+    const homeName = TEAM_BY_ID.get(fixture.home)?.name || fixture.home;
+    const awayName = TEAM_BY_ID.get(fixture.away)?.name || fixture.away;
+    for (const uid of uids) {
+      const inserted = await enqueueEvent(env, `${eventPrefix}${uid}`, "lineup-published", {
+        type: "lineup-published",
+        localMatchId: row.match_id,
+        matchId: row.match_id,
+        providerMatchId: row.provider_match_id,
+        matchday: Number(row.matchday),
+        kickoffAt: new Date(Number(row.kickoff_at)).toISOString(),
+        title: "Składy zostały podane",
+        body: `${homeName} – ${awayName}. Sprawdź wyjściowe jedenastki przed pierwszym gwizdkiem.`,
+        url: appUrl(env, `#ekstraklasa/mecz/${encodeURIComponent(row.match_id)}`),
+        recipientBefore: publishedAt
+      }, { uid });
+      if (inserted) enqueueBudget.remaining -= 1;
+      if (enqueueBudget.remaining <= 0) break;
+    }
+  }
+}
+
 function validStoredEventKey(eventKey) {
   return typeof eventKey === "string"
     && eventKey.length <= 220
@@ -1119,6 +1384,18 @@ async function dispatchStoredEvent(env, eventKey) {
       return { status: "expired" };
     }
   }
+  if (payload.type === "lineup-published") {
+    const kickoffAt = new Date(payload.kickoffAt || 0).getTime();
+    if (Number.isFinite(kickoffAt) && kickoffAt <= Date.now()) {
+      const now = Date.now();
+      await env.DB.prepare(`
+        UPDATE notification_events
+        SET status = 'completed', lease_until = 0, completed_at = ?2, updated_at = ?2
+        WHERE event_key = ?1
+      `).bind(eventKey, now).run();
+      return { status: "expired" };
+    }
+  }
   const result = await dispatchEvent(env, event.event_key, event.kind, payload, {
     uid: event.target_uid || "",
     excludeUid: event.exclude_uid || "",
@@ -1143,6 +1420,14 @@ async function setStateValue(env, key, value) {
 async function runQueueTick(env) {
   let payload = null;
   const enqueueBudget = { remaining: MAX_TICK_ENQUEUES };
+  let leagueFixtures = [];
+  try {
+    leagueFixtures = await refreshOfficialLeagueFixtures(env);
+    await pollUpcomingLineups(env, leagueFixtures);
+    await processPublishedLineupNotifications(env, leagueFixtures, enqueueBudget);
+  } catch (error) {
+    console.error("Lineup notification cycle failed", error);
+  }
   let baselineAt = Number(await stateValue(env, RESULT_BASELINE_STATE_KEY)) || 0;
   const nextPollAt = Number(await stateValue(env, "next_live_poll_at")) || 0;
   if (Date.now() >= nextPollAt) {
@@ -1198,6 +1483,53 @@ function health(env) {
   };
 }
 
+async function currentSeasonFixture(providerMatchId) {
+  const league = await getOfficialLeaguePayload();
+  return (league.matches || []).find((match) => match.providerId === providerMatchId) || null;
+}
+
+async function storedLineupForFixture(env, fixture) {
+  try {
+    const row = await env.DB.prepare(`
+      SELECT match_id, provider_match_id, payload_json, published, updated_at
+      FROM match_lineups
+      WHERE provider_match_id = ?1
+      LIMIT 1
+    `).bind(fixture.providerId).first();
+    if (!row
+      || (fixture.localMatchId && row.match_id !== fixture.localMatchId)
+      || row.provider_match_id !== fixture.providerId) return null;
+    const lineup = parsedStoredLineup(row, fixture);
+    if (!lineup) return null;
+    if (Number(row.published || 0) === 1
+      || Number(row.updated_at || 0) >= Date.now() - FRESH_STORED_LINEUP_MS) return lineup;
+  } catch (error) {
+    // A missing table during a rolling deployment must not make the public
+    // endpoint unavailable; fall through to the official provider.
+    console.error("Stored lineup lookup failed", { providerMatchId: fixture.providerId, error });
+  }
+  return null;
+}
+
+async function publicMatchLineup(env, providerMatchId) {
+  const fixture = await currentSeasonFixture(providerMatchId);
+  if (!fixture) {
+    throw new HttpError(404, "provider-match-not-in-current-season", "Mecz nie naleĹĽy do bieĹĽÄ…cego sezonu.");
+  }
+
+  const stored = await storedLineupForFixture(env, fixture);
+  if (stored) return stored;
+
+  const lineup = await getOfficialMatchLineup(providerMatchId);
+  if (!lineupMatchesFixture(lineup, fixture, { requireBoth: Boolean(lineup?.published) })) {
+    throw new HttpError(502, "provider-lineup-mismatch", "SkĹ‚ad nie odpowiada wybranemu meczowi.");
+  }
+  if (fixture.localMatchId && MATCH_BY_ID.has(fixture.localMatchId)) {
+    await persistMatchLineup(env, fixture, lineup);
+  }
+  return lineup;
+}
+
 async function handleRequest(request, env) {
   const url = new URL(request.url);
   const origin = request.headers.get("Origin") || "";
@@ -1209,6 +1541,20 @@ async function handleRequest(request, env) {
     throw new HttpError(403, "origin-not-allowed", "Ta domena nie może korzystać z API.");
   }
   if (request.method === "GET" && url.pathname === "/health") return jsonResponse(request, env, await health(env));
+  if (request.method === "GET" && url.pathname === "/api/league") {
+    return jsonResponse(request, env, await getOfficialLeaguePayload(), 200, {
+      "Cache-Control": "public, max-age=60, s-maxage=300, stale-while-revalidate=300"
+    });
+  }
+  if (request.method === "GET" && url.pathname === "/api/league/lineups") {
+    const providerMatchId = String(url.searchParams.get("provider") || "").trim();
+    if (!isOfficialMatchId(providerMatchId)) {
+      throw new HttpError(400, "invalid-provider-match-id", "Nieprawidłowy identyfikator meczu.");
+    }
+    return jsonResponse(request, env, await publicMatchLineup(env, providerMatchId), 200, {
+      "Cache-Control": "public, max-age=15, s-maxage=30, stale-while-revalidate=30"
+    });
+  }
   if (request.method !== "POST") throw new HttpError(404, "not-found", "Nie znaleziono endpointu.");
 
   const routes = {

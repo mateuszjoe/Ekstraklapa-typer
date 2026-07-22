@@ -1,6 +1,7 @@
 import { matches as baseMatches, teamById, teams, roundDatesByNumber } from "./data.js";
 import { firebaseConfig, notificationApiBase, webPushPublicKey } from "./firebase-config.js";
 import { getOfficialLivePayload } from "./live-provider.js";
+import { getOfficialLeaguePayload, getOfficialMatchLineup } from "./league-provider.js";
 
 const bootStartedAt = performance.now();
 const app = document.querySelector("#app");
@@ -21,10 +22,10 @@ const NOTIFICATION_OUTBOX_MAX_REQUESTS = 4;
 const NOTIFICATION_OUTBOX_CHAT_TTL_MS = 9 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PLAYER_TTL_MS = 14 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PICK_TTL_MS = 45 * 24 * 60 * 60 * 1000;
-const APP_SERVICE_WORKER_VERSION = "28";
+const APP_SERVICE_WORKER_VERSION = "29";
 const FINAL = new Set(["FT", "AET", "PEN", "AWD", "WO", "FINISHED", "AWARDED"]);
 const LIVE = new Set(["1H", "HT", "2H", "ET", "BT", "P", "LIVE", "IN_PLAY", "PAUSED"]);
-const VIEWS = new Set(["matches", "ranking", "rules", "settings"]);
+const VIEWS = new Set(["matches", "ekstraklasa", "ranking", "rules", "settings"]);
 const DEFAULT_AVATAR = Object.freeze({ type: "google", value: "" });
 const SEASON_ID = "2026-27";
 const ENTRY_FEE = 100;
@@ -38,6 +39,58 @@ const MAX_CHAT_IMAGE_DATA_LENGTH = 90_000;
 const CHAT_LIVE_LIMIT = 30;
 const CHAT_PAGE_LIMIT = 20;
 const CHAT_REACTION_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🔥"];
+const LEAGUE_CACHE_MAX_AGE_MS = 5 * 60 * 1000;
+const LINEUP_PENDING_CACHE_MS = 60 * 1000;
+
+function routeSegment(value) {
+  try {
+    return decodeURIComponent(String(value || "")).trim();
+  } catch {
+    return "";
+  }
+}
+
+function parseAppRoute(hash = location.hash) {
+  const segments = String(hash || "")
+    .replace(/^#\/?/, "")
+    .split("/")
+    .map(routeSegment)
+    .filter(Boolean);
+  const view = segments[0] || "matches";
+  if (!VIEWS.has(view)) return { view: "matches", valid: false };
+  if (view === "matches") {
+    const matchday = Number(segments[1]);
+    return {
+      view,
+      matchday: Number.isInteger(matchday) && matchday >= 1 && matchday <= LAST_MATCHDAY ? matchday : null,
+      valid: segments.length <= 2 && (!segments[1] || (Number.isInteger(matchday) && matchday >= 1 && matchday <= LAST_MATCHDAY))
+    };
+  }
+  if (view === "ekstraklasa" && segments[1] === "druzyna") {
+    const teamId = segments[2];
+    return { view, teamId: teamById[teamId] ? teamId : "", valid: segments.length === 3 && Boolean(teamById[teamId]) };
+  }
+  if (view === "ekstraklasa" && segments[1] === "mecz") {
+    const matchId = segments[2] || "";
+    const validMatchId = /^[A-Za-z0-9-]{1,100}$/.test(matchId);
+    return { view, matchId: validMatchId ? matchId : "", valid: segments.length === 3 && validMatchId };
+  }
+  return { view, valid: segments.length === 1 };
+}
+
+function appRouteHash(route) {
+  if (route.view === "matches") {
+    const matchday = Number.isInteger(route.matchday) ? route.matchday : 1;
+    return `#matches/${Math.min(LAST_MATCHDAY, Math.max(1, matchday))}`;
+  }
+  if (route.view === "ekstraklasa" && route.teamId && teamById[route.teamId]) {
+    return `#ekstraklasa/druzyna/${encodeURIComponent(route.teamId)}`;
+  }
+  if (route.view === "ekstraklasa" && /^[A-Za-z0-9-]{1,100}$/.test(route.matchId || "")) {
+    return `#ekstraklasa/mecz/${encodeURIComponent(route.matchId)}`;
+  }
+  return `#${VIEWS.has(route.view) ? route.view : "matches"}`;
+}
 
 function loadSavedState() {
   try {
@@ -72,17 +125,30 @@ if (deprecatedLocalKeys.some((key) => key in saved)) {
   deprecatedLocalKeys.forEach((key) => delete saved[key]);
   localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
 }
-const requestedView = location.hash.slice(1);
+const initialRoute = parseAppRoute();
 const savedMatchday = Number(saved.matchday);
 const initialMatchday = Number.isInteger(notificationMatchday) && notificationMatchday >= 1 && notificationMatchday <= LAST_MATCHDAY
   ? notificationMatchday
+  : Number.isInteger(initialRoute.matchday)
+    ? initialRoute.matchday
   : Number.isInteger(savedMatchday) && savedMatchday >= 1 && savedMatchday <= LAST_MATCHDAY
     ? savedMatchday
     : 1;
 const typerMatchIds = new Set(baseMatches.map((match) => match.id));
 const state = {
-  view: VIEWS.has(requestedView) ? requestedView : "matches",
+  view: initialRoute.valid ? initialRoute.view : "matches",
   matchday: initialMatchday,
+  leagueTeamId: initialRoute.valid ? initialRoute.teamId || "" : "",
+  leagueMatchId: initialRoute.valid ? initialRoute.matchId || "" : "",
+  leagueData: null,
+  leagueStatus: "idle",
+  leagueError: "",
+  leagueLoadedAt: 0,
+  leagueSource: "",
+  lineupsByMatch: {},
+  lineupStatusByMatch: {},
+  lineupErrorByMatch: {},
+  lineupLoadedAtByMatch: {},
   predictions: {},
   confirmedPredictions: {},
   avatar: { ...DEFAULT_AVATAR },
@@ -173,9 +239,16 @@ let firstLivePollSettled = false;
 let notificationLoginPromptShown = false;
 let liveTransport = location.hostname.endsWith(".github.io") ? "official" : "server";
 
-if (location.hash && !VIEWS.has(requestedView)) {
-  history.replaceState(null, "", `${location.pathname}${location.search}#matches`);
+const canonicalInitialRoute = state.view === "matches"
+  ? { view: "matches", matchday: state.matchday }
+  : state.view === "ekstraklasa"
+    ? { view: "ekstraklasa", teamId: state.leagueTeamId, matchId: state.leagueMatchId }
+    : { view: state.view };
+const canonicalInitialHash = appRouteHash(canonicalInitialRoute);
+if (!initialRoute.valid || location.hash !== canonicalInitialHash) {
+  history.replaceState(null, "", `${location.pathname}${location.search}${canonicalInitialHash}`);
 }
+let lastAppliedRouteHref = location.href;
 
 async function finishLoadingScreen() {
   const fontsReady = document.fonts?.ready || Promise.resolve();
@@ -377,13 +450,88 @@ function setMainMenuOpen(open, restoreFocus = false) {
   if (!open && restoreFocus) button?.focus({ preventScroll: true });
 }
 
-function setView(view) {
+function currentAppRoute() {
+  if (state.view === "matches") return { view: "matches", matchday: state.matchday };
+  if (state.view === "ekstraklasa") {
+    return {
+      view: "ekstraklasa",
+      teamId: state.leagueTeamId || "",
+      matchId: state.leagueMatchId || ""
+    };
+  }
+  return { view: state.view };
+}
+
+function teamRouteHref(teamId) {
+  return `#ekstraklasa/druzyna/${encodeURIComponent(teamId)}`;
+}
+
+function matchRouteHref(matchId) {
+  return `#ekstraklasa/mecz/${encodeURIComponent(matchId)}`;
+}
+
+function writeAppRoute(route, historyMode = "push") {
+  if (historyMode === "none") return;
+  const target = `${location.pathname}${location.search}${appRouteHash(route)}`;
+  const current = `${location.pathname}${location.search}${location.hash}`;
+  if (target === current) {
+    lastAppliedRouteHref = location.href;
+    return;
+  }
+  history[historyMode === "replace" ? "replaceState" : "pushState"](null, "", target);
+  lastAppliedRouteHref = location.href;
+}
+
+function applyAppRoute(route, { historyMode = "none", focus = true } = {}) {
+  const view = VIEWS.has(route?.view) ? route.view : "matches";
   state.view = view;
+  if (view === "matches" && Number.isInteger(route.matchday) && route.matchday >= 1 && route.matchday <= LAST_MATCHDAY) {
+    state.matchday = route.matchday;
+    save();
+  }
+  state.leagueTeamId = view === "ekstraklasa" && teamById[route.teamId] ? route.teamId : "";
+  state.leagueMatchId = view === "ekstraklasa" && /^[A-Za-z0-9-]{1,100}$/.test(route.matchId || "") ? route.matchId : "";
+  writeAppRoute(currentAppRoute(), historyMode);
   document.querySelectorAll(".nav-link").forEach((node) => node.classList.toggle("is-active", node.dataset.view === view));
   setMainMenuOpen(false);
   render();
   if (view === "ranking" && state.user && state.participantReady) void loadRankingData();
-  app.focus({ preventScroll: true });
+  if (view === "ekstraklasa") void loadLeagueData();
+  if (focus) app.focus({ preventScroll: true });
+}
+
+function setView(view, options = {}) {
+  const route = view === "matches"
+    ? { view, matchday: state.matchday }
+    : { view };
+  applyAppRoute(route, { historyMode: options.historyMode || "push", focus: options.focus !== false });
+}
+
+function openTeamDetails(teamId, options = {}) {
+  if (!teamById[teamId]) return;
+  applyAppRoute({ view: "ekstraklasa", teamId }, {
+    historyMode: options.historyMode || "push",
+    focus: options.focus !== false
+  });
+}
+
+function openLeagueMatch(matchId, options = {}) {
+  if (!/^[A-Za-z0-9-]{1,100}$/.test(matchId || "")) return;
+  applyAppRoute({ view: "ekstraklasa", matchId }, {
+    historyMode: options.historyMode || "push",
+    focus: options.focus !== false
+  });
+}
+
+function applyRouteFromLocation() {
+  if (location.href === lastAppliedRouteHref) return;
+  const route = parseAppRoute();
+  const normalized = route.valid ? route : { view: "matches", matchday: state.matchday };
+  if (!route.valid) {
+    history.replaceState(null, "", `${location.pathname}${location.search}${appRouteHash(normalized)}`);
+  }
+  lastAppliedRouteHref = location.href;
+  applyAppRoute(normalized, { historyMode: "none", focus: false });
 }
 
 function hero() {
@@ -408,9 +556,9 @@ function hero() {
       ${next ? `<div class="next-match">
         <div class="next-date"><b>${formatDay(next)}</b><span>${formatTime(next)}</span></div>
         <div class="next-teams">
-          <div><img src="${teamById[next.home].crest}" alt=""><b>${teamById[next.home].short}</b></div>
+          <div><a class="team-route-tile" href="${teamRouteHref(next.home)}" data-team-route="${next.home}" aria-label="Szczegóły ${escapeHtml(teamById[next.home].name)}"><img src="${teamById[next.home].crest}" alt=""><b>${teamById[next.home].short}</b></a></div>
           <span>VS</span>
-          <div><img src="${teamById[next.away].crest}" alt=""><b>${teamById[next.away].short}</b></div>
+          <div><a class="team-route-tile" href="${teamRouteHref(next.away)}" data-team-route="${next.away}" aria-label="Szczegóły ${escapeHtml(teamById[next.away].name)}"><img src="${teamById[next.away].crest}" alt=""><b>${teamById[next.away].short}</b></a></div>
         </div>
         <div class="countdown" data-countdown="${next.kickoffAt}">Start za chwilę</div>
       </div>` : "<p>Brak nadchodzących meczów.</p>"}
@@ -435,9 +583,9 @@ function matchCard(match) {
       <span>${locked ? `${icon("lock")} zamknięty` : waitingForKickoff ? `${icon("calendar")} czeka na termin` : waitingForPlayer ? `${icon("calendar")} synchronizacja konta` : prediction ? `${icon("check")} typ zapisany` : "1 pkt do zdobycia"}</span>
     </div>
     <div class="match-teams">
-      <div class="team home"><span>${home.name}</span><img src="${home.crest}" alt="Herb ${home.name}"></div>
+      <div class="team home"><a class="team-route-link" href="${teamRouteHref(home.id)}" data-team-route="${home.id}"><span>${home.name}</span><img src="${home.crest}" alt="Herb ${home.name}"></a></div>
       <div class="score-zone">${score ? `<strong>${score}</strong>` : `<span>VS</span>`}</div>
-      <div class="team away"><img src="${away.crest}" alt="Herb ${away.name}"><span>${away.name}</span></div>
+      <div class="team away"><a class="team-route-link" href="${teamRouteHref(away.id)}" data-team-route="${away.id}"><img src="${away.crest}" alt="Herb ${away.name}"><span>${away.name}</span></a></div>
     </div>
     <div class="prediction-row" role="group" aria-label="Typ na mecz ${home.name} — ${away.name}">
       ${[["1",home.short],["X","REMIS"],["2",away.short]].map(([pick,label]) => `<button data-pick="${pick}" data-match="${match.id}" class="pick ${prediction === pick ? "selected" : ""}" aria-pressed="${prediction === pick}" ${locked || waitingForKickoff || waitingForPlayer ? "disabled" : ""}><b>${pick}</b><small>${label}</small></button>`).join("")}
@@ -470,7 +618,7 @@ function matchesView() {
     .format(new Date(`${roundDatesByNumber[state.matchday]}T12:00:00`));
   const typerMatches = state.matches.filter((match) => typerMatchIds.has(match.id));
   return `${hero()}
-    <section class="club-ribbon" aria-label="Kluby sezonu 2026/27">${teams.map((team) => `<img src="${team.crest}" alt="${team.name}" title="${team.name}">`).join("")}</section>
+    <section class="club-ribbon" aria-label="Kluby sezonu 2026/27">${teams.map((team) => `<a href="${teamRouteHref(team.id)}" data-team-route="${team.id}" aria-label="Szczegóły ${escapeHtml(team.name)}"><img src="${team.crest}" alt="" title="${escapeHtml(team.name)}"></a>`).join("")}</section>
     ${liveMatchesSection()}
     <section class="content-section" id="mecze">
       <div class="section-heading">
@@ -488,6 +636,323 @@ function matchesView() {
       <div class="round-note"><span>${visible.some((m) => !m.kickoffConfirmed) ? "Daty ramowe" : "Terminy potwierdzone"}</span>${visible.some((m) => !m.kickoffConfirmed) ? "Dokładne dni i godziny tej kolejki nie zostały jeszcze opublikowane. Typowanie uruchomi się po potwierdzeniu terminów." : "Godziny zgodne z oficjalnym terminarzem Ekstraklasy."}</div>
       <div class="matches-grid">${visible.map(matchCard).join("")}</div>
     </section>`;
+}
+
+function leagueMatchKey(match) {
+  return String(match?.localMatchId || match?.id || match?.providerId || "");
+}
+
+function leagueMatchByRoute(matchId = state.leagueMatchId) {
+  return (state.leagueData?.matches || []).find((match) => [
+    match.localMatchId,
+    match.id,
+    match.providerId
+  ].some((value) => String(value || "") === String(matchId || ""))) || null;
+}
+
+function leagueMatchTimestamp(match) {
+  const timestamp = new Date(match?.kickoffAt || 0).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function leagueMatchIsFinal(match) {
+  return FINAL.has(String(match?.status || "").toUpperCase());
+}
+
+function leagueMatchHasScore(match) {
+  return match?.homeScore !== null
+    && match?.homeScore !== undefined
+    && match?.homeScore !== ""
+    && match?.awayScore !== null
+    && match?.awayScore !== undefined
+    && match?.awayScore !== ""
+    && Number.isInteger(Number(match.homeScore))
+    && Number.isInteger(Number(match.awayScore));
+}
+
+function leagueMatchStatus(match) {
+  if (LIVE.has(match?.status)) return `LIVE${Number.isFinite(match.liveElapsed) ? ` · ${match.liveElapsed}'` : ""}`;
+  if (leagueMatchIsFinal(match)) return "Zakończony";
+  if (match?.status === "PST") return "Przełożony";
+  if (match?.status === "CANC") return "Odwołany";
+  return "Zaplanowany";
+}
+
+function leagueKickoffLabel(match) {
+  const timestamp = leagueMatchTimestamp(match);
+  if (!timestamp) return "Termin do ustalenia";
+  return new Intl.DateTimeFormat("pl-PL", {
+    timeZone: "Europe/Warsaw",
+    weekday: "short",
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(new Date(timestamp));
+}
+
+function leagueOutcome(match, teamId) {
+  if (!leagueMatchIsFinal(match) || !leagueMatchHasScore(match)) return "";
+  const homeScore = Number(match.homeScore);
+  const awayScore = Number(match.awayScore);
+  if (homeScore === awayScore) return "D";
+  const teamWon = (match.home === teamId && homeScore > awayScore) || (match.away === teamId && awayScore > homeScore);
+  return teamWon ? "W" : "L";
+}
+
+function recentLeagueMatches(teamId, limit = 5) {
+  return (state.leagueData?.matches || [])
+    .filter((match) => (match.home === teamId || match.away === teamId) && leagueMatchIsFinal(match) && leagueMatchHasScore(match))
+    .sort((a, b) => leagueMatchTimestamp(b) - leagueMatchTimestamp(a))
+    .slice(0, limit);
+}
+
+function upcomingLeagueMatches(teamId = "", limit = 6) {
+  const now = Date.now();
+  return (state.leagueData?.matches || [])
+    .filter((match) => (!teamId || match.home === teamId || match.away === teamId)
+      && !leagueMatchIsFinal(match)
+      && match.status !== "CANC"
+      && leagueMatchTimestamp(match) >= now - 3 * 60 * 60 * 1000)
+    .sort((a, b) => leagueMatchTimestamp(a) - leagueMatchTimestamp(b))
+    .slice(0, limit);
+}
+
+function teamStanding(teamId) {
+  return (state.leagueData?.standings || []).find((row) => row.teamId === teamId) || null;
+}
+
+function teamForm(teamId, standing = teamStanding(teamId)) {
+  const official = Array.isArray(standing?.form)
+    ? standing.form.map((value) => String(value || "").toUpperCase()).filter((value) => ["W", "D", "L"].includes(value)).slice(-5)
+    : [];
+  if (official.length) return official;
+  return recentLeagueMatches(teamId, 5).reverse().map((match) => leagueOutcome(match, teamId)).filter(Boolean);
+}
+
+function formHtml(form, emptyLabel = "Brak meczów") {
+  if (!form.length) return `<span class="league-form-empty">${emptyLabel}</span>`;
+  const labels = { W: "Z", D: "R", L: "P" };
+  return form.map((value) => `<span class="league-form-dot is-${value.toLowerCase()}" title="${value === "W" ? "Zwycięstwo" : value === "D" ? "Remis" : "Porażka"}">${labels[value]}</span>`).join("");
+}
+
+function leagueFixtureHtml(match, focusTeamId = "") {
+  const home = teamById[match.home];
+  const away = teamById[match.away];
+  if (!home || !away) return "";
+  const key = leagueMatchKey(match);
+  const score = leagueMatchHasScore(match) && (leagueMatchIsFinal(match) || LIVE.has(match.status))
+    ? `${Number(match.homeScore)} : ${Number(match.awayScore)}`
+    : "– : –";
+  const outcome = focusTeamId ? leagueOutcome(match, focusTeamId) : "";
+  return `<article class="league-fixture${outcome ? ` is-${outcome.toLowerCase()}` : ""}">
+    <a class="league-fixture-meta" href="${matchRouteHref(key)}" data-league-match-route="${escapeHtml(key)}">${escapeHtml(leagueKickoffLabel(match))}<small>${escapeHtml(leagueMatchStatus(match))}</small></a>
+    <span class="league-fixture-teams">
+      <a class="league-fixture-team" href="${teamRouteHref(home.id)}" data-team-route="${home.id}"><span>${escapeHtml(home.name)}</span><img src="${home.crest}" alt=""></a>
+      <a class="league-fixture-score" href="${matchRouteHref(key)}" data-league-match-route="${escapeHtml(key)}" aria-label="Szczegóły meczu ${escapeHtml(home.name)} – ${escapeHtml(away.name)}"><strong>${score}</strong></a>
+      <a class="league-fixture-team" href="${teamRouteHref(away.id)}" data-team-route="${away.id}"><img src="${away.crest}" alt=""><span>${escapeHtml(away.name)}</span></a>
+    </span>
+    <a class="league-fixture-action" href="${matchRouteHref(key)}" data-league-match-route="${escapeHtml(key)}" aria-label="Otwórz centrum meczu">${outcome ? `<b class="league-fixture-outcome">${{ W: "Z", D: "R", L: "P" }[outcome]}</b>` : icon("arrow")}</a>
+  </article>`;
+}
+
+function leagueLoadingHtml() {
+  const error = state.leagueError
+    ? `<div class="notice league-notice"><span>${escapeHtml(state.leagueError)}</span><button type="button" data-league-refresh>SPRÓBUJ PONOWNIE</button></div>`
+    : "";
+  return `<section class="subpage-hero"><p class="eyebrow">PKO BP EKSTRAKLASA</p><h1>Ekstraklasa</h1><p>Tabela, forma drużyn, terminarz i oficjalne składy meczowe.</p></section>
+    <section class="content-section narrow league-loading" aria-live="polite">${error}<div class="league-loading-mark"></div><h2>${state.leagueError ? "Dane są chwilowo niedostępne" : "Pobieramy dane ligi…"}</h2><p>Łączymy się z oficjalnym Centrum Meczowym Ekstraklasy.</p></section>`;
+}
+
+function leagueTableHtml() {
+  const rows = state.leagueData?.standings || [];
+  return `<article class="league-panel league-table-card">
+    <div class="league-panel-head"><div><p class="eyebrow">TABELA LIGOWA</p><h2>Sezon ${escapeHtml(state.leagueData?.season?.name || "2026/27")}</h2></div><span>Aktualizacja: ${new Intl.DateTimeFormat("pl-PL", { hour: "2-digit", minute: "2-digit" }).format(new Date(state.leagueData?.updatedAt || Date.now()))}</span></div>
+    <div class="league-table-scroll">
+      <table class="league-table">
+        <thead><tr><th>#</th><th>Klub</th><th title="Mecze">M</th><th title="Zwycięstwa">Z</th><th title="Remisy">R</th><th title="Porażki">P</th><th>Bramki</th><th>+/-</th><th>Forma</th><th>Pkt</th></tr></thead>
+        <tbody>${rows.map((row, index) => {
+          const team = teamById[row.teamId];
+          if (!team) return "";
+          const form = teamForm(team.id, row);
+          return `<tr>
+            <td><b>${Number(row.rank) || index + 1}</b></td>
+            <td><a class="league-table-team" href="${teamRouteHref(team.id)}" data-team-route="${team.id}"><img src="${team.crest}" alt=""><span>${escapeHtml(team.name)}</span></a></td>
+            <td>${Number(row.played) || 0}</td><td>${Number(row.wins) || 0}</td><td>${Number(row.draws) || 0}</td><td>${Number(row.losses) || 0}</td>
+            <td>${Number(row.goalsFor) || 0}:${Number(row.goalsAgainst) || 0}</td><td>${Number(row.goalDifference) > 0 ? "+" : ""}${Number(row.goalDifference) || 0}</td>
+            <td><span class="league-form">${formHtml(form, "—")}</span></td><td><strong>${Number(row.points) || 0}</strong></td>
+          </tr>`;
+        }).join("")}</tbody>
+      </table>
+    </div>
+  </article>`;
+}
+
+function leagueOverviewView() {
+  const upcoming = upcomingLeagueMatches("", 6);
+  return `<section class="subpage-hero"><p class="eyebrow">PKO BP EKSTRAKLASA</p><h1>Ekstraklasa</h1><p>Tabela, forma drużyn, terminarz i oficjalne składy meczowe.</p></section>
+    <section class="content-section league-section">
+      <div class="league-source-bar"><span><i></i>Dane: oficjalne Centrum Meczowe Ekstraklasy</span><button type="button" data-league-refresh>ODŚWIEŻ</button></div>
+      ${leagueTableHtml()}
+      <div class="league-two-column">
+        <article class="league-panel"><div class="league-panel-head"><div><p class="eyebrow">TERMINARZ</p><h2>Najbliższe mecze</h2></div></div><div class="league-fixtures">${upcoming.length ? upcoming.map((match) => leagueFixtureHtml(match)).join("") : `<p class="league-empty">Brak nadchodzących spotkań.</p>`}</div></article>
+        <article class="league-panel"><div class="league-panel-head"><div><p class="eyebrow">18 DRUŻYN</p><h2>Kluby Ekstraklasy</h2></div></div><div class="league-club-grid">${teams.map((team) => `<a href="${teamRouteHref(team.id)}" data-team-route="${team.id}"><img src="${team.crest}" alt=""><span>${escapeHtml(team.name)}</span>${icon("arrow")}</a>`).join("")}</div></article>
+      </div>
+    </section>`;
+}
+
+function leagueTeamView(teamId) {
+  const team = teamById[teamId];
+  if (!team) return leagueOverviewView();
+  const standing = teamStanding(teamId);
+  const recent = recentLeagueMatches(teamId, 5);
+  const upcoming = upcomingLeagueMatches(teamId, 5);
+  const form = teamForm(teamId, standing);
+  return `<section class="team-profile-hero">
+      <a class="league-back" href="#ekstraklasa" data-view-jump="ekstraklasa">← Wszystkie drużyny</a>
+      <img src="${team.crest}" alt="Herb ${escapeHtml(team.name)}"><div><p class="eyebrow">DRUŻYNA EKSTRAKLASY</p><h1>${escapeHtml(team.name)}</h1><span class="league-form team-profile-form">${formHtml(form, "Forma pojawi się po pierwszych meczach")}</span></div>
+      <div class="team-profile-stats"><span><b>${Number(standing?.rank) || "—"}</b>miejsce</span><span><b>${Number(standing?.points) || 0}</b>punktów</span><span><b>${Number(standing?.played) || 0}</b>meczów</span></div>
+    </section>
+    <section class="content-section league-section team-profile-content">
+      <div class="league-two-column">
+        <article class="league-panel"><div class="league-panel-head"><div><p class="eyebrow">FORMA</p><h2>Ostatnie wyniki</h2></div></div><div class="league-fixtures">${recent.length ? recent.map((match) => leagueFixtureHtml(match, teamId)).join("") : `<p class="league-empty">Brak rozegranych meczów ${escapeHtml(team.name)} w sezonie 2026/27.</p>`}</div></article>
+        <article class="league-panel"><div class="league-panel-head"><div><p class="eyebrow">TERMINARZ</p><h2>Najbliższe mecze</h2></div></div><div class="league-fixtures">${upcoming.length ? upcoming.map((match) => leagueFixtureHtml(match, teamId)).join("") : `<p class="league-empty">Brak kolejnych spotkań w terminarzu.</p>`}</div></article>
+      </div>
+    </section>`;
+}
+
+function lineupPlayerHtml(player) {
+  const name = player.name || [player.firstName, player.lastName].filter(Boolean).join(" ") || "Zawodnik";
+  return `<li><span>${escapeHtml(player.shirtNumber ?? "—")}</span><strong>${escapeHtml(name)}${player.isCaptain ? " (C)" : ""}</strong><small>${escapeHtml(player.position || "")}</small></li>`;
+}
+
+function lineupTeamHtml(lineupTeam, fallbackTeam) {
+  const team = teamById[lineupTeam?.teamId] || fallbackTeam;
+  const starters = Array.isArray(lineupTeam?.starters) ? lineupTeam.starters : [];
+  const substitutes = Array.isArray(lineupTeam?.substitutes) ? lineupTeam.substitutes : [];
+  return `<article class="lineup-team">
+    <header><img src="${team?.crest || ""}" alt=""><div><h3>${escapeHtml(team?.name || lineupTeam?.name || "Drużyna")}</h3><span>Ustawienie: ${escapeHtml(lineupTeam?.formation || "—")}</span></div></header>
+    <h4>Wyjściowa jedenastka</h4><ol>${starters.map(lineupPlayerHtml).join("")}</ol>
+    ${substitutes.length ? `<details><summary>Rezerwowi (${substitutes.length})</summary><ul>${substitutes.map(lineupPlayerHtml).join("")}</ul></details>` : ""}
+  </article>`;
+}
+
+function leagueMatchView(matchId) {
+  const match = leagueMatchByRoute(matchId);
+  if (!match) {
+    return `<section class="subpage-hero"><p class="eyebrow">CENTRUM MECZU</p><h1>Nie znaleziono meczu</h1><p>Ten adres nie odpowiada spotkaniu z aktualnego sezonu.</p></section><section class="content-section narrow"><a class="primary-button" href="#ekstraklasa" data-view-jump="ekstraklasa">WRÓĆ DO EKSTRAKLASY</a></section>`;
+  }
+  const home = teamById[match.home];
+  const away = teamById[match.away];
+  const providerId = String(match.providerId || "");
+  const lineup = state.lineupsByMatch[providerId];
+  const lineupStatus = state.lineupStatusByMatch[providerId] || "idle";
+  const lineupError = state.lineupErrorByMatch[providerId] || "";
+  const homeLineup = lineup?.teams?.find((team) => team.side === "home" || team.teamId === home?.id) || lineup?.teams?.[0];
+  const awayLineup = lineup?.teams?.find((team) => team.side === "away" || team.teamId === away?.id) || lineup?.teams?.[1];
+  const score = leagueMatchHasScore(match) && (leagueMatchIsFinal(match) || LIVE.has(match.status)) ? `${Number(match.homeScore)} : ${Number(match.awayScore)}` : "– : –";
+  const lineupBody = lineupStatus === "loading"
+    ? `<div class="lineup-state"><span class="league-loading-mark"></span><h2>Pobieramy składy…</h2><p>Sprawdzamy oficjalne dane obu klubów.</p></div>`
+    : lineup?.published
+      ? `<div class="lineup-grid">${lineupTeamHtml(homeLineup, home)}${lineupTeamHtml(awayLineup, away)}</div>`
+      : `<div class="lineup-state"><span class="lineup-clock">XI</span><h2>${lineupError ? "Nie udało się pobrać składów" : "Składy nie zostały jeszcze podane"}</h2><p>${lineupError ? escapeHtml(lineupError) : "Gdy oba kluby opublikują wyjściowe jedenastki, pojawią się tutaj automatycznie i wyślemy powiadomienie."}</p><button type="button" class="primary-button" data-lineup-retry="${escapeHtml(providerId)}">SPRAWDŹ PONOWNIE</button></div>`;
+  return `<section class="match-profile-hero">
+      <a class="league-back" href="#ekstraklasa" data-view-jump="ekstraklasa">← Ekstraklasa</a>
+      <p class="eyebrow">${escapeHtml(leagueKickoffLabel(match))} · ${escapeHtml(leagueMatchStatus(match))}</p>
+      <div class="match-profile-score">
+        <a href="${teamRouteHref(home.id)}" data-team-route="${home.id}"><img src="${home.crest}" alt=""><strong>${escapeHtml(home.name)}</strong></a>
+        <b>${score}</b>
+        <a href="${teamRouteHref(away.id)}" data-team-route="${away.id}"><img src="${away.crest}" alt=""><strong>${escapeHtml(away.name)}</strong></a>
+      </div>
+    </section>
+    <section class="content-section league-section"><article class="league-panel lineup-panel"><div class="league-panel-head"><div><p class="eyebrow">OFICJALNE DANE</p><h2>Składy meczowe</h2></div><span>${lineup?.updatedAt ? `Aktualizacja: ${new Intl.DateTimeFormat("pl-PL", { hour: "2-digit", minute: "2-digit" }).format(new Date(lineup.updatedAt))}` : ""}</span></div>${lineupBody}</article></section>`;
+}
+
+function leagueView() {
+  if (!state.leagueData || state.leagueStatus === "loading" || state.leagueStatus === "error") return leagueLoadingHtml();
+  if (state.leagueMatchId) return leagueMatchView(state.leagueMatchId);
+  if (state.leagueTeamId) return leagueTeamView(state.leagueTeamId);
+  return leagueOverviewView();
+}
+
+function leagueBackendUrl(path) {
+  const base = String(notificationApiBase || "").replace(/\/$/, "");
+  return base ? `${base}${path}` : path;
+}
+
+async function fetchLeagueBackend(path) {
+  const response = await fetch(leagueBackendUrl(path), { headers: { Accept: "application/json" } });
+  if (!response.ok) throw new Error(`League backend returned HTTP ${response.status}`);
+  return response.json();
+}
+
+async function loadLeagueData({ force = false } = {}) {
+  if (state.leagueStatus === "loading") return;
+  const fresh = state.leagueData && Date.now() - state.leagueLoadedAt < LEAGUE_CACHE_MAX_AGE_MS;
+  if (!force && fresh) {
+    const selected = leagueMatchByRoute();
+    if (selected) void loadLeagueLineup(selected);
+    return;
+  }
+  state.leagueStatus = "loading";
+  state.leagueError = "";
+  if (state.view === "ekstraklasa") render();
+  try {
+    let payload;
+    try {
+      payload = await fetchLeagueBackend("/api/league");
+      state.leagueSource = "worker";
+    } catch (backendError) {
+      console.warn("Backend ligi jest niedostępny, używam oficjalnego źródła bezpośrednio:", backendError);
+      payload = await getOfficialLeaguePayload({ force });
+      state.leagueSource = "official-direct";
+    }
+    if (!payload || !Array.isArray(payload.standings) || !Array.isArray(payload.matches)) throw new Error("Nieprawidłowa odpowiedź źródła ligi");
+    state.leagueData = payload;
+    state.leagueStatus = "ready";
+    state.leagueError = "";
+    state.leagueLoadedAt = Date.now();
+  } catch (error) {
+    console.error("Nie udało się pobrać danych Ekstraklasy:", error);
+    state.leagueStatus = state.leagueData ? "ready" : "error";
+    state.leagueError = "Nie udało się pobrać aktualnej tabeli i terminarza. Sprawdź internet i spróbuj ponownie.";
+  }
+  if (state.view === "ekstraklasa") render();
+  const selected = leagueMatchByRoute();
+  if (selected) void loadLeagueLineup(selected, { force });
+}
+
+async function loadLeagueLineup(match, { force = false } = {}) {
+  const providerId = String(match?.providerId || "");
+  if (!providerId || state.lineupStatusByMatch[providerId] === "loading") return;
+  const cached = state.lineupsByMatch[providerId];
+  const loadedAt = Number(state.lineupLoadedAtByMatch[providerId]) || 0;
+  if (!force && cached?.published) return;
+  if (!force && cached && Date.now() - loadedAt < LINEUP_PENDING_CACHE_MS) return;
+  state.lineupStatusByMatch[providerId] = "loading";
+  state.lineupErrorByMatch[providerId] = "";
+  if (state.view === "ekstraklasa" && state.leagueMatchId) render();
+  try {
+    let payload;
+    try {
+      payload = await fetchLeagueBackend(`/api/league/lineups?provider=${encodeURIComponent(providerId)}`);
+    } catch (backendError) {
+      console.warn("Backend składów jest niedostępny, używam oficjalnego źródła bezpośrednio:", backendError);
+      payload = await getOfficialMatchLineup(providerId, { force });
+    }
+    const lineup = payload?.lineup || payload;
+    if (!lineup || !Array.isArray(lineup.teams)) throw new Error("Nieprawidłowa odpowiedź składów");
+    state.lineupsByMatch[providerId] = lineup;
+    state.lineupStatusByMatch[providerId] = "ready";
+    state.lineupErrorByMatch[providerId] = "";
+    state.lineupLoadedAtByMatch[providerId] = Date.now();
+  } catch (error) {
+    console.error("Nie udało się pobrać składów:", error);
+    state.lineupStatusByMatch[providerId] = "error";
+    state.lineupErrorByMatch[providerId] = "Oficjalne składy są teraz chwilowo niedostępne.";
+    state.lineupLoadedAtByMatch[providerId] = Date.now();
+  }
+  if (state.view === "ekstraklasa" && state.leagueMatchId) render();
 }
 
 function rankingRows() {
@@ -649,8 +1114,8 @@ function settingsView() {
       : notificationPending
         ? "Urządzenie zachowało zgodę, ale kanał czeka na ponowne połączenie z backendem."
       : notificationEnabled
-        ? "Dostaniesz wiadomości z chatu, przypomnienia o kolejce, wyniki i podsumowania punktów także po zamknięciu Typera."
-        : "Włącz powiadomienia o chacie, nowych graczach, starcie kolejki, wynikach meczów i zdobytych punktach.";
+        ? "Dostaniesz wiadomości z chatu, podane składy, przypomnienia o kolejce, wyniki i podsumowania punktów także po zamknięciu Typera."
+        : "Włącz powiadomienia o chacie, nowych graczach, podanych składach, starcie kolejki, wynikach meczów i zdobytych punktach.";
   return `${heroMarkup}<section class="content-section settings-section">
     <div class="settings-profile-card">
       ${avatarVisualMarkup("settings-avatar-preview", `Avatar ${state.user.name}`)}
@@ -709,14 +1174,30 @@ function settingsView() {
   </section>`;
 }
 
+function currentDocumentTitle() {
+  if (state.view === "ekstraklasa") {
+    if (state.leagueTeamId && teamById[state.leagueTeamId]) return `${teamById[state.leagueTeamId].name} – Ekstraklapa Typer`;
+    const match = leagueMatchByRoute();
+    if (match && teamById[match.home] && teamById[match.away]) {
+      return `${teamById[match.home].name} – ${teamById[match.away].name} – Ekstraklapa Typer`;
+    }
+    return "Ekstraklasa – Ekstraklapa Typer";
+  }
+  const labels = { matches: "Mecze", ranking: "Ranking", rules: "Zasady", settings: "Ustawienia" };
+  return `${labels[state.view] || "Typer"} – Ekstraklapa Typer`;
+}
+
 function render() {
   app.innerHTML = state.view === "ranking"
     ? rankingView()
+    : state.view === "ekstraklasa"
+      ? leagueView()
     : state.view === "rules"
       ? rulesView()
       : state.view === "settings"
         ? settingsView()
         : matchesView();
+  document.title = currentDocumentTitle();
   document.querySelectorAll(".nav-link").forEach((node) => node.classList.toggle("is-active", node.dataset.view === state.view));
   updateAuthButton();
   bindRendered();
@@ -731,9 +1212,7 @@ function bindRendered() {
     const matchday = state.matchday + step;
     if (![-1, 1].includes(step) || !Number.isInteger(matchday) || matchday < 1 || matchday > LAST_MATCHDAY) return;
     const restoreKeyboardFocus = event.detail === 0;
-    state.matchday = matchday;
-    save();
-    render();
+    applyAppRoute({ view: "matches", matchday }, { historyMode: "push", focus: false });
     if (restoreKeyboardFocus) {
       requestAnimationFrame(() => {
         const sameDirection = app.querySelector(`[data-matchday-step="${step}"]`);
@@ -742,7 +1221,10 @@ function bindRendered() {
       });
     }
   }));
-  app.querySelectorAll("[data-view-jump]").forEach((button) => button.addEventListener("click", () => setView(button.dataset.viewJump)));
+  app.querySelectorAll("[data-view-jump]").forEach((button) => button.addEventListener("click", (event) => {
+    event.preventDefault();
+    setView(button.dataset.viewJump);
+  }));
   app.querySelector("[data-scroll-matches]")?.addEventListener("click", () => document.querySelector("#mecze")?.scrollIntoView({ behavior: "smooth" }));
   app.querySelectorAll("[data-match-centre]").forEach((button) => button.addEventListener("click", () => showMatchCentre(button.dataset.matchCentre)));
   app.querySelector("[data-open-auth]")?.addEventListener("click", openAuthDialog);
@@ -751,6 +1233,11 @@ function bindRendered() {
   app.querySelector("#displayNameForm")?.addEventListener("submit", saveDisplayName);
   app.querySelector("[data-chat-notifications]")?.addEventListener("click", toggleChatNotifications);
   app.querySelector("[data-ranking-retry]")?.addEventListener("click", () => loadRankingData());
+  app.querySelector("[data-league-refresh]")?.addEventListener("click", () => loadLeagueData({ force: true }));
+  app.querySelector("[data-lineup-retry]")?.addEventListener("click", () => {
+    const match = leagueMatchByRoute();
+    if (match) void loadLeagueLineup(match, { force: true });
+  });
   app.querySelectorAll("[data-avatar-image]").forEach((image) => image.addEventListener("error", () => image.remove(), { once: true }));
 }
 
@@ -826,7 +1313,7 @@ function showMatchCentre(matchId) {
     ? `<div class="match-pick-summary${points === 1 ? " is-hit" : points === 0 ? " is-miss" : ""}"><span>Twój typ</span><strong>${pick || "—"}</strong><small>${points === 1 ? "+1 pkt · trafiony" : points === 0 ? "0 pkt · nietrafiony" : pick ? "Czeka na rozliczenie" : "Brak oddanego typu"}</small></div>`
     : "";
   matchDialog.dataset.matchId = match.id;
-  matchDialog.innerHTML = `<button class="modal-close" data-close>×</button><p class="eyebrow">WYNIK MECZU</p><div class="modal-score"><div><img src="${home.crest}" alt=""><b>${home.name}</b></div><strong>${Number.isFinite(match.homeScore) ? `${match.homeScore} : ${match.awayScore}` : "– : –"}</strong><div><img src="${away.crest}" alt=""><b>${away.name}</b></div></div><p class="no-events">${status}</p>${pickSummary}`;
+  matchDialog.innerHTML = `<button class="modal-close" data-close>×</button><p class="eyebrow">WYNIK MECZU</p><div class="modal-score"><a href="${teamRouteHref(home.id)}" data-team-route="${home.id}"><img src="${home.crest}" alt=""><b>${home.name}</b></a><strong>${Number.isFinite(match.homeScore) ? `${match.homeScore} : ${match.awayScore}` : "– : –"}</strong><a href="${teamRouteHref(away.id)}" data-team-route="${away.id}"><img src="${away.crest}" alt=""><b>${away.name}</b></a></div><p class="no-events">${status}</p>${pickSummary}`;
   if (!matchDialog.open) matchDialog.showModal();
   return true;
 }
@@ -837,11 +1324,12 @@ function notify(message) {
   setTimeout(() => toast.classList.remove("show"), 2400);
 }
 
-function clearNotificationRoute(hash = state.view || "matches") {
+function clearNotificationRoute(route = currentAppRoute()) {
   const query = new URLSearchParams(location.search);
   ["chat", "match", "matchday", "summary", "player", "notification"].forEach((key) => query.delete(key));
   const queryString = query.toString();
-  history.replaceState(null, "", `${location.pathname}${queryString ? `?${queryString}` : ""}#${hash}`);
+  history.replaceState(null, "", `${location.pathname}${queryString ? `?${queryString}` : ""}${appRouteHash(typeof route === "string" ? { view: route, matchday: state.matchday } : route)}`);
+  lastAppliedRouteHref = location.href;
 }
 
 function discardInvalidNotificationMatchRoute() {
@@ -873,7 +1361,7 @@ async function tryApplyNotificationRoute() {
       } else {
         const match = state.matches.find((item) => item.id === notificationMatchId);
         if (match) state.matchday = validMatchday || match.matchday;
-        setView("matches");
+        setView("matches", { historyMode: "replace", focus: false });
         if (!showMatchCentre(notificationMatchId)) {
           discardInvalidNotificationMatchRoute();
         } else {
@@ -897,7 +1385,7 @@ async function tryApplyNotificationRoute() {
       if (!state.userDataReady || !state.participantReady) return;
       const summaryMatchday = validMatchday || state.matchday;
       state.matchday = summaryMatchday;
-      setView("matches");
+      setView("matches", { historyMode: "replace", focus: false });
       await openPlayerPicks(state.user.uid, summaryMatchday);
       if (state.playerPicksUid !== state.user.uid) return;
       notificationDeepLinkHandled = true;
@@ -906,7 +1394,7 @@ async function tryApplyNotificationRoute() {
     }
 
     if (openChatFromNotification) {
-      setView("matches");
+      setView("matches", { historyMode: "replace", focus: false });
       toggleChat(true);
       notificationDeepLinkHandled = true;
       clearNotificationRoute("matches");
@@ -924,7 +1412,7 @@ async function tryApplyNotificationRoute() {
         return;
       }
       if (!state.userDataReady || !state.participantReady) return;
-      setView("ranking");
+      setView("ranking", { historyMode: "replace", focus: false });
       await openPlayerPicks(notificationPlayerId, validMatchday || defaultPlayerPicksMatchday());
       if (state.playerPicksUid !== notificationPlayerId) return;
       notificationDeepLinkHandled = true;
@@ -935,7 +1423,7 @@ async function tryApplyNotificationRoute() {
     if (validMatchday) {
       state.matchday = validMatchday;
       save();
-      setView("matches");
+      setView("matches", { historyMode: "replace", focus: false });
       requestAnimationFrame(() => document.querySelector("#mecze")?.scrollIntoView({ behavior: "smooth", block: "start" }));
       notificationDeepLinkHandled = true;
       clearNotificationRoute("matches");
@@ -2102,9 +2590,9 @@ function playerPickRowHtml(uid, match) {
   return `<article class="player-pick-row${hit === true ? " is-hit" : hit === false ? " is-miss" : ""}">
     <div class="player-pick-match-meta"><span>${formatDay(match)} · ${formatTime(match)}</span><b>${score}</b></div>
     <div class="player-pick-teams">
-      <span><img src="${home.crest}" alt=""><span class="player-pick-team-name">${escapeHtml(home.name)}</span></span>
+      <a href="${teamRouteHref(home.id)}" data-team-route="${home.id}"><img src="${home.crest}" alt=""><span class="player-pick-team-name">${escapeHtml(home.name)}</span></a>
       <i>VS</i>
-      <span><img src="${away.crest}" alt=""><span class="player-pick-team-name">${escapeHtml(away.name)}</span></span>
+      <a href="${teamRouteHref(away.id)}" data-team-route="${away.id}"><img src="${away.crest}" alt=""><span class="player-pick-team-name">${escapeHtml(away.name)}</span></a>
     </div>
     <div class="player-pick-result ${display.status}">${pickMarkup}</div>
   </article>`;
@@ -3972,6 +4460,22 @@ async function pollLive() {
 }
 
 document.addEventListener("click", (event) => {
+  const teamRouteLink = event.target.closest?.("[data-team-route]");
+  if (teamRouteLink) {
+    event.preventDefault();
+    teamRouteLink.closest("dialog")?.close();
+    openTeamDetails(teamRouteLink.dataset.teamRoute);
+    return;
+  }
+
+  const leagueMatchRouteLink = event.target.closest?.("[data-league-match-route]");
+  if (leagueMatchRouteLink) {
+    event.preventDefault();
+    leagueMatchRouteLink.closest("dialog")?.close();
+    openLeagueMatch(leagueMatchRouteLink.dataset.leagueMatchRoute);
+    return;
+  }
+
   const playerButton = event.target.closest?.("[data-player-picks]");
   if (playerButton) {
     event.preventDefault();
@@ -4055,15 +4559,8 @@ document.addEventListener("keydown", (event) => {
     setMainMenuOpen(false, true);
   }
 });
-window.addEventListener("hashchange", () => {
-  const view = location.hash.slice(1);
-  if (!VIEWS.has(view)) {
-    history.replaceState(null, "", `${location.pathname}${location.search}#matches`);
-    setView("matches");
-    return;
-  }
-  setView(view);
-});
+window.addEventListener("popstate", applyRouteFromLocation);
+window.addEventListener("hashchange", applyRouteFromLocation);
 window.addEventListener("online", () => {
   state.chatReadRetryAt = 0;
   markChatRead();
@@ -4082,6 +4579,7 @@ document.addEventListener("visibilitychange", () => {
 });
 
 render();
+if (state.view === "ekstraklasa") void loadLeagueData();
 tryApplyNotificationRoute().catch((error) => console.warn("Nie udało się otworzyć widoku z powiadomienia:", error));
 finishLoadingScreen().then(() => setTimeout(showAndroidAppPrompt, 700));
 state.firebaseReady = initFirebase();

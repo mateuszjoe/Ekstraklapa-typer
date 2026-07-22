@@ -17,6 +17,7 @@ await Promise.all([
   cp(join(root, "data.js"), join(output, "legacy", "data.js")),
   cp(join(root, "firebase-config.js"), join(output, "legacy", "firebase-config.js")),
   cp(join(root, "live-provider.js"), join(output, "legacy", "live-provider.js")),
+  cp(join(root, "league-provider.js"), join(output, "legacy", "league-provider.js")),
   cp(join(root, "styles.css"), join(output, "styles.css")),
   cp(join(root, "manifest.webmanifest"), join(output, "manifest.webmanifest")),
   cp(join(root, "sw.js"), join(output, "sw.js")),

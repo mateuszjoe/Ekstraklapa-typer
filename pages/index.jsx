@@ -7,7 +7,7 @@ export default function Home() {
 
     const script = document.createElement("script");
     script.type = "module";
-    script.src = "/legacy/app.js?v=22";
+    script.src = "/legacy/app.js?v=28";
     script.dataset.ekstraklasaRuntime = "true";
     document.body.appendChild(script);
   }, []);
@@ -30,10 +30,11 @@ export default function Home() {
           <img className="brand-logo" src="/assets/brand/logo-horizontal.png" alt="" />
         </a>
         <nav className="main-nav" aria-label="Główna nawigacja">
-          <button className="nav-link is-active" data-view="matches">Mecze</button>
-          <button className="nav-link" data-view="ranking">Ranking</button>
-          <button className="nav-link" data-view="rules">Zasady</button>
-          <button className="nav-link" data-view="settings">Ustawienia</button>
+          <a href="#matches/1" className="nav-link is-active" data-view="matches">Mecze</a>
+          <a href="#ekstraklasa" className="nav-link" data-view="ekstraklasa">Ekstraklasa</a>
+          <a href="#ranking" className="nav-link" data-view="ranking">Ranking</a>
+          <a href="#rules" className="nav-link" data-view="rules">Zasady</a>
+          <a href="#settings" className="nav-link" data-view="settings">Ustawienia</a>
         </nav>
         <button id="authButton" className="auth-button"><span className="user-icon">◉</span><span>Zaloguj się</span></button>
         <button id="menuButton" className="menu-button" aria-label="Otwórz menu">☰</button>

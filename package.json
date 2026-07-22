@@ -8,7 +8,7 @@
     "dev": "node server.mjs",
     "start": "node server.mjs",
     "build": "node scripts/prepare-vinext.mjs && vite build && node scripts/finalize-vinext.mjs",
-    "check": "node --check app.js && node --check data.js && node --check live-provider.js && node --check server.mjs && node --check scripts/bootstrap-leaderboard.cjs && node --check scripts/sync-trusted-match-times.cjs && node scripts/check-data.mjs",
+    "check": "node --check app.js && node --check data.js && node --check live-provider.js && node --check league-provider.js && node --check server.mjs && node --check scripts/bootstrap-leaderboard.cjs && node --check scripts/sync-trusted-match-times.cjs && node scripts/check-data.mjs",
     "sync:schedule": "node scripts/sync-trusted-match-times.cjs",
     "migrate:picks": "node scripts/migrate-legacy-predictions.cjs"
   },
