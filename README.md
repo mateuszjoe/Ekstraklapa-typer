@@ -20,6 +20,16 @@ Pełny interfejs i terminarz są dostępne publicznie. Oddawanie typów wymaga z
 
 Po publikacji przez HTTPS aplikację można dodać do ekranu głównego telefonu. Manifest wykorzystuje osobne ikony 192 × 192 i 512 × 512, a urządzenia Apple plik 180 × 180.
 
+## Aplikacja na Androida
+
+Podpisany APK jest publikowany jako wydanie GitHuba i udostępniany przez popup widoczny na stronie wyłącznie na urządzeniach z Androidem. Aktualna wersja: `1.0.0` (`pl.ekstraklapatyper.app`).
+
+Bezpośrednie pobieranie:
+
+`https://github.com/mateuszjoe/Ekstraklapa-typer/releases/download/android-v1.0.0/Ekstraklapa-Typer-v1.0.0.apk`
+
+Projekt źródłowy znajduje się w `android/`, a podpisany build wykonuje `.github/workflows/android-apk.yml`. Klucz wydaniowy i jego hasło są przechowywane wyłącznie jako sekrety GitHuba oraz w ignorowanym katalogu `.local-secrets/`. Kolejne wydania muszą zachować package ID i klucz oraz zwiększać `versionCode`.
+
 ## Logowanie Google
 
 Aplikacja korzysta z osobnego projektu Firebase `ekstraklasa-typer-2026-27`. Publiczna konfiguracja aplikacji webowej znajduje się w `firebase-config.js`, a dostawca Google jest zarządzany jako kod w `firebase.json`.

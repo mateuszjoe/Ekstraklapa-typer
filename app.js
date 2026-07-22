@@ -5,6 +5,11 @@ import { getOfficialLivePayload } from "./live-provider.js";
 const bootStartedAt = performance.now();
 const app = document.querySelector("#app");
 const STORAGE_KEY = "ekstraklasa-typer-state-v1";
+const APK_VERSION = "1.0.0";
+const APK_PROMPT_CAMPAIGN = "android-v1";
+const APK_PROMPT_STORAGE_KEY = "ekstraklasa-typer:apk-prompt";
+const APK_PROMPT_COOLDOWN_MS = 14 * 24 * 60 * 60 * 1000;
+const APK_DOWNLOAD_URL = "https://github.com/mateuszjoe/Ekstraklapa-typer/releases/download/android-v1.0.0/Ekstraklapa-Typer-v1.0.0.apk";
 const FINAL = new Set(["FT", "AET", "PEN", "AWD", "WO", "FINISHED", "AWARDED"]);
 const LIVE = new Set(["1H", "HT", "2H", "ET", "BT", "P", "LIVE", "IN_PLAY", "PAUSED"]);
 const VIEWS = new Set(["matches", "ranking", "rules", "settings"]);
@@ -127,13 +132,12 @@ async function finishLoadingScreen() {
   const minimumDuration = reduceMotion ? 180 : 800;
   const remaining = Math.max(0, minimumDuration - (performance.now() - bootStartedAt));
 
-  setTimeout(() => {
-    clearTimeout(window.__etLoaderFallback);
-    document.documentElement.classList.add("app-ready");
-    document.documentElement.classList.remove("app-loading");
-    document.querySelector("#appLoader")?.setAttribute("aria-hidden", "true");
-    setTimeout(() => document.querySelector("#appLoader")?.remove(), 500);
-  }, remaining);
+  await new Promise((resolve) => setTimeout(resolve, remaining));
+  clearTimeout(window.__etLoaderFallback);
+  document.documentElement.classList.add("app-ready");
+  document.documentElement.classList.remove("app-loading");
+  document.querySelector("#appLoader")?.setAttribute("aria-hidden", "true");
+  setTimeout(() => document.querySelector("#appLoader")?.remove(), 500);
 }
 
 function save() {
@@ -706,6 +710,89 @@ function openAccountDialog() {
     avatarHost.innerHTML = playerAvatarButton(state.user.uid, "account-avatar-image");
     avatarHost.querySelector("[data-avatar-image]")?.addEventListener("error", (event) => event.currentTarget.remove(), { once: true });
   }
+  dialog.showModal();
+}
+
+function androidAppPromptState() {
+  try {
+    const value = JSON.parse(localStorage.getItem(APK_PROMPT_STORAGE_KEY) || "null");
+    return value && typeof value === "object" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function rememberAndroidAppPrompt(action) {
+  try {
+    localStorage.setItem(APK_PROMPT_STORAGE_KEY, JSON.stringify({
+      campaign: APK_PROMPT_CAMPAIGN,
+      action,
+      at: Date.now()
+    }));
+  } catch {}
+}
+
+function isAndroidDevice() {
+  const platform = navigator.userAgentData?.platform || "";
+  return /^Android$/i.test(platform) || /Android/i.test(navigator.userAgent || "");
+}
+
+function runsAsInstalledApp() {
+  const source = new URLSearchParams(location.search).get("source");
+  return source === "android-app"
+    || document.referrer.startsWith("android-app://")
+    || window.matchMedia?.("(display-mode: standalone)").matches
+    || window.matchMedia?.("(display-mode: fullscreen)").matches
+    || navigator.standalone === true;
+}
+
+function shouldShowAndroidAppPrompt() {
+  if (!isAndroidDevice() || runsAsInstalledApp() || !navigator.onLine) return false;
+  if (document.querySelector("dialog[open], #androidAppDialog")) return false;
+  const savedPrompt = androidAppPromptState();
+  if (!savedPrompt || savedPrompt.campaign !== APK_PROMPT_CAMPAIGN) return true;
+  if (savedPrompt.action === "downloaded") return false;
+  return savedPrompt.action !== "dismissed"
+    || !Number.isFinite(savedPrompt.at)
+    || Date.now() - savedPrompt.at >= APK_PROMPT_COOLDOWN_MS;
+}
+
+function showAndroidAppPrompt() {
+  if (!shouldShowAndroidAppPrompt()) return;
+  const dialog = document.createElement("dialog");
+  dialog.id = "androidAppDialog";
+  dialog.className = "modal android-app-modal";
+  dialog.setAttribute("aria-labelledby", "androidAppTitle");
+  dialog.setAttribute("aria-describedby", "androidAppDescription");
+  dialog.innerHTML = `<button type="button" class="modal-close" data-apk-dismiss aria-label="Zamknij">×</button>
+    <div class="android-app-visual" aria-hidden="true"><span>ANDROID</span><img src="./assets/brand/app-icon-192.png?v=14" alt=""></div>
+    <p class="eyebrow">APLIKACJA NA ANDROIDA</p>
+    <h2 id="androidAppTitle">Typer zawsze pod ręką.</h2>
+    <p id="androidAppDescription" class="modal-copy">Zainstaluj Ekstraklapa Typer na telefonie i uruchamiaj go prosto z ekranu głównego.</p>
+    <ul class="android-app-benefits">
+      <li>te same konto, typy i ranking</li>
+      <li>bezpieczne logowanie przez Google</li>
+      <li>szybki dostęp bez szukania adresu</li>
+    </ul>
+    <a class="primary-button android-app-download" data-apk-download href="${APK_DOWNLOAD_URL}"><span>POBIERZ APK</span><small>v${APK_VERSION} · 3,8 MB</small></a>
+    <button type="button" class="android-app-later" data-apk-dismiss>NIE TERAZ</button>
+    <small class="android-app-note">Android może poprosić o jednorazową zgodę na instalowanie aplikacji z przeglądarki.</small>`;
+
+  const dismiss = () => {
+    rememberAndroidAppPrompt("dismissed");
+    dialog.close();
+  };
+  dialog.querySelectorAll("[data-apk-dismiss]").forEach((button) => button.addEventListener("click", dismiss));
+  dialog.querySelector("[data-apk-download]")?.addEventListener("click", () => {
+    rememberAndroidAppPrompt("downloaded");
+    setTimeout(() => dialog.close(), 150);
+  });
+  dialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    dismiss();
+  });
+  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  document.body.append(dialog);
   dialog.showModal();
 }
 
@@ -2462,7 +2549,7 @@ window.addEventListener("online", () => {
 });
 
 render();
-finishLoadingScreen();
+finishLoadingScreen().then(() => setTimeout(showAndroidAppPrompt, 700));
 state.firebaseReady = initFirebase();
 pollLive();
 setInterval(updateCountdowns, 60000);

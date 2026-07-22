@@ -1,8 +1,8 @@
-const CACHE_NAME = "ekstraklasa-typer-v18";
+const CACHE_NAME = "ekstraklasa-typer-v19";
 const OFFLINE_ASSETS = [
   "./",
-  "./styles.css?v=18",
-  "./app.js?v=18",
+  "./styles.css?v=19",
+  "./app.js?v=19",
   "./data.js",
   "./firebase-config.js",
   "./live-provider.js",
@@ -32,6 +32,7 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("fetch", (event) => {
-  if (event.request.method !== "GET" || new URL(event.request.url).pathname.startsWith("/api/")) return;
+  const requestUrl = new URL(event.request.url);
+  if (event.request.method !== "GET" || requestUrl.pathname.startsWith("/api/") || requestUrl.pathname.endsWith(".apk")) return;
   event.respondWith(fetch(event.request).catch(() => caches.match(event.request)));
 });
