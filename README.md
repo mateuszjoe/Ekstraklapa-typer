@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/brand/logo-horizontal.png" width="520" alt="Ekstraklasa Typer" />
+  <img src="assets/brand/logo-horizontal.png" width="520" alt="Ekstraklapa Typer" />
 </p>
 
-# Ekstraklasa Typer 2026/27
+# Ekstraklapa Typer 2026/27
 
 Typer 1X2 dla rundy jesiennej sezonu Ekstraklasy 2026/27. Każdy poprawny rezultat (`1`, `X` albo `2`) daje 1 punkt. Nie ma typowania dokładnego wyniku.
 

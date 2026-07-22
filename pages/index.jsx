@@ -18,15 +18,15 @@ export default function Home() {
         <meta charSet="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <meta name="theme-color" content="#0d0d0d" />
-        <meta name="description" content="Ekstraklasa Typer 2026/27 — typowanie 1X2 rundy jesiennej ze znajomymi." />
+        <meta name="description" content="Ekstraklapa Typer 2026/27 — typowanie 1X2 rundy jesiennej ze znajomymi." />
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-        <meta name="apple-mobile-web-app-title" content="Ekstraklasa Typer" />
-        <title>Ekstraklasa Typer</title>
+        <meta name="apple-mobile-web-app-title" content="Ekstraklapa Typer" />
+        <title>Ekstraklapa Typer</title>
       </Head>
 
       <header className="site-header">
-        <a className="brand" href="#matches" data-route="matches" aria-label="Ekstraklasa Typer — strona główna">
+        <a className="brand" href="#matches" data-route="matches" aria-label="Ekstraklapa Typer — strona główna">
           <img className="brand-logo" src="/assets/brand/logo-horizontal.png" alt="" />
         </a>
         <nav className="main-nav" aria-label="Główna nawigacja">
@@ -42,14 +42,14 @@ export default function Home() {
       <main id="app" tabIndex="-1" />
 
       <footer>
-        <div className="footer-brand"><img src="/assets/brand/logo-compact.png" alt="Ekstraklasa Typer" /></div>
+        <div className="footer-brand"><img src="/assets/brand/logo-compact.png" alt="Ekstraklapa Typer" /></div>
         <p>Typowanie 1X2 · Runda jesienna</p>
         <span>Sezon 2026/27</span>
       </footer>
 
       <dialog id="authDialog" className="modal auth-modal">
         <button className="modal-close" data-close aria-label="Zamknij">×</button>
-        <img className="modal-logo" src="/assets/brand/logo-compact.png" alt="Ekstraklasa Typer" />
+        <img className="modal-logo" src="/assets/brand/logo-compact.png" alt="Ekstraklapa Typer" />
         <p className="eyebrow">DOŁĄCZ DO GRY</p>
         <h2>Zaloguj się i typuj</h2>
         <p className="modal-copy">Twoje typy będą dostępne na każdym urządzeniu. Jeden klik i jesteś w grze.</p>
@@ -59,7 +59,7 @@ export default function Home() {
 
       <dialog id="accountDialog" className="modal auth-modal account-modal">
         <button className="modal-close" data-close aria-label="Zamknij">×</button>
-        <img className="modal-logo" src="/assets/brand/logo-compact.png" alt="Ekstraklasa Typer" />
+        <img className="modal-logo" src="/assets/brand/logo-compact.png" alt="Ekstraklapa Typer" />
         <div id="accountAvatar" className="account-avatar-host" />
         <p className="eyebrow">TWOJE KONTO</p>
         <h2 id="accountName">Gracz</h2>

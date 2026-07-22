@@ -1,4 +1,4 @@
-// Publiczna konfiguracja osobnego projektu Firebase dla Ekstraklasa Typer.
+// Publiczna konfiguracja osobnego projektu Firebase dla Ekstraklapa Typer.
 // Bezpieczeństwo danych zapewniają reguły z firestore.rules, nie ukrywanie apiKey.
 export const firebaseConfig = {
   apiKey: "AIzaSyD3kgRWw3BROjcmulITWFXKcePgvhtpIDY",

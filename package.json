@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Ekstraklasa Typer 2026/27 — typowanie 1X2 z wynikami LIVE",
+  "description": "Ekstraklapa Typer 2026/27 — typowanie 1X2 z wynikami LIVE",
   "scripts": {
     "dev": "node server.mjs",
     "start": "node server.mjs",

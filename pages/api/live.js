@@ -43,7 +43,7 @@ async function fetchOfficialJson(path, cacheTtl) {
     response = await fetch(`${API_BASE}${path}`, {
       headers: {
         Accept: "application/json",
-        "User-Agent": "Ekstraklasa-Typer/1.0"
+        "User-Agent": "Ekstraklapa-Typer/1.0"
       },
       signal: controller.signal,
       cf: {

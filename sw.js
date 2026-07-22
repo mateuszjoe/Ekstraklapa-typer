@@ -1,4 +1,4 @@
-const CACHE_NAME = "ekstraklasa-typer-v19";
+const CACHE_NAME = "ekstraklasa-typer-v20";
 const OFFLINE_ASSETS = [
   "./",
   "./styles.css?v=19",
@@ -6,7 +6,7 @@ const OFFLINE_ASSETS = [
   "./data.js",
   "./firebase-config.js",
   "./live-provider.js",
-  "./manifest.webmanifest?v=14",
+  "./manifest.webmanifest?v=15",
   "./assets/fonts/manrope-latin.woff2",
   "./assets/fonts/manrope-latin-ext.woff2",
   "./assets/fonts/space-grotesk-latin.woff2",

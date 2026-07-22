@@ -538,7 +538,7 @@ const server = createServer(async (req, res) => {
 
 await loadProviderState();
 server.listen(port, () => {
-  console.log(`Ekstraklasa Typer: http://localhost:${port}`);
+  console.log(`Ekstraklapa Typer: http://localhost:${port}`);
   console.log(`Centrum Meczowe Ekstraklasy: aktywne, cache LIVE ${pollIntervalMs / 1000} s, bez klucza API`);
   runPollingCycle();
 });
