@@ -1,6 +1,6 @@
 # Ekstraklapa Typer na Androida
 
-Projekt buduje podpisany APK `pl.ekstraklapatyper.app` w oparciu o Android Browser Helper. Aplikacja uruchamia produkcyjną PWA w Trusted Web Activity, z bezpiecznym przejściem do Custom Tab, gdy domena nie ma jeszcze pełnej weryfikacji Digital Asset Links.
+Projekt buduje podpisany APK `pl.ekstraklapatyper.app` w oparciu o Android Browser Helper. Aplikacja uruchamia produkcyjną PWA w zweryfikowanym Trusted Web Activity.
 
 ## Wydanie
 
@@ -12,4 +12,6 @@ Projekt buduje podpisany APK `pl.ekstraklapatyper.app` w oparciu o Android Brows
 
 Wydania muszą używać tego samego klucza i rosnącego `versionCode`. Klucz nie może trafić do repozytorium. Workflow `.github/workflows/android-apk.yml` odtwarza go z sekretów GitHuba i publikuje podpisany artefakt do weryfikacji.
 
-Pełny tryb bez paska przeglądarki wymaga pliku `https://mateuszjoe.github.io/.well-known/assetlinks.json` zawierającego package ID oraz SHA-256 certyfikatu podpisującego. Do czasu skonfigurowania pliku aplikacja działa jako bezpieczny Custom Tab, dzięki czemu logowanie Google nie korzysta z zabronionego WebView.
+Weryfikację zapewnia `https://mateuszjoe.github.io/.well-known/assetlinks.json`, publikowany z technicznego repozytorium `mateuszjoe/mateuszjoe.github.io`. Plik zawiera package ID oraz SHA-256 certyfikatu podpisującego.
+
+Wybieranie zdjęć do avatara i chatu korzysta z systemowego pickera, dlatego aplikacja nie prosi o stały dostęp do galerii ani pamięci. Powiadomienia czatu są opcjonalne i wymagają świadomego włączenia przez użytkownika.
