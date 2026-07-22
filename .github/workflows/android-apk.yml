@@ -100,6 +100,8 @@ jobs:
             sha256sum release/Typer-v1.0.2.apk
             "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs release/Typer-v1.0.2.apk
             "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging release/Typer-v1.0.2.apk | grep -E "^(package:|application-label:)"
+            "$ANDROID_HOME/build-tools/35.0.0/aapt" dump permissions release/Typer-v1.0.2.apk
+            "$ANDROID_HOME/build-tools/35.0.0/aapt" dump xmltree release/Typer-v1.0.2.apk AndroidManifest.xml | grep -A 2 -E "SPLASH_SCREEN_FADE_OUT_DURATION|FILE_PROVIDER_AUTHORITY|NotificationPermissionRequestActivity|DelegationService"
           } > release/apk-info.txt 2>&1
           cat release/apk-info.txt
 
