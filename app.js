@@ -774,7 +774,7 @@ function showAndroidAppPrompt() {
       <li>bezpieczne logowanie przez Google</li>
       <li>szybki dostęp bez szukania adresu</li>
     </ul>
-    <a class="primary-button android-app-download" data-apk-download href="${APK_DOWNLOAD_URL}"><span>POBIERZ APK</span><small>v${APK_VERSION} · 3,8 MB</small></a>
+    <a class="primary-button android-app-download" data-apk-download href="${APK_DOWNLOAD_URL}"><span>POBIERZ APK</span><small>v${APK_VERSION} · 4,0 MB</small></a>
     <button type="button" class="android-app-later" data-apk-dismiss>NIE TERAZ</button>
     <small class="android-app-note">Android może poprosić o jednorazową zgodę na instalowanie aplikacji z przeglądarki.</small>`;
 
