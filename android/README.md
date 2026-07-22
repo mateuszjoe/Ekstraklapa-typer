@@ -4,8 +4,8 @@ Projekt buduje podpisany APK `pl.ekstraklapatyper.app` w oparciu o Android Brows
 
 ## Wydanie
 
-- `versionCode`: `1`
-- `versionName`: `1.0.0`
+- `versionCode`: `2`
+- `versionName`: `1.0.1`
 - minimalny Android: 6.0 (API 23)
 - docelowy Android: API 35
 - adres: `https://mateuszjoe.github.io/Ekstraklapa-typer/`
