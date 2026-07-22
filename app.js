@@ -73,6 +73,9 @@ const state = {
   participantActivationError: false,
   participantCount: null,
   participantCountStatus: "loading",
+  rankingPlayers: [],
+  rankingStatus: "idle",
+  rankingError: "",
   user: null,
   chat: [],
   chatLive: [],
@@ -95,6 +98,8 @@ const state = {
   chatRemoteReadMs: 0,
   chatReadSaving: false,
   chatReadRetryAt: 0,
+  chatReaders: {},
+  chatAuthorReadMs: {},
   playerPicksUid: null,
   playerPicksMatchday: initialMatchday,
   playerPicksStatus: "idle",
@@ -117,6 +122,9 @@ const predictionWriteQueues = new Map();
 const predictionWriteVersions = new Map();
 let chatViewportHandler = null;
 let playerPicksLoadId = 0;
+let rankingLoadPromise = null;
+let rankingLoadRevision = 0;
+let rankingReloadPending = false;
 let trustedMatchesSyncPromise = null;
 let liveTransport = location.hostname.endsWith(".github.io") ? "official" : "server";
 
@@ -312,11 +320,24 @@ function pointsFor(match) {
   return result && state.predictions[match.id] === result ? 1 : 0;
 }
 
+function setMainMenuOpen(open, restoreFocus = false) {
+  const navigation = document.querySelector(".main-nav");
+  const button = document.querySelector("#menuButton");
+  navigation?.classList.toggle("is-open", Boolean(open));
+  button?.setAttribute("aria-expanded", String(Boolean(open)));
+  if (open) {
+    requestAnimationFrame(() => navigation?.querySelector(".nav-link:not([hidden])")?.focus({ preventScroll: true }));
+  }
+  button?.setAttribute("aria-label", open ? "Zamknij menu" : "Otwórz menu");
+  if (!open && restoreFocus) button?.focus({ preventScroll: true });
+}
+
 function setView(view) {
   state.view = view;
   document.querySelectorAll(".nav-link").forEach((node) => node.classList.toggle("is-active", node.dataset.view === view));
-  document.querySelector(".main-nav").classList.remove("is-open");
+  setMainMenuOpen(false);
   render();
+  if (view === "ranking" && state.user && state.participantReady) void loadRankingData();
   app.focus({ preventScroll: true });
 }
 
@@ -424,24 +445,94 @@ function matchesView() {
     </section>`;
 }
 
+function rankingRows() {
+  return state.rankingPlayers.map((player) => {
+    const typed = Number.isInteger(player.typed) ? player.typed : 0;
+    const points = Number.isInteger(player.points) ? player.points : 0;
+    return {
+      ...player,
+      points,
+      typed,
+      accuracy: typed ? Math.round(points / typed * 100) : 0
+    };
+  }).sort((a, b) => b.points - a.points
+    || a.joinedAtMs - b.joinedAtMs
+    || profileForUid(a.uid).name.localeCompare(profileForUid(b.uid).name, "pl"));
+}
+
 function rankingView() {
-  const typerMatches = state.matches.filter((match) => typerMatchIds.has(match.id));
-  const ownPoints = typerMatches.reduce((sum, match) => sum + pointsFor(match), 0);
-  const ownTyped = typerMatches.filter((match) => state.predictions[match.id]).length;
-  const player = state.user
-    ? [state.user.name, ownPoints, ownTyped, ownTyped ? Math.round(ownPoints / ownTyped * 100) : 0]
-    : null;
+  const players = rankingRows();
   return `<section class="subpage-hero"><p class="eyebrow">KLASYFIKACJA</p><h1>Ranking typerów</h1><p>Ranking obejmuje rundę jesienną. Każdy trafiony rezultat to dokładnie jeden punkt.</p></section>
     <section class="content-section narrow">
       ${!state.user ? `<div class="notice">Zaloguj się przez Google, żeby pojawić się w rankingu i zapisywać typy między urządzeniami.</div>` : ""}
-      <div class="ranking-card">
+      ${state.rankingError ? `<div class="notice ranking-notice"><span>${escapeHtml(state.rankingError)}</span><button type="button" data-ranking-retry>SPRÓBUJ PONOWNIE</button></div>` : ""}
+      <div class="ranking-card" aria-live="polite" aria-busy="${state.rankingStatus === "loading"}">
         <div class="ranking-head"><span>#</span><span>Gracz</span><span>Punkty</span><span>Typy</span><span>Skuteczność</span></div>
-        ${player ? (() => {
-          const playerName = String(player[0] || "Gracz");
-          return `<div class="ranking-row me"><b>—</b><span>${playerAvatarButton(state.user.uid, "ranking-avatar")}<strong>${escapeHtml(playerName)}</strong><small>TY</small></span><strong>${player[1]}</strong><span>${player[2]}</span><span>${player[3]}%</span></div>`;
-        })() : `<div class="ranking-empty"><strong>Brak graczy do wyświetlenia</strong><span>Ranking pokazuje wyłącznie prawdziwe konta Google — bez fikcyjnych wpisów.</span></div>`}
+        ${state.user && (state.rankingStatus === "idle" || state.rankingStatus === "loading") && !players.length
+          ? `<div class="ranking-empty ranking-loading"><strong>Pobieramy prawdziwych graczy…</strong><span>Za chwilę zobaczysz aktualną klasyfikację.</span></div>`
+          : players.length
+            ? players.map((player, index) => {
+              const profile = profileForUid(player.uid);
+              const mine = player.uid === state.user?.uid;
+              const rank = players.findIndex((candidate) => candidate.points === player.points) + 1;
+              return `<div class="ranking-row${mine ? " me" : ""}"><b>${rank}</b><span>${playerAvatarButton(player.uid, "ranking-avatar")}<strong>${escapeHtml(profile.name)}</strong>${mine ? "<small>TY</small>" : ""}</span><strong>${player.points}</strong><span>${player.typed}</span><span>${player.accuracy}%</span></div>`;
+            }).join("")
+            : `<div class="ranking-empty"><strong>Brak graczy do wyświetlenia</strong><span>Ranking pokazuje wyłącznie prawdziwe konta Google — bez fikcyjnych wpisów.</span></div>`}
       </div>
     </section>`;
+}
+
+async function loadRankingData() {
+  if (!state.user || !state.participantReady || !state.db || !state.firebaseModules) return;
+  if (rankingLoadPromise) {
+    rankingReloadPending = true;
+    return rankingLoadPromise;
+  }
+
+  const uid = state.user.uid;
+  const revision = ++rankingLoadRevision;
+  state.rankingStatus = "loading";
+  state.rankingError = "";
+  if (state.view === "ranking") render();
+
+  const operation = (async () => {
+    const { collection, getDocs } = state.firebaseModules;
+    await syncOwnLeaderboardIdentity(uid);
+    await reconcileOwnLeaderboard(uid);
+    const leaderboardSnapshot = await getDocs(collection(state.db, "seasons", SEASON_ID, "leaderboard"));
+    const profiles = {};
+    const players = leaderboardSnapshot.docs.map((item) => {
+      const data = item.data();
+      profiles[item.id] = normalizePublicProfile(item.id, data);
+      return {
+        uid: item.id,
+        joinedAtMs: firestoreTimeMs(data.joinedAt),
+        points: Number.isInteger(data.points) && data.points >= 0 ? data.points : 0,
+        typed: Number.isInteger(data.typed) && data.typed >= 0 ? data.typed : 0
+      };
+    });
+
+    if (state.user?.uid !== uid || revision !== rankingLoadRevision) return;
+    state.chatProfiles = { ...state.chatProfiles, ...profiles };
+    state.rankingPlayers = players;
+    state.rankingStatus = "ready";
+    state.rankingError = "";
+  })().catch((error) => {
+    if (state.user?.uid !== uid || revision !== rankingLoadRevision) return;
+    console.error("Nie udało się pobrać rankingu graczy:", error);
+    state.rankingStatus = "error";
+    state.rankingError = "Nie udało się pobrać aktualnego rankingu. Sprawdź internet i spróbuj ponownie.";
+  }).finally(() => {
+    if (revision === rankingLoadRevision) rankingLoadPromise = null;
+    if (state.view === "ranking" && state.user?.uid === uid) render();
+    if (revision === rankingLoadRevision && rankingReloadPending) {
+      rankingReloadPending = false;
+      void loadRankingData();
+    }
+  });
+
+  rankingLoadPromise = operation;
+  return operation;
 }
 
 function formatMoney(value) {
@@ -603,11 +694,12 @@ function bindRendered() {
   app.querySelectorAll("[data-view-jump]").forEach((button) => button.addEventListener("click", () => setView(button.dataset.viewJump)));
   app.querySelector("[data-scroll-matches]")?.addEventListener("click", () => document.querySelector("#mecze")?.scrollIntoView({ behavior: "smooth" }));
   app.querySelectorAll("[data-match-centre]").forEach((button) => button.addEventListener("click", () => showMatchCentre(button.dataset.matchCentre)));
-  app.querySelector("[data-open-auth]")?.addEventListener("click", () => document.querySelector("#authDialog")?.showModal());
+  app.querySelector("[data-open-auth]")?.addEventListener("click", openAuthDialog);
   app.querySelectorAll("[data-avatar-type]").forEach((button) => button.addEventListener("click", () => selectAvatar(button.dataset.avatarType, button.dataset.avatarValue || "")));
   app.querySelector("#avatarUpload")?.addEventListener("change", (event) => handleAvatarUpload(event.target.files?.[0]));
   app.querySelector("#displayNameForm")?.addEventListener("submit", saveDisplayName);
   app.querySelector("[data-chat-notifications]")?.addEventListener("click", toggleChatNotifications);
+  app.querySelector("[data-ranking-retry]")?.addEventListener("click", () => loadRankingData());
   app.querySelectorAll("[data-avatar-image]").forEach((image) => image.addEventListener("error", () => image.remove(), { once: true }));
 }
 
@@ -620,7 +712,7 @@ function refreshPredictionUi() {
 
 function setPrediction(matchId, pick) {
   if (!state.user || state.user.provider !== "google.com" || state.auth?.currentUser?.uid !== state.user.uid) {
-    document.querySelector("#authDialog")?.showModal();
+    openAuthDialog();
     notify("Zaloguj się przez Google, aby oddać typ");
     return;
   }
@@ -681,10 +773,26 @@ function notify(message) {
   setTimeout(() => toast.classList.remove("show"), 2400);
 }
 
+function openAuthDialog() {
+  const dialog = document.querySelector("#authDialog");
+  if (!dialog) return;
+  setMainMenuOpen(false);
+  if (!dialog.open) dialog.showModal();
+  document.querySelector("#authButton")?.setAttribute("aria-expanded", "true");
+}
+
 function updateAuthButton() {
   const authButton = document.querySelector("#authButton");
   const iconNode = document.createElement("span");
   const labelNode = document.createElement("span");
+  const fullLabelNode = document.createElement("span");
+  const shortLabelNode = document.createElement("span");
+  const chevronNode = document.createElement("span");
+  labelNode.className = "auth-button-label";
+  fullLabelNode.className = "auth-label-full";
+  shortLabelNode.className = "auth-label-short";
+  chevronNode.className = "auth-button-chevron";
+  chevronNode.setAttribute("aria-hidden", "true");
   if (state.user) {
     const fullName = String(state.user.name || "Gracz").trim() || "Gracz";
     iconNode.className = "avatar";
@@ -698,17 +806,34 @@ function updateAuthButton() {
       image.addEventListener("error", () => image.remove(), { once: true });
       iconNode.append(image);
     }
-    labelNode.textContent = fullName;
-    authButton.setAttribute("aria-label", `Konto gracza ${fullName}`);
+    fullLabelNode.textContent = fullName;
+    shortLabelNode.textContent = fullName;
+    chevronNode.textContent = "⌄";
+    authButton.setAttribute("aria-label", `Konto gracza ${fullName}. Otwórz menu konta`);
+    authButton.setAttribute("aria-controls", "accountDialog");
     authButton.title = fullName;
   } else {
     iconNode.className = "user-icon";
-    iconNode.textContent = "◉";
-    labelNode.textContent = "Zaloguj się";
-    authButton.setAttribute("aria-label", "Zaloguj się");
+    iconNode.textContent = "G";
+    fullLabelNode.textContent = state.authBusy ? "Otwieranie Google…" : "Zaloguj przez Google";
+    shortLabelNode.textContent = state.authBusy ? "Łączenie…" : "Zaloguj";
+    chevronNode.textContent = "→";
+    authButton.setAttribute("aria-label", "Zaloguj się przez Google");
+    authButton.setAttribute("aria-controls", "authDialog");
     authButton.removeAttribute("title");
   }
-  authButton.replaceChildren(iconNode, labelNode);
+  labelNode.append(fullLabelNode, shortLabelNode);
+  authButton.replaceChildren(iconNode, labelNode, chevronNode);
+  authButton.disabled = Boolean(!state.user && state.authBusy);
+  const controlledDialog = document.querySelector(`#${authButton.getAttribute("aria-controls")}`);
+  authButton.setAttribute("aria-expanded", String(Boolean(controlledDialog?.open)));
+
+  const mobileSignOut = document.querySelector(".nav-signout");
+  if (mobileSignOut) mobileSignOut.hidden = !state.user;
+  const mobileAccount = document.querySelector(".nav-account-summary");
+  const mobileAccountName = document.querySelector("#mobileAccountName");
+  if (mobileAccount) mobileAccount.hidden = !state.user;
+  if (mobileAccountName) mobileAccountName.textContent = state.user?.name || "Gracz";
 
   const googleButton = document.querySelector("#authDialog [data-provider='google']");
   if (googleButton) {
@@ -726,6 +851,7 @@ function updateAuthButton() {
 function openAccountDialog() {
   const dialog = document.querySelector("#accountDialog");
   if (!dialog || !state.user) return;
+  setMainMenuOpen(false);
   dialog.querySelector("#accountName").textContent = state.user.name;
   dialog.querySelector("#accountDetails").textContent = state.user.email || "Zalogowano przez Google";
   const avatarHost = dialog.querySelector("#accountAvatar");
@@ -734,6 +860,7 @@ function openAccountDialog() {
     avatarHost.querySelector("[data-avatar-image]")?.addEventListener("error", (event) => event.currentTarget.remove(), { once: true });
   }
   dialog.showModal();
+  document.querySelector("#authButton")?.setAttribute("aria-expanded", "true");
 }
 
 function androidAppPromptState() {
@@ -1045,7 +1172,7 @@ async function loadPlayerPicksMatchday(matchday) {
 async function openPlayerPicks(uid) {
   if (!uid) return;
   if (!state.user || state.auth?.currentUser?.uid !== state.user.uid) {
-    document.querySelector("#authDialog")?.showModal();
+    openAuthDialog();
     notify("Zaloguj się przez Google, aby zobaczyć typy graczy.");
     return;
   }
@@ -1076,7 +1203,7 @@ function updateCountdowns() {
 async function saveDisplayName(event) {
   event.preventDefault();
   if (!state.user || state.auth?.currentUser?.uid !== state.user.uid || !state.db || !state.firebaseModules) {
-    document.querySelector("#authDialog")?.showModal();
+    openAuthDialog();
     return;
   }
   if (state.nameBusy || state.avatarBusy) return;
@@ -1120,7 +1247,7 @@ async function saveDisplayName(event) {
 
 async function selectAvatar(type, value) {
   if (!state.user || state.auth?.currentUser?.uid !== state.user.uid) {
-    document.querySelector("#authDialog")?.showModal();
+    openAuthDialog();
     return;
   }
   if (state.avatarBusy || state.nameBusy) return;
@@ -1328,7 +1455,8 @@ function normalizeChatMessage(item) {
     text: typeof data.text === "string" ? data.text.slice(0, 1000) : "",
     image: safeChatImage(data.image),
     replyToId: typeof data.replyToId === "string" ? data.replyToId.slice(0, 100) : "",
-    createdAt: data.createdAt || null
+    createdAt: data.createdAt || null,
+    pending: Boolean(item.metadata?.hasPendingWrites)
   };
 }
 
@@ -1399,6 +1527,34 @@ function chatReactionPickerHtml(messageId) {
   return `<div class="chat-reaction-picker">${CHAT_REACTION_EMOJIS.map((emoji) => `<button type="button" class="${mine?.emoji === emoji ? "active" : ""}" data-chat-react="${escapeHtml(messageId)}" data-chat-emoji="${escapeHtml(emoji)}" aria-label="Reakcja ${escapeHtml(emoji)}">${escapeHtml(emoji)}</button>`).join("")}</div>`;
 }
 
+function chatReadersForMessage(message) {
+  if (!state.user || message.uid !== state.user.uid) return [];
+  const messageMs = firestoreTimeMs(message.createdAt);
+  if (!messageMs) return [];
+  return Object.values(state.chatReaders)
+    .filter((reader) => reader?.uid
+      && reader.uid !== state.user.uid
+      && (reader.lastReadMs > messageMs
+        || (reader.lastReadMs === messageMs && reader.lastReadMessageId.localeCompare(message.id) >= 0)))
+    .sort((a, b) => profileForUid(a.uid).name.localeCompare(profileForUid(b.uid).name, "pl"));
+}
+
+function chatReadReceiptHtml(message) {
+  if (!state.user || message.uid !== state.user.uid) return "";
+  if (message.pending) return `<div class="chat-read-receipt is-sent" aria-label="Wiadomość jest wysyłana"><span class="chat-read-check" aria-hidden="true">…</span><span>Wysyłanie</span></div>`;
+  const readers = chatReadersForMessage(message);
+  if (!readers.length) return `<div class="chat-read-receipt is-sent" aria-label="Wiadomość wysłana, jeszcze bez potwierdzenia odczytu"><span class="chat-read-check" aria-hidden="true">✓</span><span>Wysłano</span></div>`;
+  const names = readers.map((reader) => profileForUid(reader.uid).name);
+  return `<details class="chat-read-receipt">
+    <summary aria-label="Liczba osób, które odczytały: ${readers.length}. Pokaż listę">
+      <span class="chat-read-check" aria-hidden="true">✓✓</span>
+      <span>Odczytano: ${readers.length}</span>
+      <span class="chat-read-avatars" aria-hidden="true">${readers.slice(0, 3).map((reader) => avatarForUid(reader.uid, "chat-read-avatar")).join("")}${readers.length > 3 ? `<b>+${readers.length - 3}</b>` : ""}</span>
+    </summary>
+    <span class="chat-read-names">${escapeHtml(names.join(", "))}</span>
+  </details>`;
+}
+
 function chatMessageHtml(message) {
   const profile = profileForUid(message.uid);
   const mine = state.user?.uid === message.uid;
@@ -1420,6 +1576,7 @@ function chatMessageHtml(message) {
       ${message.image ? `<img class="chat-img" src="${escapeHtml(message.image)}" alt="Grafika wysłana przez ${escapeHtml(profile.name)}">` : ""}
       ${chatReactionsHtml(message.id)}
       ${chatReactionPickerHtml(message.id)}
+      ${chatReadReceiptHtml(message)}
     </div>
   </article>`;
 }
@@ -1473,7 +1630,7 @@ function renderChatComposer() {
       <p class="chat-hint">Enter wysyła · Shift+Enter dodaje nową linię</p>`;
   }
 
-  host.querySelector("[data-chat-login]")?.addEventListener("click", () => document.querySelector("#authDialog")?.showModal());
+  host.querySelector("[data-chat-login]")?.addEventListener("click", openAuthDialog);
   host.querySelector("[data-chat-participant-retry]")?.addEventListener("click", () => activateSeasonParticipant(state.user?.uid));
   host.querySelector("[data-chat-reply-clear]")?.addEventListener("click", () => {
     state.chatReplyTo = null;
@@ -1711,10 +1868,11 @@ function mountChatWidget() {
   widget.querySelector(".chat-close")?.addEventListener("click", () => toggleChat(false));
   widget.querySelector(".chat-messages")?.addEventListener("scroll", (event) => {
     if (event.currentTarget.scrollTop < 28) loadOlderChat();
+    if (event.currentTarget.scrollHeight - event.currentTarget.scrollTop - event.currentTarget.clientHeight < 120) markChatRead();
   });
   widget.querySelector(".chat-messages")?.addEventListener("click", (event) => {
     if (event.target.closest("[data-chat-login]")) {
-      document.querySelector("#authDialog")?.showModal();
+      openAuthDialog();
       return;
     }
     if (event.target.closest("[data-chat-load-older]")) {
@@ -1832,22 +1990,50 @@ function updateChatWidget(options = {}) {
 }
 
 function markChatRead() {
-  if (!state.chatOpen || !canUseChat() || !state.chat.length) return;
+  if (document.visibilityState !== "visible" || !state.chatOpen || !canUseChat() || !state.chat.length) return;
   const list = document.querySelector("#chat-widget .chat-messages");
   if (list && list.scrollHeight - list.scrollTop - list.clientHeight > 120) return;
   const latestMessageMs = Math.max(...state.chat.map((message) => firestoreTimeMs(message.createdAt)));
   if (!latestMessageMs) return;
   state.chatLastReadMs = Math.max(state.chatLastReadMs, latestMessageMs);
-  if (latestMessageMs <= state.chatRemoteReadMs || state.chatReadSaving || Date.now() < state.chatReadRetryAt) return;
+  const latestByAuthor = new Map();
+  state.chat.forEach((message) => {
+    const messageMs = firestoreTimeMs(message.createdAt);
+    if (!messageMs || message.uid === state.user.uid) return;
+    const previous = latestByAuthor.get(message.uid);
+    if (!previous || compareChatMessages(previous, message) < 0) latestByAuthor.set(message.uid, message);
+  });
+  const pendingAuthorReads = [...latestByAuthor.entries()].filter(([authorUid, message]) => (
+    firestoreTimeMs(message.createdAt) > (state.chatAuthorReadMs[authorUid] || 0)
+  ));
+  const shouldSaveOwnCursor = latestMessageMs > state.chatRemoteReadMs;
+  if ((!shouldSaveOwnCursor && !pendingAuthorReads.length) || state.chatReadSaving || Date.now() < state.chatReadRetryAt) return;
   if ("onLine" in navigator && !navigator.onLine) return;
   const uid = state.user.uid;
-  const { doc, serverTimestamp, setDoc } = state.firebaseModules;
+  const { doc, serverTimestamp, setDoc, writeBatch } = state.firebaseModules;
   state.chatReadSaving = true;
-  const writeResult = setDoc(doc(state.db, "chatReads", uid), {
-    uid,
-    lastReadAt: serverTimestamp(),
-    updatedAt: serverTimestamp()
-  }).then(() => ({ status: "saved" }), (error) => ({ status: "failed", error }));
+  const writes = [];
+  if (shouldSaveOwnCursor) {
+    writes.push(setDoc(doc(state.db, "chatReads", uid), {
+      uid,
+      lastReadAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    }));
+  }
+  for (let index = 0; index < pendingAuthorReads.length; index += 8) {
+    const batch = writeBatch(state.db);
+    pendingAuthorReads.slice(index, index + 8).forEach(([authorUid, message]) => {
+      batch.set(doc(state.db, "chatReads", authorUid, "readers", uid), {
+        authorUid,
+        readerUid: uid,
+        lastReadMessageId: message.id,
+        lastReadAt: message.createdAt,
+        updatedAt: serverTimestamp()
+      }, { merge: true });
+    });
+    writes.push(batch.commit());
+  }
+  const writeResult = Promise.all(writes).then(() => ({ status: "saved" }), (error) => ({ status: "failed", error }));
   Promise.race([
     writeResult,
     new Promise((resolve) => setTimeout(() => resolve({ status: "pending" }), 6500))
@@ -1856,12 +2042,16 @@ function markChatRead() {
     state.chatReadSaving = false;
     if (result.status === "saved") {
       state.chatRemoteReadMs = Math.max(state.chatRemoteReadMs, latestMessageMs);
+      pendingAuthorReads.forEach(([authorUid, message]) => {
+        state.chatAuthorReadMs[authorUid] = Math.max(state.chatAuthorReadMs[authorUid] || 0, firestoreTimeMs(message.createdAt));
+      });
       state.chatReadRetryAt = 0;
     }
     else {
       state.chatReadRetryAt = Date.now() + 15000;
       if (result.status === "failed") console.error("Nie udało się zapisać odczytu chatu:", result.error);
     }
+    setTimeout(markChatRead, 0);
   });
 }
 
@@ -1901,6 +2091,8 @@ function stopChatRealtime() {
   state.chatRemoteReadMs = 0;
   state.chatReadSaving = false;
   state.chatReadRetryAt = 0;
+  state.chatReaders = {};
+  state.chatAuthorReadMs = {};
   updateChatWidget({ keepScroll: true });
 }
 
@@ -1968,6 +2160,24 @@ function startChatRealtime(uid) {
     state.chatLastReadMs = Math.max(state.chatLastReadMs, state.chatRemoteReadMs);
     updateChatWidget({ keepScroll: true });
   }, (error) => console.error("Potwierdzenia odczytu chatu są niedostępne:", error)));
+
+  chatUnsubscribes.push(onSnapshot(collection(state.db, "chatReads", uid, "readers"), (snapshot) => {
+    const readers = {};
+    snapshot.forEach((item) => {
+      const data = item.data({ serverTimestamps: "estimate" });
+      const readerUid = typeof data.readerUid === "string" ? data.readerUid : item.id;
+      const lastReadMs = firestoreTimeMs(data.lastReadAt);
+      if (!readerUid || readerUid === uid || !lastReadMs) return;
+      readers[readerUid] = {
+        uid: readerUid,
+        lastReadMessageId: typeof data.lastReadMessageId === "string" ? data.lastReadMessageId : "",
+        lastReadMs
+      };
+      ensureChatProfile(readerUid);
+    });
+    state.chatReaders = readers;
+    updateChatWidget({ keepScroll: true });
+  }, (error) => console.error("Lista odczytów wiadomości jest niedostępna:", error)));
 }
 
 function subscribeSeasonStats() {
@@ -1978,6 +2188,7 @@ function subscribeSeasonStats() {
     state.participantCount = Number.isInteger(count) && count >= 0 ? count : 0;
     state.participantCountStatus = "ready";
     if (state.view === "rules") render();
+    if (state.view === "ranking" && state.user && state.participantReady) void loadRankingData();
   }, (error) => {
     console.error("Nie udało się pobrać liczby graczy:", error);
     state.participantCount = null;
@@ -1991,20 +2202,97 @@ async function ensureSeasonParticipant(uid) {
   const { doc, runTransaction, serverTimestamp } = state.firebaseModules;
   const participantReference = doc(state.db, "seasons", SEASON_ID, "participants", uid);
   const statsReference = doc(state.db, "seasonStats", SEASON_ID);
+  const leaderboardReference = doc(state.db, "seasons", SEASON_ID, "leaderboard", uid);
+  const avatar = normalizeAvatar(state.avatar) || { ...DEFAULT_AVATAR };
+  const displayName = normalizeDisplayName(state.user?.name) || "Gracz";
   await runTransaction(state.db, async (transaction) => {
-    const participantSnapshot = await transaction.get(participantReference);
-    if (participantSnapshot.exists()) return;
-    const statsSnapshot = await transaction.get(statsReference);
-    const currentCount = statsSnapshot.exists() && Number.isInteger(statsSnapshot.data().participantCount)
-      ? statsSnapshot.data().participantCount
-      : 0;
-    transaction.set(participantReference, { uid, seasonId: SEASON_ID, joinedAt: serverTimestamp() });
-    transaction.set(statsReference, {
-      seasonId: SEASON_ID,
-      participantCount: currentCount + 1,
-      updatedAt: serverTimestamp()
-    });
+    const [participantSnapshot, leaderboardSnapshot] = await Promise.all([
+      transaction.get(participantReference),
+      transaction.get(leaderboardReference)
+    ]);
+    if (participantSnapshot.exists() && leaderboardSnapshot.exists()) return;
+
+    const joinedAt = participantSnapshot.exists() ? participantSnapshot.data().joinedAt : serverTimestamp();
+    if (!participantSnapshot.exists()) {
+      const statsSnapshot = await transaction.get(statsReference);
+      const currentCount = statsSnapshot.exists() && Number.isInteger(statsSnapshot.data().participantCount)
+        ? statsSnapshot.data().participantCount
+        : 0;
+      transaction.set(participantReference, { uid, seasonId: SEASON_ID, joinedAt });
+      transaction.set(statsReference, {
+        seasonId: SEASON_ID,
+        participantCount: currentCount + 1,
+        updatedAt: serverTimestamp()
+      });
+    }
+    if (!leaderboardSnapshot.exists()) {
+      transaction.set(leaderboardReference, {
+        uid,
+        displayName,
+        avatarType: avatar.type,
+        avatarValue: avatar.value,
+        points: 0,
+        typed: 0,
+        joinedAt,
+        lastScoreMatchId: "",
+        settledMatchIds: [],
+        updatedAt: serverTimestamp()
+      });
+    }
   });
+}
+
+async function reconcileOwnLeaderboard(uid) {
+  if (!uid || state.auth?.currentUser?.uid !== uid || state.user?.uid !== uid || !state.participantReady) return;
+  const { arrayUnion, doc, getDoc, runTransaction, serverTimestamp } = state.firebaseModules;
+  const leaderboardReference = doc(state.db, "seasons", SEASON_ID, "leaderboard", uid);
+  const leaderboardSummary = await getDoc(leaderboardReference);
+  if (!leaderboardSummary.exists()) return;
+  const settledMatchIds = new Set(Array.isArray(leaderboardSummary.data().settledMatchIds)
+    ? leaderboardSummary.data().settledMatchIds.filter((matchId) => typeof matchId === "string")
+    : []);
+  const settledPicks = state.matches
+    .filter((match) => typerMatchIds.has(match.id)
+      && !settledMatchIds.has(match.id)
+      && resultOf(match)
+      && ["1", "X", "2"].includes(state.predictions[match.id]))
+    .sort((a, b) => new Date(a.kickoffAt) - new Date(b.kickoffAt));
+  if (!settledPicks.length) return;
+
+  for (const match of settledPicks) {
+    if (state.auth?.currentUser?.uid !== uid || state.user?.uid !== uid) return;
+    const scoreReference = doc(state.db, "seasons", SEASON_ID, "players", uid, "scores", match.id);
+    try {
+      await runTransaction(state.db, async (transaction) => {
+        const [scoreSnapshot, leaderboardSnapshot] = await Promise.all([
+          transaction.get(scoreReference),
+          transaction.get(leaderboardReference)
+        ]);
+        if (scoreSnapshot.exists()) return;
+        if (!leaderboardSnapshot.exists()) throw new Error("Brak wpisu gracza w rankingu.");
+        const leaderboard = leaderboardSnapshot.data();
+        const pick = state.predictions[match.id];
+        const points = pick === resultOf(match) ? 1 : 0;
+        transaction.set(scoreReference, {
+          uid,
+          matchId: match.id,
+          pick,
+          points,
+          settledAt: serverTimestamp()
+        });
+        transaction.update(leaderboardReference, {
+          points: (Number.isInteger(leaderboard.points) ? leaderboard.points : 0) + points,
+          typed: (Number.isInteger(leaderboard.typed) ? leaderboard.typed : 0) + 1,
+          lastScoreMatchId: match.id,
+          settledMatchIds: arrayUnion(match.id),
+          updatedAt: serverTimestamp()
+        });
+      });
+      settledMatchIds.add(match.id);
+    } catch (error) {
+      console.warn("Nie udało się jeszcze rozliczyć typu w rankingu:", match.id, error);
+    }
+  }
 }
 
 async function activateSeasonParticipant(uid, options = {}) {
@@ -2025,6 +2313,7 @@ async function activateSeasonParticipant(uid, options = {}) {
     state.participantReady = true;
     state.participantActivationError = false;
     if (startRealtime) startChatRealtime(uid);
+    if (state.view === "ranking") void loadRankingData();
     return true;
   } catch (error) {
     if (state.auth?.currentUser?.uid !== uid || state.user?.uid !== uid) return false;
@@ -2089,6 +2378,12 @@ async function handleAuthState(user) {
   state.participantReady = false;
   state.participantActivationBusy = false;
   state.participantActivationError = false;
+  state.rankingPlayers = [];
+  state.rankingStatus = "idle";
+  state.rankingError = "";
+  rankingLoadRevision += 1;
+  rankingLoadPromise = null;
+  rankingReloadPending = false;
   stopChatRealtime();
   if (user && !isGoogleAccount(user)) {
     state.user = null;
@@ -2180,10 +2475,13 @@ async function handleAuthState(user) {
   state.userDataReady = true;
   save();
   render();
+  if (state.view === "ranking" && state.participantReady) void loadRankingData();
   if (state.participantReady) startChatRealtime(user.uid);
   document.querySelector("#authDialog")?.close();
 
-  syncTrustedMatchTimes();
+  syncTrustedMatchTimes().then(() => {
+    if (state.view === "ranking" && state.user?.uid === user.uid && state.participantReady) void loadRankingData();
+  });
 }
 
 async function initFirebase() {
@@ -2354,6 +2652,7 @@ async function saveRemoteAvatar(uid, avatar) {
     avatarValue: normalized.value,
     updatedAt: serverTimestamp()
   });
+  await syncOwnLeaderboardIdentity(uid, state.user?.name, normalized);
 }
 
 async function saveRemoteDisplayName(uid, displayName) {
@@ -2370,6 +2669,7 @@ async function saveRemoteDisplayName(uid, displayName) {
     return;
   }
   await updateDoc(reference, { displayName: normalizedName, updatedAt: serverTimestamp() });
+  await syncOwnLeaderboardIdentity(uid, normalizedName, state.avatar);
 }
 
 async function saveRemoteProfile(uid, avatar, existingData = null, displayName = state.user?.name) {
@@ -2388,6 +2688,25 @@ async function saveRemoteProfile(uid, avatar, existingData = null, displayName =
     joinedAt: existingData?.joinedAt || serverTimestamp(),
     updatedAt: serverTimestamp()
   });
+  await syncOwnLeaderboardIdentity(uid, normalizedName, normalized);
+}
+
+async function syncOwnLeaderboardIdentity(uid, displayName = state.user?.name, avatar = state.avatar) {
+  if (!state.participantReady || !state.db || !state.firebaseModules || state.auth?.currentUser?.uid !== uid || state.user?.uid !== uid) return;
+  const normalizedAvatar = normalizeAvatar(avatar) || { ...DEFAULT_AVATAR };
+  const normalizedName = normalizeDisplayName(displayName);
+  if (!validDisplayName(normalizedName)) return;
+  const { doc, serverTimestamp, updateDoc } = state.firebaseModules;
+  try {
+    await updateDoc(doc(state.db, "seasons", SEASON_ID, "leaderboard", uid), {
+      displayName: normalizedName,
+      avatarType: normalizedAvatar.type,
+      avatarValue: normalizedAvatar.value,
+      updatedAt: serverTimestamp()
+    });
+  } catch (error) {
+    console.warn("Nie udało się od razu odświeżyć profilu w rankingu:", error);
+  }
 }
 
 async function loadRemoteProfile(uid) {
@@ -2449,7 +2768,7 @@ async function syncTrustedMatchTimes() {
     .filter((match) => typerMatchIds.has(match.id) && match.matchday <= LAST_MATCHDAY && match.kickoffConfirmed && Number.isFinite(new Date(match.kickoffAt).getTime()))
     .sort((a, b) => a.id.localeCompare(b.id));
   if (!confirmedMatches.length) return;
-  const signature = confirmedMatches.map((match) => `${match.id}:${match.matchday}:${new Date(match.kickoffAt).toISOString()}`).join("|");
+  const signature = confirmedMatches.map((match) => `${match.id}:${match.matchday}:${new Date(match.kickoffAt).toISOString()}:${resultOf(match) || ""}`).join("|");
 
   trustedMatchesSyncPromise = (async () => {
     const { doc, getDoc, serverTimestamp, Timestamp, writeBatch } = state.firebaseModules;
@@ -2463,6 +2782,7 @@ async function syncTrustedMatchTimes() {
         matchday: match.matchday,
         closesAt: kickoff,
         revealsAt: kickoff,
+        result: resultOf(match) || "",
         updatedAt: serverTimestamp()
       });
     });
@@ -2541,8 +2861,13 @@ async function pollLive() {
         resultSource: fixture.source
       });
     });
-    syncTrustedMatchTimes();
+    const trustedMatchSync = syncTrustedMatchTimes();
     if (dataChanged || state.matches.some((match) => typerMatchIds.has(match.id) && LIVE.has(match.status))) render();
+    if (dataChanged && state.view === "ranking" && state.user && state.participantReady) {
+      Promise.resolve(trustedMatchSync).finally(() => {
+        if (state.view === "ranking" && state.user && state.participantReady) void loadRankingData();
+      });
+    }
   } catch (error) {
     let liveStateChanged = false;
     state.matches.forEach((match) => {
@@ -2586,13 +2911,15 @@ document.addEventListener("click", (event) => {
   }
 
   if (event.target.closest?.("#menuButton")) {
-    document.querySelector(".main-nav")?.classList.toggle("is-open");
+    setMainMenuOpen(!document.querySelector(".main-nav")?.classList.contains("is-open"));
     return;
   }
 
   if (event.target.closest?.("#authButton")) {
     if (state.user) openAccountDialog();
-    else document.querySelector("#authDialog")?.showModal();
+    else {
+      openAuthDialog();
+    }
     return;
   }
 
@@ -2609,6 +2936,8 @@ document.addEventListener("click", (event) => {
   }
 
   if (event.target.closest?.("[data-sign-out]")) {
+    const signedOutFromMenu = Boolean(event.target.closest?.(".main-nav"));
+    setMainMenuOpen(false, signedOutFromMenu);
     logout();
     return;
   }
@@ -2621,6 +2950,14 @@ document.addEventListener("click", (event) => {
 
   if (event.target.matches?.("#matchDialog, #playerPicksDialog")) event.target.close();
 }, { capture: true });
+document.querySelectorAll("#authDialog, #accountDialog").forEach((dialog) => {
+  dialog.addEventListener("close", () => document.querySelector("#authButton")?.setAttribute("aria-expanded", "false"));
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && document.querySelector(".main-nav")?.classList.contains("is-open")) {
+    setMainMenuOpen(false, true);
+  }
+});
 window.addEventListener("hashchange", () => {
   const view = location.hash.slice(1);
   if (!VIEWS.has(view)) {
@@ -2636,6 +2973,11 @@ window.addEventListener("online", () => {
   if (state.user && !state.participantReady && !state.participantActivationBusy) {
     activateSeasonParticipant(state.user.uid, { notifyOnError: false });
   }
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible" || !navigator.onLine) return;
+  state.chatReadRetryAt = 0;
+  markChatRead();
 });
 
 render();
@@ -2667,7 +3009,7 @@ if ("serviceWorker" in navigator && location.protocol !== "file:") {
     if (document.readyState === "complete") cleanLocalPreview();
     else window.addEventListener("load", cleanLocalPreview, { once: true });
   } else {
-    const registerServiceWorker = () => navigator.serviceWorker.register("./sw.js?v=23", {
+    const registerServiceWorker = () => navigator.serviceWorker.register("./sw.js?v=24", {
       updateViaCache: "none"
     }).catch(() => {});
     if (document.readyState === "complete") registerServiceWorker();

@@ -1,9 +1,9 @@
-const CACHE_NAME = "ekstraklasa-typer-v23";
+const CACHE_NAME = "ekstraklasa-typer-v24";
 const OFFLINE_ASSETS = [
   "./",
   "./?app=typer-v2",
-  "./styles.css?v=20",
-  "./app.js?v=22",
+  "./styles.css?v=21",
+  "./app.js?v=23",
   "./data.js",
   "./firebase-config.js",
   "./live-provider.js",

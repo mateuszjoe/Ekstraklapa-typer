@@ -39,7 +39,8 @@ async function main() {
           revealsAt: { timestampValue: kickoff },
           updatedAt: { timestampValue: updatedAt }
         }
-      }
+      },
+      updateMask: { fieldPaths: ["matchday", "closesAt", "revealsAt", "updatedAt"] }
     };
   });
   const client = new Client({ urlPrefix: "https://firestore.googleapis.com", apiVersion: "v1" });

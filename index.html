@@ -40,7 +40,7 @@
       @keyframes loader-dot { 0%, 70%, 100% { opacity: .25; transform: translateY(0); } 35% { opacity: 1; transform: translateY(-3px); } }
       @media (prefers-reduced-motion: reduce) { .loader-emblem::before, .loader-emblem img, .loader-track i, .loader-status i { animation: none; } }
     </style>
-    <link rel="stylesheet" href="./styles.css?v=20" />
+    <link rel="stylesheet" href="./styles.css?v=21" />
   </head>
   <body>
     <div id="appLoader" role="status" aria-live="polite" aria-label="Wczytywanie Ekstraklapa Typer">
@@ -58,14 +58,16 @@
       <a class="brand" href="#matches" data-route="matches" aria-label="Ekstraklapa Typer — strona główna">
         <img class="brand-logo" src="./assets/brand/logo-horizontal.png" alt="" />
       </a>
-      <nav class="main-nav" aria-label="Główna nawigacja">
-        <button class="nav-link is-active" data-view="matches">Mecze</button>
-        <button class="nav-link" data-view="ranking">Ranking</button>
-        <button class="nav-link" data-view="rules">Zasady</button>
-        <button class="nav-link" data-view="settings">Ustawienia</button>
+      <nav id="mainNav" class="main-nav" aria-label="Główna nawigacja">
+        <button type="button" class="nav-link is-active" data-view="matches">Mecze</button>
+        <button type="button" class="nav-link" data-view="ranking">Ranking</button>
+        <button type="button" class="nav-link" data-view="rules">Zasady</button>
+        <button type="button" class="nav-link" data-view="settings">Ustawienia</button>
+        <div class="nav-account-summary" hidden><span>Zalogowano jako</span><strong id="mobileAccountName">Gracz</strong></div>
+        <button type="button" class="nav-link nav-signout" data-sign-out hidden>Wyloguj się</button>
       </nav>
-      <button id="authButton" class="auth-button"><span class="user-icon">◉</span><span>Zaloguj się</span></button>
-      <button id="menuButton" class="menu-button" aria-label="Otwórz menu">☰</button>
+      <button type="button" id="authButton" class="auth-button" aria-haspopup="dialog" aria-controls="authDialog" aria-expanded="false"><span class="user-icon">G</span><span class="auth-button-label"><span class="auth-label-full">Zaloguj przez Google</span><span class="auth-label-short">Zaloguj</span></span><span class="auth-button-chevron" aria-hidden="true">→</span></button>
+      <button type="button" id="menuButton" class="menu-button" aria-label="Otwórz menu" aria-controls="mainNav" aria-expanded="false">☰</button>
     </header>
 
     <main id="app" tabindex="-1"></main>
@@ -77,29 +79,29 @@
       <span>Sezon 2026/27</span>
     </footer>
 
-    <dialog id="authDialog" class="modal auth-modal">
-      <button class="modal-close" data-close aria-label="Zamknij">×</button>
+    <dialog id="authDialog" class="modal auth-modal" aria-labelledby="authDialogTitle" aria-describedby="authDialogCopy">
+      <button type="button" class="modal-close" data-close aria-label="Zamknij">×</button>
       <img class="modal-logo" src="./assets/brand/logo-compact.png" alt="Ekstraklapa Typer" />
       <p class="eyebrow">DOŁĄCZ DO GRY</p>
-      <h2>Zaloguj się i typuj</h2>
-      <p class="modal-copy">Twoje typy będą dostępne na każdym urządzeniu. Jeden klik i jesteś w grze.</p>
-      <button class="provider google" data-provider="google"><span>G</span> Kontynuuj przez Google</button>
+      <h2 id="authDialogTitle">Zaloguj się i typuj</h2>
+      <p class="modal-copy" id="authDialogCopy">Twoje typy będą dostępne na każdym urządzeniu. Jeden klik i jesteś w grze.</p>
+      <button type="button" class="provider google" data-provider="google" autofocus><span>G</span> Kontynuuj przez Google</button>
       <small>Logując się, akceptujesz zasady prywatnej ligi.</small>
     </dialog>
 
-    <dialog id="accountDialog" class="modal auth-modal account-modal">
-      <button class="modal-close" data-close aria-label="Zamknij">×</button>
+    <dialog id="accountDialog" class="modal auth-modal account-modal" aria-labelledby="accountName" aria-describedby="accountDetails">
+      <button type="button" class="modal-close" data-close aria-label="Zamknij">×</button>
       <img class="modal-logo" src="./assets/brand/logo-compact.png" alt="Ekstraklapa Typer">
       <div id="accountAvatar" class="account-avatar-host"></div>
       <p class="eyebrow">TWOJE KONTO</p>
       <h2 id="accountName">Gracz</h2>
       <p class="modal-copy" id="accountDetails">Zalogowano przez Google</p>
-      <button class="provider account-settings" data-account-settings>Ustawienia profilu</button>
-      <button class="provider signout" data-sign-out>Wyloguj się</button>
+      <button type="button" class="provider account-settings" data-account-settings>Ustawienia profilu</button>
+      <button type="button" class="provider signout" data-sign-out>WYLOGUJ SIĘ Z TYPERA</button>
     </dialog>
 
     <dialog id="matchDialog" class="modal match-modal"></dialog>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="./app.js?v=22"></script>
+    <script type="module" src="./app.js?v=23"></script>
   </body>
 </html>
