@@ -49,10 +49,10 @@
                 android:resource="@color/background_color" />
             <meta-data
                 android:name="android.support.customtabs.trusted.SPLASH_SCREEN_FADE_OUT_DURATION"
-                android:resource="@integer/splash_fade_duration" />
+                android:value="250" />
             <meta-data
                 android:name="android.support.customtabs.trusted.FILE_PROVIDER_AUTHORITY"
-                android:value="@string/provider_authority" />
+                android:value="pl.ekstraklapatyper.app.fileprovider" />
             <meta-data
                 android:name="android.support.customtabs.trusted.FALLBACK_STRATEGY"
                 android:value="customtabs" />

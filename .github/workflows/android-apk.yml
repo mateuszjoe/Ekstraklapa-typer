@@ -94,19 +94,19 @@ jobs:
       - name: Zweryfikuj i opisz APK
         run: |
           mkdir -p release
-          cp android/app/build/outputs/apk/release/app-release.apk release/Ekstraklapa-Typer-v1.0.1.apk
+          cp android/app/build/outputs/apk/release/app-release.apk release/Typer-v1.0.2.apk
           {
-            echo "Typer v1.0.1"
-            sha256sum release/Ekstraklapa-Typer-v1.0.1.apk
-            "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs release/Ekstraklapa-Typer-v1.0.1.apk
-            "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging release/Ekstraklapa-Typer-v1.0.1.apk | grep -E "^(package:|application-label:)"
+            echo "Typer v1.0.2"
+            sha256sum release/Typer-v1.0.2.apk
+            "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs release/Typer-v1.0.2.apk
+            "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging release/Typer-v1.0.2.apk | grep -E "^(package:|application-label:)"
           } > release/apk-info.txt 2>&1
           cat release/apk-info.txt
 
       - name: Opublikuj artefakt
         uses: actions/upload-artifact@v4
         with:
-          name: ekstraklapa-typer-android-v1.0.1
+          name: ekstraklapa-typer-android-v1.0.2
           path: release/
           if-no-files-found: error
           retention-days: 30
