@@ -4,7 +4,7 @@
   "short_name": "Typer",
   "description": "Typer 1X2 dla rundy jesiennej Ekstraklasy 2026/27.",
   "lang": "pl",
-  "start_url": "./",
+  "start_url": "./?app=typer-v2",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait-primary",

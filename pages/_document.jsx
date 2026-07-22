@@ -36,7 +36,7 @@ export default function Document() {
       <Head>
         <link rel="icon" type="image/png" sizes="32x32" href="/assets/brand/favicon-32.png?v=14" />
         <link rel="apple-touch-icon" sizes="180x180" href="/assets/brand/apple-touch-icon.png?v=14" />
-        <link rel="manifest" href="/manifest.webmanifest?v=16" />
+        <link rel="manifest" href="/manifest.webmanifest?v=17" />
         <link rel="preload" as="image" href="/assets/brand/app-icon-192.png?v=14" />
         <style dangerouslySetInnerHTML={{ __html: loaderCss }} />
         <link rel="stylesheet" href="/styles.css?v=19" />

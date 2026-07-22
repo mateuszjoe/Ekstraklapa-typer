@@ -2570,7 +2570,9 @@ if ("serviceWorker" in navigator && location.protocol !== "file:") {
     if (document.readyState === "complete") cleanLocalPreview();
     else window.addEventListener("load", cleanLocalPreview, { once: true });
   } else {
-    const registerServiceWorker = () => navigator.serviceWorker.register("./sw.js").catch(() => {});
+    const registerServiceWorker = () => navigator.serviceWorker.register("./sw.js?v=22", {
+      updateViaCache: "none"
+    }).catch(() => {});
     if (document.readyState === "complete") registerServiceWorker();
     else window.addEventListener("load", registerServiceWorker, { once: true });
   }

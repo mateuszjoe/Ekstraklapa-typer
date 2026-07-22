@@ -7,7 +7,7 @@ export default function Home() {
 
     const script = document.createElement("script");
     script.type = "module";
-    script.src = "/legacy/app.js?v=20";
+    script.src = "/legacy/app.js?v=21";
     script.dataset.ekstraklasaRuntime = "true";
     document.body.appendChild(script);
   }, []);
