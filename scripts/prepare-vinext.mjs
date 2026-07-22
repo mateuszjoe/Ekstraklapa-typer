@@ -20,6 +20,7 @@ await Promise.all([
   cp(join(root, "styles.css"), join(output, "styles.css")),
   cp(join(root, "manifest.webmanifest"), join(output, "manifest.webmanifest")),
   cp(join(root, "sw.js"), join(output, "sw.js")),
+  cp(join(root, "downloads"), join(output, "downloads"), { recursive: true }),
   cp(join(root, "assets"), join(output, "assets"), { recursive: true })
 ]);
 

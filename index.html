@@ -40,7 +40,7 @@
       @keyframes loader-dot { 0%, 70%, 100% { opacity: .25; transform: translateY(0); } 35% { opacity: 1; transform: translateY(-3px); } }
       @media (prefers-reduced-motion: reduce) { .loader-emblem::before, .loader-emblem img, .loader-track i, .loader-status i { animation: none; } }
     </style>
-    <link rel="stylesheet" href="./styles.css?v=19" />
+    <link rel="stylesheet" href="./styles.css?v=20" />
   </head>
   <body>
     <div id="appLoader" role="status" aria-live="polite" aria-label="Wczytywanie Ekstraklapa Typer">
@@ -73,6 +73,7 @@
     <footer>
       <div class="footer-brand"><img src="./assets/brand/logo-compact.png" alt="Ekstraklapa Typer" /></div>
       <p>Typowanie 1X2 · Runda jesienna</p>
+      <a class="footer-app-download" href="./downloads/Typer-v1.0.2.apk" download="Typer-v1.0.2.apk" type="application/vnd.android.package-archive">Pobierz aplikację na Android</a>
       <span>Sezon 2026/27</span>
     </footer>
 
@@ -99,6 +100,6 @@
 
     <dialog id="matchDialog" class="modal match-modal"></dialog>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="./app.js?v=21"></script>
+    <script type="module" src="./app.js?v=22"></script>
   </body>
 </html>

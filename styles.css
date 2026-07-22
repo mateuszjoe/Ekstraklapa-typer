@@ -227,6 +227,12 @@ svg { width: 1.1em; height: 1.1em; fill: none; stroke: currentColor; stroke-widt
 .settings-account-row span { overflow: hidden; color: #b9b2a7; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .settings-signout-button { min-height: 43px; flex: 0 0 auto; padding: 10px 18px; color: var(--ink); background: var(--yellow); border: 2px solid var(--yellow); border-radius: 8px; box-shadow: 4px 4px 0 var(--green); font-size: 10px; font-weight: 900; letter-spacing: .03em; transition: transform .15s, box-shadow .15s, background .15s; }
 .settings-signout-button:hover { background: var(--white); box-shadow: 2px 2px 0 var(--green); transform: translate(2px, 2px); }
+.settings-notification-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 15px 17px; background: var(--paper); border: 2px solid var(--ink); border-radius: 10px; }
+.settings-notification-status { display: inline-flex; align-items: center; gap: 8px; font-size: 9px; font-weight: 900; letter-spacing: .04em; text-transform: uppercase; }
+.settings-notification-status::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+.settings-notification-status.is-enabled::before { background: var(--green); box-shadow: 0 0 0 4px rgba(110,173,50,.16); }
+.settings-notification-button { min-height: 42px; padding: 9px 15px; color: var(--ink); background: var(--yellow); border: 2px solid var(--ink); border-radius: 8px; box-shadow: 3px 3px 0 var(--green); font-size: 9px; font-weight: 900; }
+.settings-notification-button:disabled { cursor: not-allowed; opacity: .5; box-shadow: none; }
 .avatar-source-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .avatar-source-card, .avatar-upload-card { position: relative; min-height: 94px; display: flex; align-items: center; gap: 14px; padding: 13px; color: var(--ink); text-align: left; background: var(--paper); border: 2px solid var(--line); border-radius: 10px; transition: transform .15s, border-color .15s, box-shadow .15s; }
 .avatar-source-card:hover, .avatar-upload-card:hover, .avatar-choice:hover { border-color: var(--ink); transform: translateY(-2px); }
@@ -422,6 +428,8 @@ button.chat-reply-preview { cursor: pointer; }
 footer { min-height: 96px; padding: 20px clamp(25px, 7vw, 110px); color: #b7b0a3; background: var(--ink); border-top: 5px solid var(--yellow); display: flex; align-items: center; justify-content: space-between; font-size: 9px; }
 .footer-brand { display: flex; align-items: center; justify-content: center; min-width: 126px; padding: 4px 10px; border: 2px solid var(--ink); border-radius: 10px; background: var(--white); box-shadow: 4px 4px 0 var(--yellow); }
 .footer-brand img { width: 106px; height: 66px; display: block; object-fit: contain; }
+.footer-app-download { min-height: 38px; display: inline-flex; align-items: center; justify-content: center; padding: 0 15px; color: var(--ink); background: var(--yellow); border: 2px solid var(--white); border-radius: 8px; box-shadow: 3px 3px 0 var(--green); font-size: 9px; font-weight: 900; letter-spacing: .03em; text-decoration: none; text-transform: uppercase; transition: transform .15s ease, box-shadow .15s ease; }
+.footer-app-download:hover { transform: translateY(-2px); box-shadow: 5px 5px 0 var(--green); }
 @keyframes pulse { 50% { opacity: .45; } }
 
 /* Podgląd typów gracza */
@@ -593,6 +601,7 @@ footer { min-height: 96px; padding: 20px clamp(25px, 7vw, 110px); color: #b7b0a3
   .profile-name-form { grid-template-columns: 1fr; }
   .profile-name-help { grid-column: auto; }
   .settings-account-row { align-items: stretch; flex-direction: column; }
+  .settings-notification-row { align-items: stretch; flex-direction: column; }
   .settings-signout-button { width: 100%; }
   .stock-avatar-grid { grid-template-columns: 1fr; }
   .rule-banner { gap: 10px; }

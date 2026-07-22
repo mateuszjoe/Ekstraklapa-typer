@@ -7,7 +7,7 @@ export default function Home() {
 
     const script = document.createElement("script");
     script.type = "module";
-    script.src = "/legacy/app.js?v=21";
+    script.src = "/legacy/app.js?v=22";
     script.dataset.ekstraklasaRuntime = "true";
     document.body.appendChild(script);
   }, []);
@@ -44,6 +44,7 @@ export default function Home() {
       <footer>
         <div className="footer-brand"><img src="/assets/brand/logo-compact.png" alt="Ekstraklapa Typer" /></div>
         <p>Typowanie 1X2 · Runda jesienna</p>
+        <a className="footer-app-download" href="/downloads/Typer-v1.0.2.apk" download="Typer-v1.0.2.apk" type="application/vnd.android.package-archive">Pobierz aplikację na Android</a>
         <span>Sezon 2026/27</span>
       </footer>
 

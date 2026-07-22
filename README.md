@@ -22,11 +22,11 @@ Po publikacji przez HTTPS aplikację można dodać do ekranu głównego telefonu
 
 ## Aplikacja na Androida
 
-Podpisany APK jest publikowany jako wydanie GitHuba i udostępniany przez popup widoczny na stronie wyłącznie na urządzeniach z Androidem. Aktualna wersja: `1.0.0` (`pl.ekstraklapatyper.app`).
+Podpisany APK jest publikowany jako wydanie GitHuba oraz bezpośrednio na GitHub Pages. Można go pobrać z popupu na Androidzie albo ze stałego przycisku w stopce. Aktualna wersja: `1.0.2` (`pl.ekstraklapatyper.app`).
 
 Bezpośrednie pobieranie:
 
-`https://github.com/mateuszjoe/Ekstraklapa-typer/releases/download/android-v1.0.1/Ekstraklapa-Typer-v1.0.1.apk`
+`https://mateuszjoe.github.io/Ekstraklapa-typer/downloads/Typer-v1.0.2.apk`
 
 Projekt źródłowy znajduje się w `android/`, a podpisany build wykonuje `.github/workflows/android-apk.yml`. Klucz wydaniowy i jego hasło są przechowywane wyłącznie jako sekrety GitHuba oraz w ignorowanym katalogu `.local-secrets/`. Kolejne wydania muszą zachować package ID i klucz oraz zwiększać `versionCode`.
 

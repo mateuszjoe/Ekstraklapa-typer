@@ -5,11 +5,11 @@ import { getOfficialLivePayload } from "./live-provider.js";
 const bootStartedAt = performance.now();
 const app = document.querySelector("#app");
 const STORAGE_KEY = "ekstraklasa-typer-state-v1";
-const APK_VERSION = "1.0.1";
-const APK_PROMPT_CAMPAIGN = "android-v2";
+const APK_VERSION = "1.0.2";
+const APK_PROMPT_CAMPAIGN = "android-v3";
 const APK_PROMPT_STORAGE_KEY = "ekstraklasa-typer:apk-prompt";
 const APK_PROMPT_COOLDOWN_MS = 14 * 24 * 60 * 60 * 1000;
-const APK_DOWNLOAD_URL = "https://github.com/mateuszjoe/Ekstraklapa-typer/releases/download/android-v1.0.1/Ekstraklapa-Typer-v1.0.1.apk";
+const APK_DOWNLOAD_URL = "./downloads/Typer-v1.0.2.apk";
 const FINAL = new Set(["FT", "AET", "PEN", "AWD", "WO", "FINISHED", "AWARDED"]);
 const LIVE = new Set(["1H", "HT", "2H", "ET", "BT", "P", "LIVE", "IN_PLAY", "PAUSED"]);
 const VIEWS = new Set(["matches", "ranking", "rules", "settings"]);
@@ -43,6 +43,7 @@ function asRecord(value) {
 }
 
 const saved = loadSavedState();
+const openChatFromNotification = new URLSearchParams(location.search).get("chat") === "open";
 let legacyPredictionsByUser = asRecord(saved.predictionsByUser);
 const deprecatedLocalKeys = ["user", "predictions", "anonymousPredictions"];
 if (deprecatedLocalKeys.some((key) => key in saved)) {
@@ -88,6 +89,7 @@ const state = {
   chatReactions: {},
   chatProfiles: {},
   chatOpen: false,
+  chatNotificationsEnabled: saved.chatNotificationsEnabled === true,
   chatSending: false,
   chatLastReadMs: 0,
   chatRemoteReadMs: 0,
@@ -109,6 +111,7 @@ const state = {
 
 let seasonStatsUnsubscribe = null;
 let chatUnsubscribes = [];
+let chatNotificationsPrimed = false;
 const chatProfileLoads = new Set();
 const predictionWriteQueues = new Map();
 const predictionWriteVersions = new Map();
@@ -147,7 +150,8 @@ function save() {
   }
   const nextSavedState = {
     matchday: state.matchday,
-    avatarsByUser: state.avatarsByUser
+    avatarsByUser: state.avatarsByUser,
+    chatNotificationsEnabled: state.chatNotificationsEnabled
   };
   if (Object.keys(legacyPredictionsByUser).length) {
     nextSavedState.predictionsByUser = legacyPredictionsByUser;
@@ -495,6 +499,16 @@ function settingsView() {
   const currentType = state.avatar.type;
   const currentValue = state.avatar.value;
   const googleAvatar = { type: "google", value: "" };
+  const notificationState = chatNotificationState();
+  const notificationEnabled = notificationState === "enabled";
+  const notificationBlocked = notificationState === "denied" || notificationState === "unsupported";
+  const notificationCopy = notificationState === "unsupported"
+    ? "To urządzenie nie obsługuje powiadomień webowych."
+    : notificationState === "denied"
+      ? "Powiadomienia są zablokowane w ustawieniach aplikacji lub przeglądarki."
+      : notificationEnabled
+        ? "Dostaniesz informację o nowej wiadomości, gdy Typer jest uruchomiony i zminimalizowany."
+        : "Włącz powiadomienia o nowych wiadomościach w szatni graczy.";
   return `${heroMarkup}<section class="content-section settings-section">
     <div class="settings-profile-card">
       ${avatarVisualMarkup("settings-avatar-preview", `Avatar ${state.user.name}`)}
@@ -534,8 +548,16 @@ function settingsView() {
         <div class="stock-avatar-grid">${stockAvatars.map((avatar) => `<button class="avatar-choice stock-avatar-choice ${currentType === "stock" && currentValue === avatar.id ? "is-selected" : ""}" data-avatar-type="stock" data-avatar-value="${avatar.id}" aria-pressed="${currentType === "stock" && currentValue === avatar.id}" ${disabled}><img src="${escapeHtml(avatar.src)}" alt=""><span>${escapeHtml(avatar.label)}</span></button>`).join("")}</div>
       </article>
 
+      <article class="settings-panel settings-notification-panel">
+        <div class="settings-panel-heading"><span>05</span><div><h3>Powiadomienia czatu</h3><p>${notificationCopy}</p></div></div>
+        <div class="settings-notification-row">
+          <span class="settings-notification-status ${notificationEnabled ? "is-enabled" : ""}">${notificationEnabled ? "Włączone" : notificationState === "denied" ? "Zablokowane" : notificationState === "unsupported" ? "Niedostępne" : "Wyłączone"}</span>
+          <button type="button" class="settings-notification-button" data-chat-notifications ${notificationBlocked ? "disabled" : ""}>${notificationEnabled ? "WYŁĄCZ" : "WŁĄCZ POWIADOMIENIA"}</button>
+        </div>
+      </article>
+
       <article class="settings-panel settings-account-panel">
-        <div class="settings-panel-heading"><span>05</span><div><h3>Konto</h3><p>Zakończ sesję na tym urządzeniu. Twoje zapisane typy i ustawienia pozostaną na koncie.</p></div></div>
+        <div class="settings-panel-heading"><span>06</span><div><h3>Konto</h3><p>Zakończ sesję na tym urządzeniu. Twoje zapisane typy i ustawienia pozostaną na koncie.</p></div></div>
         <div class="settings-account-row">
           <div><strong>${escapeHtml(state.user.name)}</strong><span>${escapeHtml(state.user.email || "Konto Google")}</span></div>
           <button type="button" class="settings-signout-button" data-sign-out>WYLOGUJ SIĘ</button>
@@ -585,6 +607,7 @@ function bindRendered() {
   app.querySelectorAll("[data-avatar-type]").forEach((button) => button.addEventListener("click", () => selectAvatar(button.dataset.avatarType, button.dataset.avatarValue || "")));
   app.querySelector("#avatarUpload")?.addEventListener("change", (event) => handleAvatarUpload(event.target.files?.[0]));
   app.querySelector("#displayNameForm")?.addEventListener("submit", saveDisplayName);
+  app.querySelector("[data-chat-notifications]")?.addEventListener("click", toggleChatNotifications);
   app.querySelectorAll("[data-avatar-image]").forEach((image) => image.addEventListener("error", () => image.remove(), { once: true }));
 }
 
@@ -774,9 +797,9 @@ function showAndroidAppPrompt() {
       <li>bezpieczne logowanie przez Google</li>
       <li>szybki dostęp bez szukania adresu</li>
     </ul>
-    <a class="primary-button android-app-download" data-apk-download href="${APK_DOWNLOAD_URL}"><span>POBIERZ APK</span><small>v${APK_VERSION} · 4,0 MB</small></a>
+    <a class="primary-button android-app-download" data-apk-download href="${APK_DOWNLOAD_URL}" download="Typer-v1.0.2.apk" type="application/vnd.android.package-archive"><span>POBIERZ APK</span><small>v${APK_VERSION} · 4,0 MB</small></a>
     <button type="button" class="android-app-later" data-apk-dismiss>NIE TERAZ</button>
-    <small class="android-app-note">Android może poprosić o jednorazową zgodę na instalowanie aplikacji z przeglądarki.</small>`;
+    <small class="android-app-note">Po pobraniu otwórz plik Typer-v1.0.2.apk. Android może poprosić o jednorazową zgodę na instalowanie aplikacji z tej przeglądarki.</small>`;
 
   const dismiss = () => {
     rememberAndroidAppPrompt("dismissed");
@@ -794,6 +817,67 @@ function showAndroidAppPrompt() {
   dialog.addEventListener("close", () => dialog.remove(), { once: true });
   document.body.append(dialog);
   dialog.showModal();
+}
+
+function chatNotificationsSupported() {
+  return "Notification" in window && "serviceWorker" in navigator;
+}
+
+function chatNotificationState() {
+  if (!chatNotificationsSupported()) return "unsupported";
+  if (Notification.permission === "denied") return "denied";
+  return state.chatNotificationsEnabled && Notification.permission === "granted" ? "enabled" : "disabled";
+}
+
+async function toggleChatNotifications() {
+  if (!chatNotificationsSupported()) {
+    notify("To urządzenie nie obsługuje powiadomień webowych.");
+    return;
+  }
+  if (state.chatNotificationsEnabled && Notification.permission === "granted") {
+    state.chatNotificationsEnabled = false;
+    save();
+    render();
+    notify("Powiadomienia czatu wyłączone.");
+    return;
+  }
+  if (Notification.permission === "denied") {
+    notify("Powiadomienia są zablokowane w ustawieniach aplikacji lub przeglądarki.");
+    return;
+  }
+  let permission = "denied";
+  try {
+    permission = await Notification.requestPermission();
+  } catch (error) {
+    console.warn("Nie udało się poprosić o zgodę na powiadomienia:", error);
+    notify("Nie udało się otworzyć zgody na powiadomienia.");
+    return;
+  }
+  state.chatNotificationsEnabled = permission === "granted";
+  save();
+  render();
+  notify(permission === "granted" ? "Powiadomienia czatu włączone." : "Nie przyznano zgody na powiadomienia.");
+}
+
+async function showChatNotification(message) {
+  if (!state.chatNotificationsEnabled || !chatNotificationsSupported() || Notification.permission !== "granted") return;
+  if (!message || message.uid === state.user?.uid || !document.hidden) return;
+  if (Date.now() - firestoreTimeMs(message.createdAt) > 120_000) return;
+  const profile = profileForUid(message.uid);
+  const title = profile.name && profile.name !== "Gracz" ? profile.name : "Nowa wiadomość w szatni";
+  const body = compactChatMessage(message);
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    await registration.showNotification(title, {
+      body,
+      icon: "./assets/brand/app-icon-192.png?v=14",
+      badge: "./assets/brand/favicon-32.png?v=14",
+      tag: `chat-${message.id}`,
+      data: { url: new URL("./?chat=open#matches", registration.scope).href }
+    });
+  } catch (error) {
+    console.warn("Nie udało się pokazać powiadomienia czatu:", error);
+  }
 }
 
 function defaultPlayerPicksMatchday() {
@@ -1796,6 +1880,7 @@ function ensureChatProfile(uid) {
 function stopChatRealtime() {
   chatUnsubscribes.forEach((unsubscribe) => unsubscribe());
   chatUnsubscribes = [];
+  chatNotificationsPrimed = false;
   chatProfileLoads.clear();
   state.chat = [];
   state.chatLive = [];
@@ -1834,6 +1919,9 @@ function startChatRealtime(uid) {
   chatUnsubscribes.push(onSnapshot(messageQuery, (snapshot) => {
     const previousLive = state.chatLive;
     const nextLive = snapshot.docs.map(normalizeChatMessage).reverse();
+    const addedMessages = chatNotificationsPrimed
+      ? snapshot.docChanges().filter((change) => change.type === "added").map((change) => normalizeChatMessage(change.doc))
+      : [];
     const nextIds = new Set(nextLive.map((message) => message.id));
     const older = new Map(state.chatOlder.map((message) => [message.id, message]));
     nextLive.forEach((message) => older.delete(message.id));
@@ -1852,6 +1940,8 @@ function startChatRealtime(uid) {
     state.chatStatus = "ready";
     rebuildChatList();
     updateChatWidget();
+    chatNotificationsPrimed = true;
+    addedMessages.forEach((message) => showChatNotification(message));
   }, (error) => {
     console.error("Chat realtime jest niedostępny:", error);
     state.chatStatus = "error";
@@ -2549,6 +2639,13 @@ window.addEventListener("online", () => {
 });
 
 render();
+if (openChatFromNotification) {
+  toggleChat(true);
+  const cleanSearch = new URLSearchParams(location.search);
+  cleanSearch.delete("chat");
+  const query = cleanSearch.toString();
+  history.replaceState(null, "", `${location.pathname}${query ? `?${query}` : ""}${location.hash || "#matches"}`);
+}
 finishLoadingScreen().then(() => setTimeout(showAndroidAppPrompt, 700));
 state.firebaseReady = initFirebase();
 pollLive();
@@ -2570,7 +2667,7 @@ if ("serviceWorker" in navigator && location.protocol !== "file:") {
     if (document.readyState === "complete") cleanLocalPreview();
     else window.addEventListener("load", cleanLocalPreview, { once: true });
   } else {
-    const registerServiceWorker = () => navigator.serviceWorker.register("./sw.js?v=22", {
+    const registerServiceWorker = () => navigator.serviceWorker.register("./sw.js?v=23", {
       updateViaCache: "none"
     }).catch(() => {});
     if (document.readyState === "complete") registerServiceWorker();

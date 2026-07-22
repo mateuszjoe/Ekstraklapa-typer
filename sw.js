@@ -1,9 +1,9 @@
-const CACHE_NAME = "ekstraklasa-typer-v22";
+const CACHE_NAME = "ekstraklasa-typer-v23";
 const OFFLINE_ASSETS = [
   "./",
   "./?app=typer-v2",
-  "./styles.css?v=19",
-  "./app.js?v=21",
+  "./styles.css?v=20",
+  "./app.js?v=22",
   "./data.js",
   "./firebase-config.js",
   "./live-provider.js",
@@ -38,4 +38,17 @@ self.addEventListener("fetch", (event) => {
   const requestUrl = new URL(event.request.url);
   if (event.request.method !== "GET" || requestUrl.pathname.startsWith("/api/") || requestUrl.pathname.endsWith(".apk")) return;
   event.respondWith(fetch(event.request).catch(() => caches.match(event.request)));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const targetUrl = event.notification.data?.url || new URL("./?chat=open#matches", self.registration.scope).href;
+  event.waitUntil(clients.matchAll({ type: "window", includeUncontrolled: true }).then(async (windows) => {
+    const existing = windows.find((client) => client.url.startsWith(self.registration.scope));
+    if (existing) {
+      await existing.navigate(targetUrl);
+      return existing.focus();
+    }
+    return clients.openWindow(targetUrl);
+  }));
 });
