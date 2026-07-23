@@ -22,12 +22,14 @@ const NOTIFICATION_OUTBOX_MAX_REQUESTS = 4;
 const NOTIFICATION_OUTBOX_CHAT_TTL_MS = 9 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PLAYER_TTL_MS = 14 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PICK_TTL_MS = 45 * 24 * 60 * 60 * 1000;
-const APP_SERVICE_WORKER_VERSION = "29";
+const NOTIFICATION_OUTBOX_NAME_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const APP_SERVICE_WORKER_VERSION = "30";
 const FINAL = new Set(["FT", "AET", "PEN", "AWD", "WO", "FINISHED", "AWARDED"]);
 const LIVE = new Set(["1H", "HT", "2H", "ET", "BT", "P", "LIVE", "IN_PLAY", "PAUSED"]);
-const VIEWS = new Set(["matches", "ekstraklasa", "ranking", "rules", "settings"]);
+const VIEWS = new Set(["matches", "ekstraklasa", "ranking", "rules", "settings", "admin"]);
 const DEFAULT_AVATAR = Object.freeze({ type: "google", value: "" });
 const SEASON_ID = "2026-27";
+const ADMIN_EMAIL = "mateuszjoe@gmail.com";
 const ENTRY_FEE = 100;
 const MINIMUM_PLAYERS = 5;
 const LAST_MATCHDAY = 17;
@@ -157,6 +159,18 @@ const state = {
   avatarPending: false,
   avatarOperationId: 0,
   nameBusy: false,
+  profileNamePolicy: { selfRenameUsed: false, pendingNameRequestId: "", nameVersion: 0 },
+  nameRequest: null,
+  nameRequestStatus: "idle",
+  nameRequestError: "",
+  adminPlayers: [],
+  adminPlayersStatus: "idle",
+  adminPlayersError: "",
+  adminRequests: [],
+  adminRequestsStatus: "idle",
+  adminRequestsError: "",
+  adminBusyId: "",
+  adminSearch: "",
   participantReady: false,
   userDataReady: false,
   participantActivationBusy: false,
@@ -208,6 +222,11 @@ const state = {
 };
 
 let seasonStatsUnsubscribe = null;
+let ownProfileUnsubscribe = null;
+let ownProfileRequestRevision = 0;
+let adminNameRequestsUnsubscribe = null;
+let adminRequestsSnapshotReady = false;
+let adminPendingRequestIds = new Set();
 let chatUnsubscribes = [];
 let serviceWorkerRegistrationPromise = null;
 let chatPushOperation = Promise.resolve();
@@ -362,8 +381,12 @@ function safePhotoUrl(value) {
 }
 
 function googleAccountName(user) {
+  return googleFullName(user).slice(0, MAX_DISPLAY_NAME_LENGTH);
+}
+
+function googleFullName(user) {
   const name = normalizeDisplayName(user?.displayName);
-  return name ? name.slice(0, MAX_DISPLAY_NAME_LENGTH) : "Gracz";
+  return name ? name.slice(0, 120) : "Gracz";
 }
 
 function normalizeDisplayName(value) {
@@ -376,6 +399,65 @@ function normalizeDisplayName(value) {
 
 function validDisplayName(value) {
   return value.length > 0 && value.length <= MAX_DISPLAY_NAME_LENGTH;
+}
+
+function normalizedEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function isCurrentUserAdmin() {
+  const currentUser = state.auth?.currentUser;
+  return Boolean(
+    currentUser
+    && state.user
+    && currentUser.uid === state.user.uid
+    && currentUser.emailVerified === true
+    && normalizedEmail(currentUser.email) === ADMIN_EMAIL
+    && normalizedEmail(state.user.email) === ADMIN_EMAIL
+  );
+}
+
+function normalizeProfileNamePolicy(value = {}) {
+  const version = Number(value?.nameVersion);
+  return {
+    selfRenameUsed: value?.selfRenameUsed === true,
+    pendingNameRequestId: typeof value?.pendingNameRequestId === "string"
+      ? value.pendingNameRequestId.slice(0, 160)
+      : "",
+    nameVersion: Number.isInteger(version) && version >= 0 ? version : 0
+  };
+}
+
+function normalizeNameChangeRequest(id, value = {}) {
+  const status = ["pending", "approved", "rejected"].includes(value?.status) ? value.status : "";
+  const uid = typeof value?.uid === "string" ? value.uid : "";
+  const currentName = normalizeDisplayName(value?.currentName).slice(0, MAX_DISPLAY_NAME_LENGTH);
+  const requestedName = normalizeDisplayName(value?.requestedName).slice(0, MAX_DISPLAY_NAME_LENGTH);
+  if (!id || !uid || !status || !currentName || !requestedName) return null;
+  return {
+    id,
+    uid,
+    currentName,
+    requestedName,
+    status,
+    createdAt: value?.createdAt || null,
+    resolvedAt: value?.resolvedAt || null,
+    resolvedBy: typeof value?.resolvedBy === "string" ? value.resolvedBy : "",
+    adminNote: typeof value?.adminNote === "string" ? value.adminNote.slice(0, 300) : ""
+  };
+}
+
+function formatAdminDate(value) {
+  const timestamp = firestoreTimeMs(value) || Date.parse(String(value || ""));
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return "brak danych";
+  return new Intl.DateTimeFormat("pl-PL", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "Europe/Warsaw"
+  }).format(new Date(timestamp));
 }
 
 function normalizePublicProfile(uid, value = {}) {
@@ -497,6 +579,7 @@ function applyAppRoute(route, { historyMode = "none", focus = true } = {}) {
   render();
   if (view === "ranking" && state.user && state.participantReady) void loadRankingData();
   if (view === "ekstraklasa") void loadLeagueData();
+  if (view === "admin" && isCurrentUserAdmin()) void loadAdminPlayers();
   if (focus) app.focus({ preventScroll: true });
 }
 
@@ -1089,6 +1172,116 @@ function rulesView() {
     </section>`;
 }
 
+function adminRequestStatusLabel(status) {
+  return status === "approved" ? "Zatwierdzony" : status === "rejected" ? "Odrzucony" : "Oczekuje";
+}
+
+function adminPlayerCard(player) {
+  const profileReady = player.hasProfile === true && Boolean(player.displayName);
+  const displayName = profileReady ? player.displayName : "Brak profilu gracza";
+  const googleName = player.googleName || "Pojawi się po ponownym logowaniu";
+  const email = player.email || "Pojawi się po ponownym logowaniu";
+  const policy = player.selfRenameUsed
+    ? "Darmowa zmiana wykorzystana"
+    : "Darmowa zmiana dostępna";
+  const pending = player.pendingNameRequestId
+    ? `<span class="admin-player-pending">Wniosek oczekuje</span>`
+    : "";
+  return `<article class="admin-player-card" data-admin-player data-admin-uid="${escapeHtml(player.uid)}">
+    <header>
+      <span class="admin-player-initial">${escapeHtml(String(displayName || "G").slice(0, 1).toUpperCase())}</span>
+      <div><h3>${escapeHtml(displayName)}</h3><small>UID: ${escapeHtml(player.uid)}</small></div>
+      ${pending}
+    </header>
+    <dl class="admin-player-data">
+      <div><dt>Nazwa Google</dt><dd>${escapeHtml(googleName)}</dd></div>
+      <div><dt>Email</dt><dd>${escapeHtml(email)}</dd></div>
+      <div><dt>Ostatnie logowanie</dt><dd>${escapeHtml(formatAdminDate(player.lastSeenAt))}</dd></div>
+      <div><dt>Zmiana własna</dt><dd>${escapeHtml(policy)}</dd></div>
+    </dl>
+    <form class="admin-player-name-form" data-admin-name-form="${escapeHtml(player.uid)}">
+      <label><span>Nick w typerze</span><input name="displayName" type="text" maxlength="${MAX_DISPLAY_NAME_LENGTH}" value="${escapeHtml(player.displayName || "")}" autocomplete="off" ${profileReady ? "" : "disabled"}></label>
+      <button type="submit" ${!profileReady || state.adminBusyId === player.uid ? "disabled" : ""}>${state.adminBusyId === player.uid ? "ZAPISYWANIE…" : "ZAPISZ NICK"}</button>
+    </form>
+    ${profileReady ? "" : `<p class="admin-player-note">Edycja będzie dostępna, gdy konto utworzy profil i wpis w rankingu.</p>`}
+  </article>`;
+}
+
+function adminRequestCard(request, playersByUid) {
+  const player = playersByUid.get(request.uid);
+  const identity = player?.email || player?.googleName || request.uid;
+  const pending = request.status === "pending";
+  const busy = state.adminBusyId === request.id;
+  return `<article class="admin-request-card is-${request.status}" data-admin-request="${escapeHtml(request.id)}">
+    <header>
+      <span class="admin-status-chip is-${request.status}">${escapeHtml(adminRequestStatusLabel(request.status))}</span>
+      <time>${escapeHtml(formatAdminDate(request.createdAt))}</time>
+    </header>
+    <div class="admin-request-change">
+      <span><small>Obecny nick</small><strong>${escapeHtml(request.currentName)}</strong></span>
+      <b aria-hidden="true">→</b>
+      <span><small>Proponowany nick</small><strong>${escapeHtml(request.requestedName)}</strong></span>
+    </div>
+    <p class="admin-request-owner">${escapeHtml(identity)}<small>${escapeHtml(request.uid)}</small></p>
+    ${request.adminNote ? `<p class="admin-request-resolution"><strong>Notatka:</strong> ${escapeHtml(request.adminNote)}</p>` : ""}
+    ${request.resolvedAt ? `<p class="admin-request-resolution">Rozpatrzono: ${escapeHtml(formatAdminDate(request.resolvedAt))}</p>` : ""}
+    ${pending ? `<label class="admin-request-note"><span>Notatka dla gracza (opcjonalnie)</span><input name="adminNote" maxlength="300" placeholder="Np. nick jest już zajęty"></label>
+      <div class="admin-request-actions">
+        <button type="button" data-admin-request-action="approve" data-request-id="${escapeHtml(request.id)}" ${busy ? "disabled" : ""}>${busy ? "ZAPISYWANIE…" : "ZATWIERDŹ"}</button>
+        <button type="button" class="is-reject" data-admin-request-action="reject" data-request-id="${escapeHtml(request.id)}" ${busy ? "disabled" : ""}>ODRZUĆ</button>
+      </div>` : ""}
+  </article>`;
+}
+
+function adminView() {
+  const heroMarkup = `<section class="subpage-hero admin-hero"><p class="eyebrow">ZARZĄDZANIE LIGĄ</p><h1>Panel admina</h1><p>Gracze, nicki i wnioski o kolejną zmianę nazwy.</p></section>`;
+  if (state.authStatus === "loading") {
+    return `${heroMarkup}<section class="content-section admin-section"><div class="admin-state-card"><span class="admin-state-spinner"></span><h2>Sprawdzamy uprawnienia</h2><p>Panel otworzy się po potwierdzeniu sesji Google.</p></div></section>`;
+  }
+  if (!isCurrentUserAdmin()) {
+    return `${heroMarkup}<section class="content-section admin-section"><div class="admin-state-card is-forbidden"><strong>403</strong><h2>Brak dostępu</h2><p>Ten panel jest dostępny wyłącznie dla administratora zalogowanego zweryfikowanym kontem Google.</p>${state.user ? `<a class="primary-button" href="#matches/${state.matchday}" data-view-jump="matches">WRÓĆ DO MECZÓW</a>` : `<button class="primary-button" data-open-auth>ZALOGUJ PRZEZ GOOGLE</button>`}</div></section>`;
+  }
+
+  const pendingCount = state.adminRequests.filter((request) => request.status === "pending").length;
+  const approvedCount = state.adminRequests.filter((request) => request.status === "approved").length;
+  const rejectedCount = state.adminRequests.filter((request) => request.status === "rejected").length;
+  const playersByUid = new Map(state.adminPlayers.map((player) => [player.uid, player]));
+  const requestMarkup = state.adminRequestsStatus === "loading" || state.adminRequestsStatus === "idle"
+    ? `<div class="admin-state-inline"><span class="admin-state-spinner"></span>Wczytujemy wnioski…</div>`
+    : state.adminRequestsStatus === "error"
+      ? `<div class="admin-error"><span>${escapeHtml(state.adminRequestsError || "Nie udało się pobrać wniosków.")}</span><button type="button" data-admin-retry>SPRÓBUJ PONOWNIE</button></div>`
+      : state.adminRequests.length
+        ? `<div class="admin-request-list">${state.adminRequests.map((request) => adminRequestCard(request, playersByUid)).join("")}</div>`
+        : `<div class="admin-empty"><h3>Brak wniosków</h3><p>Gdy gracz wykorzysta darmową zmianę i poprosi o kolejną, wniosek pojawi się tutaj.</p></div>`;
+  const playersMarkup = state.adminPlayersStatus === "loading" || state.adminPlayersStatus === "idle"
+    ? `<div class="admin-state-inline"><span class="admin-state-spinner"></span>Wczytujemy konta graczy…</div>`
+    : state.adminPlayersStatus === "error"
+      ? `<div class="admin-error"><span>${escapeHtml(state.adminPlayersError || "Nie udało się pobrać graczy.")}</span><button type="button" data-admin-retry>SPRÓBUJ PONOWNIE</button></div>`
+      : state.adminPlayers.length
+        ? `<div class="admin-player-list">${state.adminPlayers.map(adminPlayerCard).join("")}</div><div class="admin-empty admin-search-empty" data-admin-search-empty hidden><h3>Brak wyników</h3><p>Zmień wyszukiwaną nazwę, email albo UID.</p></div>`
+        : `<div class="admin-empty"><h3>Brak graczy</h3><p>Dane kont pojawią się po zalogowaniu użytkowników.</p></div>`;
+
+  return `${heroMarkup}<section class="content-section admin-section">
+    <div class="admin-stats">
+      <article><strong>${state.adminPlayers.length}</strong><span>graczy</span></article>
+      <article><strong>${pendingCount}</strong><span>oczekujących</span></article>
+      <article><strong>${approvedCount}</strong><span>zatwierdzonych</span></article>
+      <article><strong>${rejectedCount}</strong><span>odrzuconych</span></article>
+    </div>
+    <article class="admin-panel">
+      <div class="admin-panel-heading"><div><p class="eyebrow">WNIOSKI O NICK</p><h2>Wszystkie zgłoszenia</h2></div><span>Najpierw oczekujące, potem najnowsze.</span></div>
+      ${requestMarkup}
+    </article>
+    <article class="admin-panel">
+      <div class="admin-panel-heading admin-player-heading"><div><p class="eyebrow">KONTA GOOGLE</p><h2>Gracze</h2></div>
+        <label class="admin-search"><span>Wyszukaj gracza</span><input id="adminPlayerSearch" type="search" value="${escapeHtml(state.adminSearch)}" placeholder="Nick, nazwa Google, email lub UID" autocomplete="off"></label>
+      </div>
+      ${state.adminPlayersStatus === "ready" && state.adminPlayersError ? `<div class="admin-warning">${escapeHtml(state.adminPlayersError)} Brakujące dane pojawią się po ponownym logowaniu gracza.</div>` : ""}
+      ${playersMarkup}
+    </article>
+  </section>`;
+}
+
 function settingsView() {
   const heroMarkup = `<section class="subpage-hero"><p class="eyebrow">TWÓJ PROFIL</p><h1>Ustawienia</h1><p>Ustaw nazwę i avatar, z którymi wchodzisz do gry.</p></section>`;
   if (!state.user) {
@@ -1097,6 +1290,23 @@ function settingsView() {
 
   const profileBusy = state.avatarBusy || state.nameBusy;
   const disabled = profileBusy ? "disabled" : "";
+  const namePolicy = normalizeProfileNamePolicy(state.profileNamePolicy);
+  const hasPendingNameRequest = Boolean(namePolicy.pendingNameRequestId);
+  const nameInputDisabled = profileBusy || !state.userDataReady || hasPendingNameRequest;
+  const nameDisabled = nameInputDisabled ? "disabled" : "";
+  const freeRenameAvailable = !namePolicy.selfRenameUsed;
+  const nameSubmitLabel = state.nameBusy
+    ? "ZAPISYWANIE…"
+    : hasPendingNameRequest
+      ? "WNIOSEK OCZEKUJE"
+      : freeRenameAvailable
+        ? "ZMIEŃ NICK"
+        : "WYŚLIJ WNIOSEK";
+  const nameStatusMarkup = hasPendingNameRequest
+    ? `<div class="profile-name-status is-pending"><strong>Wniosek oczekuje na decyzję</strong><span>${state.nameRequest?.requestedName ? `Proponowany nick: ${escapeHtml(state.nameRequest.requestedName)}.` : "Szczegóły wniosku są synchronizowane."} Do czasu decyzji używasz nazwy ${escapeHtml(state.user.name)}.</span></div>`
+    : freeRenameAvailable
+      ? `<div class="profile-name-status is-free"><strong>Masz jedną bezpłatną zmianę</strong><span>Zapisanie nowego nicku wykorzysta ją od razu. Każda następna zmiana będzie wymagała zgody administratora.</span></div>`
+      : `<div class="profile-name-status"><strong>Bezpłatna zmiana została wykorzystana</strong><span>Możesz zaproponować kolejny nick. Zmieni się dopiero po zatwierdzeniu wniosku przez administratora.</span></div>`;
   const currentType = state.avatar.type;
   const currentValue = state.avatar.value;
   const googleAvatar = { type: "google", value: "" };
@@ -1119,16 +1329,18 @@ function settingsView() {
   return `${heroMarkup}<section class="content-section settings-section">
     <div class="settings-profile-card">
       ${avatarVisualMarkup("settings-avatar-preview", `Avatar ${state.user.name}`)}
-      <div><p class="eyebrow">TWÓJ PROFIL</p><h2>${escapeHtml(state.user.name)}</h2><span>${escapeHtml(state.user.email || "Konto Google")}</span></div>
+      <div><p class="eyebrow">TWÓJ PROFIL</p><h2>${escapeHtml(state.user.name)}</h2><span class="settings-identity"><b>Nazwa Google</b>${escapeHtml(state.user.googleName || "Brak nazwy Google")}<b>Email</b>${escapeHtml(state.user.email || "Konto Google")}</span></div>
       <small>${state.nameBusy ? "Zapisywanie nazwy…" : state.avatarBusy ? "Zapisywanie avatara…" : state.avatarPending ? "Oczekuje na synchronizację" : "Zapisany na Twoim koncie"}</small>
     </div>
     <div class="settings-panels">
       <article class="settings-panel">
-        <div class="settings-panel-heading"><span>01</span><div><h3>Nazwa gracza</h3><p>Ta nazwa będzie widoczna w typerze, rankingu i chacie.</p></div></div>
+        <div class="settings-panel-heading"><span>01</span><div><h3>Nick gracza</h3><p>Publiczna nazwa widoczna w typerze, rankingu i chacie. Nie zmienia nazwy Twojego konta Google.</p></div></div>
+        ${nameStatusMarkup}
+        ${state.nameRequestStatus === "error" ? `<div class="profile-name-error">${escapeHtml(state.nameRequestError || "Nie udało się pobrać stanu wniosku.")}</div>` : ""}
         <form id="displayNameForm" class="profile-name-form">
-          <label class="profile-name-field" for="displayNameInput"><span>Nazwa wyświetlana</span><input id="displayNameInput" class="profile-name-input" type="text" value="${escapeHtml(state.user.name)}" maxlength="${MAX_DISPLAY_NAME_LENGTH}" autocomplete="nickname" required ${disabled}></label>
-          <button class="primary-button profile-name-save" type="submit" ${disabled}>${state.nameBusy ? "ZAPISYWANIE…" : "ZAPISZ NAZWĘ"}</button>
-          <small class="profile-name-help">Maksymalnie ${MAX_DISPLAY_NAME_LENGTH} znaków. Zmiana zapisze się na wszystkich urządzeniach.</small>
+          <label class="profile-name-field" for="displayNameInput"><span>Nick w typerze</span><input id="displayNameInput" class="profile-name-input" type="text" value="${escapeHtml(state.user.name)}" maxlength="${MAX_DISPLAY_NAME_LENGTH}" autocomplete="nickname" required ${nameDisabled}></label>
+          <button class="primary-button profile-name-save" type="submit" ${nameDisabled}>${nameSubmitLabel}</button>
+          <small class="profile-name-help">Maksymalnie ${MAX_DISPLAY_NAME_LENGTH} znaków. ${freeRenameAvailable ? "To Twoja jedyna natychmiastowa, bezpłatna zmiana." : "Kolejna zmiana wymaga akceptacji administratora."}</small>
         </form>
       </article>
 
@@ -1166,7 +1378,7 @@ function settingsView() {
       <article class="settings-panel settings-account-panel">
         <div class="settings-panel-heading"><span>06</span><div><h3>Konto</h3><p>Zakończ sesję na tym urządzeniu. Twoje zapisane typy i ustawienia pozostaną na koncie.</p></div></div>
         <div class="settings-account-row">
-          <div><strong>${escapeHtml(state.user.name)}</strong><span>${escapeHtml(state.user.email || "Konto Google")}</span></div>
+          <div><strong>Nick: ${escapeHtml(state.user.name)}</strong><span>Nazwa Google: ${escapeHtml(state.user.googleName || "brak")} · ${escapeHtml(state.user.email || "Konto Google")}</span></div>
           <button type="button" class="settings-signout-button" data-sign-out>WYLOGUJ SIĘ</button>
         </div>
       </article>
@@ -1183,7 +1395,7 @@ function currentDocumentTitle() {
     }
     return "Ekstraklasa – Ekstraklapa Typer";
   }
-  const labels = { matches: "Mecze", ranking: "Ranking", rules: "Zasady", settings: "Ustawienia" };
+  const labels = { matches: "Mecze", ranking: "Ranking", rules: "Zasady", settings: "Ustawienia", admin: "Panel admina" };
   return `${labels[state.view] || "Typer"} – Ekstraklapa Typer`;
 }
 
@@ -1196,7 +1408,9 @@ function render() {
       ? rulesView()
       : state.view === "settings"
         ? settingsView()
-        : matchesView();
+        : state.view === "admin"
+          ? adminView()
+          : matchesView();
   document.title = currentDocumentTitle();
   document.querySelectorAll(".nav-link").forEach((node) => node.classList.toggle("is-active", node.dataset.view === state.view));
   updateAuthButton();
@@ -1231,6 +1445,15 @@ function bindRendered() {
   app.querySelectorAll("[data-avatar-type]").forEach((button) => button.addEventListener("click", () => selectAvatar(button.dataset.avatarType, button.dataset.avatarValue || "")));
   app.querySelector("#avatarUpload")?.addEventListener("change", (event) => handleAvatarUpload(event.target.files?.[0]));
   app.querySelector("#displayNameForm")?.addEventListener("submit", saveDisplayName);
+  const adminPlayerSearch = app.querySelector("#adminPlayerSearch");
+  adminPlayerSearch?.addEventListener("input", filterAdminPlayers);
+  if (adminPlayerSearch && state.adminSearch) filterAdminPlayers({ currentTarget: adminPlayerSearch });
+  app.querySelectorAll("[data-admin-name-form]").forEach((form) => form.addEventListener("submit", saveAdminDisplayName));
+  app.querySelectorAll("[data-admin-request-action]").forEach((button) => button.addEventListener("click", decideAdminNameRequest));
+  app.querySelectorAll("[data-admin-retry]").forEach((button) => button.addEventListener("click", () => {
+    startAdminNameRequestsRealtime({ restart: true });
+    void loadAdminPlayers({ force: true });
+  }));
   app.querySelector("[data-chat-notifications]")?.addEventListener("click", toggleChatNotifications);
   app.querySelector("[data-ranking-retry]")?.addEventListener("click", () => loadRankingData());
   app.querySelector("[data-league-refresh]")?.addEventListener("click", () => loadLeagueData({ force: true }));
@@ -1494,6 +1717,19 @@ function updateAuthButton() {
   const mobileAccountName = document.querySelector("#mobileAccountName");
   if (mobileAccount) mobileAccount.hidden = !state.user;
   if (mobileAccountName) mobileAccountName.textContent = state.user?.name || "Gracz";
+  const adminAllowed = isCurrentUserAdmin();
+  const pendingAdminRequests = state.adminRequests.filter((request) => request.status === "pending").length;
+  document.querySelectorAll("[data-admin-nav]").forEach((node) => {
+    node.hidden = !adminAllowed;
+    const badge = node.querySelector("[data-admin-badge]");
+    if (badge) {
+      badge.textContent = String(pendingAdminRequests);
+      badge.hidden = pendingAdminRequests < 1;
+    }
+  });
+  document.querySelectorAll("[data-account-admin]").forEach((node) => {
+    node.hidden = !adminAllowed;
+  });
 
   const googleButton = document.querySelector("#authDialog [data-provider='google']");
   if (googleButton) {
@@ -1513,7 +1749,7 @@ function openAccountDialog() {
   if (!dialog || !state.user) return;
   setMainMenuOpen(false);
   dialog.querySelector("#accountName").textContent = state.user.name;
-  dialog.querySelector("#accountDetails").textContent = state.user.email || "Zalogowano przez Google";
+  dialog.querySelector("#accountDetails").textContent = `${state.user.googleName || "Konto Google"} · ${state.user.email || "Zalogowano przez Google"}`;
   const avatarHost = dialog.querySelector("#accountAvatar");
   if (avatarHost) {
     avatarHost.innerHTML = playerAvatarButton(state.user.uid, "account-avatar-image");
@@ -1759,20 +1995,21 @@ async function notificationApiRequest(path, data = {}, options = {}) {
   const base = String(notificationApiBase || "").replace(/\/$/, "");
   const currentUser = state.auth?.currentUser;
   if (!base || !currentUser) throw new Error("Backend powiadomień nie jest gotowy.");
+  const method = String(options.method || "POST").toUpperCase();
+  if (!["GET", "POST"].includes(method)) throw new Error("Nieobsługiwana metoda backendu.");
   const token = await currentUser.getIdToken();
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 12000);
   try {
+    const headers = { authorization: `Bearer ${token}` };
+    if (method !== "GET") headers["content-type"] = "application/json";
     const response = await fetch(`${base}${path}`, {
-      method: "POST",
+      method,
       mode: "cors",
       credentials: "omit",
       cache: "no-store",
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json"
-      },
-      body: JSON.stringify(data),
+      headers,
+      body: method === "GET" ? undefined : JSON.stringify(data),
       keepalive: options.keepalive === true,
       signal: controller.signal
     });
@@ -1800,6 +2037,18 @@ function notificationOutboxId(type, uid, data) {
   if (type === "pick" && typerMatchIds.has(data?.matchId) && ["1", "X", "2"].includes(data?.pick)) {
     return `pick:${uid}:${data.matchId}`;
   }
+  if (type === "name-request" && typeof data?.requestId === "string" && data.requestId) {
+    return `name-request:${uid}:${data.requestId}`;
+  }
+  if (type === "name-changed" && Number.isInteger(data?.nameVersion) && data.nameVersion >= 1) {
+    return `name-changed:${uid}:${data.nameVersion}`;
+  }
+  if (type === "name-decision" && typeof data?.requestId === "string" && data.requestId) {
+    return `name-decision:${uid}:${data.requestId}`;
+  }
+  if (type === "admin-name-edited" && typeof data?.uid === "string" && data.uid && Number.isInteger(data?.nameVersion)) {
+    return `admin-name-edited:${uid}:${data.uid}:${data.nameVersion}`;
+  }
   return "";
 }
 
@@ -1807,18 +2056,24 @@ function notificationOutboxSignature(type, data) {
   if (type === "player") return "joined";
   if (type === "chat") return String(data?.messageId || "");
   if (type === "pick") return `${data?.matchId || ""}:${data?.pick || ""}`;
+  if (["name-request", "name-changed", "name-decision", "admin-name-edited"].includes(type)) {
+    return JSON.stringify(data);
+  }
   return "";
 }
 
 function notificationOutboxTtl(type) {
   if (type === "chat") return NOTIFICATION_OUTBOX_CHAT_TTL_MS;
   if (type === "player") return NOTIFICATION_OUTBOX_PLAYER_TTL_MS;
+  if (["name-request", "name-changed", "name-decision", "admin-name-edited"].includes(type)) {
+    return NOTIFICATION_OUTBOX_NAME_TTL_MS;
+  }
   return NOTIFICATION_OUTBOX_PICK_TTL_MS;
 }
 
 function normalizeNotificationOutboxItem(value, now = Date.now()) {
   if (!value || typeof value !== "object" || Array.isArray(value) || typeof value.uid !== "string") return null;
-  const type = ["chat", "player", "pick"].includes(value.type) ? value.type : "";
+  const type = ["chat", "player", "pick", "name-request", "name-changed", "name-decision", "admin-name-edited"].includes(value.type) ? value.type : "";
   const data = asRecord(value.data);
   const id = notificationOutboxId(type, value.uid, data);
   const signature = notificationOutboxSignature(type, data);
@@ -1921,12 +2176,17 @@ function markNotificationOutboxSent(selected) {
   const now = Date.now();
   updateNotificationOutboxItems(selected, (item) => {
     if (item.type === "pick") return null;
+    const receiptTtl = ["name-request", "name-changed", "name-decision", "admin-name-edited"].includes(item.type)
+      ? NOTIFICATION_OUTBOX_NAME_TTL_MS
+      : item.type === "player"
+        ? 180 * 24 * 60 * 60 * 1000
+        : 24 * 60 * 60 * 1000;
     return {
       ...item,
       sentAt: now,
       updatedAt: now,
       nextAttemptAt: 0,
-      expiresAt: now + (item.type === "player" ? 180 * 24 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000)
+      expiresAt: now + receiptTtl
     };
   });
 }
@@ -1993,6 +2253,10 @@ function handlePartialPickSync(entries, payload, { outbox = false, uid = state.u
 function notificationOutboxPath(item) {
   if (item.type === "chat") return "/api/events/chat-message";
   if (item.type === "player") return "/api/events/player-joined";
+  if (item.type === "name-request") return "/api/events/name-change-request";
+  if (item.type === "name-changed") return "/api/events/player-name-changed";
+  if (item.type === "name-decision") return "/api/events/name-change-decision";
+  if (item.type === "admin-name-edited") return "/api/events/admin-name-edited";
   return "/api/picks/sync";
 }
 
@@ -2741,6 +3005,20 @@ function updateCountdowns() {
   });
 }
 
+async function enqueueAndFlushNameEvent(type, data, uid = state.user?.uid) {
+  if (!uid) return;
+  const queued = enqueueNotificationOutbox(type, uid, data, { schedule: false });
+  if (!queued) {
+    console.warn(`Nie udało się dodać zdarzenia ${type} do kolejki.`);
+    return;
+  }
+  try {
+    await flushNotificationOutbox(uid);
+  } catch (error) {
+    reportNotificationSyncError(`Zdarzenie ${type} pozostaje w kolejce do ponowienia`, error);
+  }
+}
+
 async function saveDisplayName(event) {
   event.preventDefault();
   if (!state.user || state.auth?.currentUser?.uid !== state.user.uid || !state.db || !state.firebaseModules) {
@@ -2766,18 +3044,55 @@ async function saveDisplayName(event) {
   state.nameBusy = true;
   render();
   try {
-    await saveRemoteDisplayName(uid, nextName);
+    const result = await saveRemoteDisplayName(uid, nextName);
     if (state.auth?.currentUser?.uid !== uid || state.user?.uid !== uid) return;
-    state.user.name = nextName;
-    state.chatProfiles[uid] = normalizePublicProfile(uid, {
-      displayName: nextName,
-      avatarType: state.avatar.type,
-      avatarValue: state.avatar.value
-    });
-    notify("Nazwa gracza została zapisana.");
+    if (result.kind === "changed") {
+      state.user.name = result.displayName;
+      state.profileNamePolicy = {
+        selfRenameUsed: true,
+        pendingNameRequestId: "",
+        nameVersion: result.nameVersion
+      };
+      state.nameRequest = null;
+      state.nameRequestStatus = "ready";
+      state.chatProfiles[uid] = normalizePublicProfile(uid, {
+        displayName: result.displayName,
+        avatarType: state.avatar.type,
+        avatarValue: state.avatar.value
+      });
+      await enqueueAndFlushNameEvent("name-changed", { nameVersion: result.nameVersion }, uid);
+      notify("Nick został zmieniony. Bezpłatna zmiana została wykorzystana.");
+    } else {
+      state.profileNamePolicy = {
+        ...state.profileNamePolicy,
+        selfRenameUsed: true,
+        pendingNameRequestId: result.requestId
+      };
+      state.nameRequest = {
+        id: result.requestId,
+        uid,
+        currentName: result.currentName,
+        requestedName: result.requestedName,
+        status: "pending",
+        createdAt: Date.now(),
+        resolvedAt: null,
+        resolvedBy: "",
+        adminNote: ""
+      };
+      state.nameRequestStatus = "ready";
+      await enqueueAndFlushNameEvent("name-request", { requestId: result.requestId }, uid);
+      notify("Wniosek o zmianę nicku został wysłany do administratora.");
+    }
   } catch (error) {
     console.error("Nie udało się zapisać nazwy gracza:", error);
-    notify("Nie udało się zapisać nazwy. Spróbuj ponownie.");
+    const message = error?.code === "name-request/pending"
+      ? "Masz już oczekujący wniosek o zmianę nicku."
+      : error?.code === "name-change/profile-missing"
+        ? "Profil jest jeszcze synchronizowany. Spróbuj ponownie za chwilę."
+        : error?.code === "name-change/leaderboard-missing"
+          ? "Konto nie jest jeszcze gotowe w rankingu. Spróbuj ponownie za chwilę."
+          : "Nie udało się zapisać zmiany. Spróbuj ponownie.";
+    notify(message);
   } finally {
     if (state.auth?.currentUser?.uid === uid && state.user?.uid === uid) {
       state.nameBusy = false;
@@ -3892,9 +4207,11 @@ function isGoogleAccount(user) {
 }
 
 async function handleAuthState(user) {
+  stopOwnProfileRealtime();
   const previousUid = state.user?.uid || null;
   state.userDataReady = false;
   if (previousUid && (!user || previousUid !== user.uid)) {
+    resetAdminClientState();
     await detachChatPushWithoutSession();
     state.predictions = {};
     state.confirmedPredictions = {};
@@ -3918,6 +4235,10 @@ async function handleAuthState(user) {
   state.avatarBusy = false;
   state.avatarPending = false;
   state.nameBusy = false;
+  state.profileNamePolicy = { selfRenameUsed: false, pendingNameRequestId: "", nameVersion: 0 };
+  state.nameRequest = null;
+  state.nameRequestStatus = "idle";
+  state.nameRequestError = "";
   state.participantReady = false;
   state.participantActivationBusy = false;
   state.participantActivationError = false;
@@ -3929,6 +4250,7 @@ async function handleAuthState(user) {
   rankingReloadPending = false;
   stopChatRealtime();
   if (user && !isGoogleAccount(user)) {
+    resetAdminClientState();
     await detachChatPushWithoutSession();
     state.user = null;
     state.predictions = {};
@@ -3943,6 +4265,7 @@ async function handleAuthState(user) {
     return;
   }
   if (!user) {
+    resetAdminClientState();
     state.user = null;
     state.predictions = {};
     state.confirmedPredictions = {};
@@ -3955,9 +4278,11 @@ async function handleAuthState(user) {
   }
 
   const cachedAvatar = normalizeAvatar(state.avatarsByUser[user.uid]) || { ...DEFAULT_AVATAR };
+  const googleName = googleFullName(user);
   state.user = {
     uid: user.uid,
     name: googleAccountName(user),
+    googleName,
     email: user.email || "",
     photoURL: safePhotoUrl(user.photoURL),
     provider: "google.com"
@@ -3965,6 +4290,8 @@ async function handleAuthState(user) {
   state.avatar = cachedAvatar;
   state.chatNotificationsEnabled = state.chatNotificationsByUser[user.uid] === true;
   state.chatNotificationsSyncPending = false;
+  if (isCurrentUserAdmin()) startAdminNameRequestsRealtime();
+  else resetAdminClientState();
 
   let remote = {};
   let remoteProfile = null;
@@ -3987,6 +4314,9 @@ async function handleAuthState(user) {
   state.avatar = remoteProfile?.avatar || cachedAvatar;
   const savedDisplayName = normalizeDisplayName(remoteProfile?.data?.displayName);
   if (savedDisplayName) state.user.name = savedDisplayName.slice(0, MAX_DISPLAY_NAME_LENGTH);
+  state.profileNamePolicy = normalizeProfileNamePolicy(remoteProfile?.data || {});
+  await loadOwnNameRequest(user.uid, state.profileNamePolicy.pendingNameRequestId);
+  if (state.auth?.currentUser?.uid !== user.uid) return;
   state.chatProfiles[user.uid] = normalizePublicProfile(user.uid, {
     displayName: state.user.name,
     photoURL: state.user.photoURL,
@@ -3994,15 +4324,29 @@ async function handleAuthState(user) {
     avatarValue: state.avatar.value
   });
 
+  const profileDidNotExist = profileResult.status === "fulfilled" && !remoteProfile;
+  if (profileDidNotExist) {
+    try {
+      await saveRemoteProfile(user.uid, state.avatar, null, state.user.name);
+    } catch (error) {
+      console.error("Nie udało się utworzyć profilu przed aktywacją gracza:", error);
+      notify("Konto Google jest zalogowane, ale profil gracza nie został jeszcze utworzony. Spróbuj odświeżyć stronę.");
+    }
+  }
+  if (state.auth?.currentUser?.uid !== user.uid) return;
+
   await activateSeasonParticipant(user.uid, { startRealtime: false, notifyOnError: true });
   if (state.auth?.currentUser?.uid !== user.uid) return;
+  const profileMetadataSync = state.participantReady
+    ? syncAuthenticatedProfileMetadata(user.uid)
+    : Promise.resolve();
 
   const migratedPredictions = await migrateLegacyLocalPredictions(user.uid);
   if (state.auth?.currentUser?.uid !== user.uid) return;
   Object.assign(state.predictions, migratedPredictions);
   Object.assign(state.confirmedPredictions, migratedPredictions);
 
-  if (profileResult.status === "fulfilled") {
+  if (profileResult.status === "fulfilled" && !profileDidNotExist) {
     try {
       const profileSave = saveRemoteProfile(user.uid, state.avatar, remoteProfile?.data || null).then(
         () => ({ status: "saved" }),
@@ -4020,8 +4364,14 @@ async function handleAuthState(user) {
   if (state.auth?.currentUser?.uid !== user.uid) return;
 
   state.userDataReady = true;
+  startOwnProfileRealtime(user.uid);
   save();
   render();
+  profileMetadataSync.finally(() => {
+    if (!isCurrentUserAdmin() || state.auth?.currentUser?.uid !== user.uid) return;
+    startAdminNameRequestsRealtime();
+    if (state.view === "admin") void loadAdminPlayers({ force: true });
+  });
   Promise.allSettled([
     announceSeasonParticipant(),
     queueNotificationPicksSync(state.confirmedPredictions, user.uid)
@@ -4124,6 +4474,7 @@ async function loginGoogle() {
 
 async function logout() {
   document.querySelector("#accountDialog")?.close();
+  resetAdminClientState();
   if (state.auth?.currentUser && state.firebaseModules?.signOut) {
     const uid = state.auth.currentUser.uid;
     try {
@@ -4158,6 +4509,10 @@ async function logout() {
   state.avatarBusy = false;
   state.avatarPending = false;
   state.nameBusy = false;
+  state.profileNamePolicy = { selfRenameUsed: false, pendingNameRequestId: "", nameVersion: 0 };
+  state.nameRequest = null;
+  state.nameRequestStatus = "idle";
+  state.nameRequestError = "";
   state.avatarOperationId += 1;
   state.participantReady = false;
   state.participantActivationBusy = false;
@@ -4232,15 +4587,85 @@ async function saveRemoteDisplayName(uid, displayName) {
   }
   const normalizedName = normalizeDisplayName(displayName);
   if (!validDisplayName(normalizedName)) throw new Error("Nieprawidłowa nazwa gracza");
-  const { doc, getDoc, serverTimestamp, updateDoc } = state.firebaseModules;
-  const reference = doc(state.db, "profiles", uid);
-  const snapshot = await getDoc(reference);
-  if (!snapshot.exists()) {
-    await saveRemoteProfile(uid, state.avatar, null, normalizedName);
-    return;
-  }
-  await updateDoc(reference, { displayName: normalizedName, updatedAt: serverTimestamp() });
-  await syncOwnLeaderboardIdentity(uid, normalizedName, state.avatar);
+  const { collection, doc, runTransaction, serverTimestamp } = state.firebaseModules;
+  const profileReference = doc(state.db, "profiles", uid);
+  const leaderboardReference = doc(state.db, "seasons", SEASON_ID, "leaderboard", uid);
+  const requestReference = doc(collection(state.db, "nameChangeRequests"));
+  return runTransaction(state.db, async (transaction) => {
+    const [profileSnapshot, leaderboardSnapshot] = await Promise.all([
+      transaction.get(profileReference),
+      transaction.get(leaderboardReference)
+    ]);
+    if (!profileSnapshot.exists()) {
+      const error = new Error("Profil gracza jeszcze nie istnieje.");
+      error.code = "name-change/profile-missing";
+      throw error;
+    }
+    const profile = profileSnapshot.data();
+    const currentName = normalizeDisplayName(profile.displayName || state.user?.name);
+    const policy = normalizeProfileNamePolicy(profile);
+    if (normalizedName === currentName) {
+      const error = new Error("To już jest aktualna nazwa.");
+      error.code = "name-change/unchanged";
+      throw error;
+    }
+
+    if (!policy.selfRenameUsed) {
+      if (!leaderboardSnapshot.exists()) {
+        const error = new Error("Gracz nie ma jeszcze wpisu w rankingu.");
+        error.code = "name-change/leaderboard-missing";
+        throw error;
+      }
+      const nextVersion = policy.nameVersion + 1;
+      transaction.update(profileReference, {
+        displayName: normalizedName,
+        selfRenameUsed: true,
+        pendingNameRequestId: "",
+        nameVersion: nextVersion,
+        updatedAt: serverTimestamp()
+      });
+      transaction.update(leaderboardReference, {
+        displayName: normalizedName,
+        updatedAt: serverTimestamp()
+      });
+      return {
+        kind: "changed",
+        previousName: currentName,
+        displayName: normalizedName,
+        nameVersion: nextVersion
+      };
+    }
+
+    if (policy.pendingNameRequestId) {
+      const existingRequestReference = doc(state.db, "nameChangeRequests", policy.pendingNameRequestId);
+      const existingRequestSnapshot = await transaction.get(existingRequestReference);
+      if (existingRequestSnapshot.exists() && existingRequestSnapshot.data()?.status === "pending") {
+        const error = new Error("Wniosek o zmianę nazwy już oczekuje.");
+        error.code = "name-request/pending";
+        throw error;
+      }
+    }
+    transaction.set(requestReference, {
+      uid,
+      currentName,
+      requestedName: normalizedName,
+      status: "pending",
+      createdAt: serverTimestamp(),
+      resolvedAt: null,
+      resolvedBy: "",
+      adminNote: ""
+    });
+    transaction.update(profileReference, {
+      pendingNameRequestId: requestReference.id,
+      updatedAt: serverTimestamp()
+    });
+    return {
+      kind: "requested",
+      requestId: requestReference.id,
+      currentName,
+      requestedName: normalizedName
+    };
+  });
 }
 
 async function saveRemoteProfile(uid, avatar, existingData = null, displayName = state.user?.name) {
@@ -4251,14 +4676,18 @@ async function saveRemoteProfile(uid, avatar, existingData = null, displayName =
   const normalizedName = normalizeDisplayName(displayName);
   if (!validDisplayName(normalizedName)) throw new Error("Nieprawidłowa nazwa gracza");
   const { doc, setDoc, serverTimestamp } = state.firebaseModules;
-  await setDoc(doc(state.db, "profiles", uid), {
+  const payload = {
     uid,
     displayName: normalizedName,
     avatarType: normalized.type,
     avatarValue: normalized.value,
     joinedAt: existingData?.joinedAt || serverTimestamp(),
     updatedAt: serverTimestamp()
-  });
+  };
+  if (typeof existingData?.selfRenameUsed !== "boolean") payload.selfRenameUsed = false;
+  if (typeof existingData?.pendingNameRequestId !== "string") payload.pendingNameRequestId = "";
+  if (!Number.isInteger(existingData?.nameVersion) || existingData.nameVersion < 0) payload.nameVersion = 0;
+  await setDoc(doc(state.db, "profiles", uid), payload, { merge: true });
   await syncOwnLeaderboardIdentity(uid, normalizedName, normalized);
 }
 
@@ -4286,6 +4715,444 @@ async function loadRemoteProfile(uid) {
   if (!snapshot.exists()) return null;
   const data = snapshot.data();
   return { data, avatar: normalizeAvatar(data) };
+}
+
+function stopOwnProfileRealtime() {
+  ownProfileUnsubscribe?.();
+  ownProfileUnsubscribe = null;
+  ownProfileRequestRevision += 1;
+}
+
+function startOwnProfileRealtime(uid) {
+  stopOwnProfileRealtime();
+  if (!uid || state.auth?.currentUser?.uid !== uid || state.user?.uid !== uid || !state.db || !state.firebaseModules) return;
+  const { doc, onSnapshot } = state.firebaseModules;
+  ownProfileUnsubscribe = onSnapshot(doc(state.db, "profiles", uid), (snapshot) => {
+    if (!snapshot.exists() || state.auth?.currentUser?.uid !== uid || state.user?.uid !== uid) return;
+    const data = snapshot.data({ serverTimestamps: "estimate" });
+    const nextName = normalizeDisplayName(data?.displayName).slice(0, MAX_DISPLAY_NAME_LENGTH);
+    const nextAvatar = normalizeAvatar(data) || { ...DEFAULT_AVATAR };
+    const nextPolicy = normalizeProfileNamePolicy(data);
+    const pendingChanged = nextPolicy.pendingNameRequestId !== state.profileNamePolicy.pendingNameRequestId;
+    const identityChanged = Boolean(nextName && nextName !== state.user.name)
+      || nextAvatar.type !== state.avatar.type
+      || nextAvatar.value !== state.avatar.value;
+    const policyChanged = nextPolicy.selfRenameUsed !== state.profileNamePolicy.selfRenameUsed
+      || nextPolicy.nameVersion !== state.profileNamePolicy.nameVersion
+      || pendingChanged;
+
+    if (nextName) state.user.name = nextName;
+    state.avatar = nextAvatar;
+    state.profileNamePolicy = nextPolicy;
+    state.chatProfiles[uid] = normalizePublicProfile(uid, {
+      displayName: state.user.name,
+      avatarType: nextAvatar.type,
+      avatarValue: nextAvatar.value
+    });
+    state.avatarsByUser[uid] = { ...nextAvatar };
+    if (identityChanged) save();
+    if (identityChanged) updateChatWidget({ keepScroll: true });
+
+    if (pendingChanged) {
+      const revision = ++ownProfileRequestRevision;
+      loadOwnNameRequest(uid, nextPolicy.pendingNameRequestId).finally(() => {
+        if (revision !== ownProfileRequestRevision || state.auth?.currentUser?.uid !== uid || state.user?.uid !== uid) return;
+        updateAuthButton();
+        if (["settings", "ranking"].includes(state.view)) render();
+      });
+      return;
+    }
+    if (identityChanged || policyChanged) {
+      updateAuthButton();
+      if (["settings", "ranking"].includes(state.view)) render();
+    }
+  }, (error) => {
+    console.warn("Aktualizacja profilu gracza na żywo jest chwilowo niedostępna:", error);
+  });
+}
+
+async function loadOwnNameRequest(uid, requestId) {
+  state.nameRequest = null;
+  state.nameRequestError = "";
+  if (!requestId) {
+    state.nameRequestStatus = "ready";
+    return null;
+  }
+  state.nameRequestStatus = "loading";
+  try {
+    const { doc, getDoc } = state.firebaseModules;
+    const snapshot = await getDoc(doc(state.db, "nameChangeRequests", requestId));
+    if (state.auth?.currentUser?.uid !== uid || state.user?.uid !== uid) return null;
+    const request = snapshot.exists() ? normalizeNameChangeRequest(snapshot.id, snapshot.data()) : null;
+    if (request && request.uid !== uid) throw new Error("Wniosek nie należy do tego konta.");
+    state.nameRequest = request;
+    state.nameRequestStatus = "ready";
+    return request;
+  } catch (error) {
+    if (state.auth?.currentUser?.uid === uid && state.user?.uid === uid) {
+      state.nameRequestStatus = "error";
+      state.nameRequestError = "Nie udało się pobrać szczegółów oczekującego wniosku.";
+    }
+    console.warn("Nie udało się pobrać wniosku o zmianę nicku:", error);
+    return null;
+  }
+}
+
+async function syncAuthenticatedProfileMetadata(uid) {
+  if (!uid || state.auth?.currentUser?.uid !== uid || state.user?.uid !== uid) return;
+  try {
+    await notificationApiRequest("/api/profile/sync", {});
+  } catch (error) {
+    reportNotificationSyncError("Nie udało się zsynchronizować prywatnych danych konta", error);
+  }
+  if (!isCurrentUserAdmin() || state.auth?.currentUser?.uid !== uid) return;
+  try {
+    await notificationApiRequest("/api/admin/bootstrap", {});
+  } catch (error) {
+    reportNotificationSyncError("Nie udało się przygotować danych panelu administratora", error);
+  }
+}
+
+function stopAdminNameRequestsRealtime({ reset = true } = {}) {
+  adminNameRequestsUnsubscribe?.();
+  adminNameRequestsUnsubscribe = null;
+  adminRequestsSnapshotReady = false;
+  adminPendingRequestIds = new Set();
+  if (!reset) return;
+  state.adminRequests = [];
+  state.adminRequestsStatus = "idle";
+  state.adminRequestsError = "";
+}
+
+function resetAdminClientState() {
+  stopAdminNameRequestsRealtime();
+  state.adminPlayers = [];
+  state.adminPlayersStatus = "idle";
+  state.adminPlayersError = "";
+  state.adminBusyId = "";
+  state.adminSearch = "";
+}
+
+function startAdminNameRequestsRealtime({ restart = false } = {}) {
+  if (restart) stopAdminNameRequestsRealtime({ reset: false });
+  if (adminNameRequestsUnsubscribe || !isCurrentUserAdmin() || !state.db || !state.firebaseModules) return;
+  const { collection, onSnapshot } = state.firebaseModules;
+  state.adminRequestsStatus = "loading";
+  state.adminRequestsError = "";
+  adminNameRequestsUnsubscribe = onSnapshot(collection(state.db, "nameChangeRequests"), (snapshot) => {
+    if (!isCurrentUserAdmin()) {
+      stopAdminNameRequestsRealtime();
+      return;
+    }
+    const requests = [];
+    snapshot.forEach((item) => {
+      const request = normalizeNameChangeRequest(item.id, item.data({ serverTimestamps: "estimate" }));
+      if (request) requests.push(request);
+    });
+    requests.sort((a, b) => {
+      if (a.status === "pending" && b.status !== "pending") return -1;
+      if (a.status !== "pending" && b.status === "pending") return 1;
+      return firestoreTimeMs(b.createdAt) - firestoreTimeMs(a.createdAt);
+    });
+    const nextPendingIds = new Set(requests.filter((request) => request.status === "pending").map((request) => request.id));
+    if (adminRequestsSnapshotReady) {
+      const newPending = requests.find((request) => request.status === "pending" && !adminPendingRequestIds.has(request.id));
+      if (newPending) notify(`Nowy wniosek o zmianę nicku: ${newPending.currentName} → ${newPending.requestedName}`);
+    }
+    adminPendingRequestIds = nextPendingIds;
+    adminRequestsSnapshotReady = true;
+    state.adminRequests = requests;
+    state.adminRequestsStatus = "ready";
+    state.adminRequestsError = "";
+    updateAuthButton();
+    if (state.view === "admin") render();
+  }, (error) => {
+    console.error("Lista wniosków o zmianę nicku jest niedostępna:", error);
+    state.adminRequestsStatus = "error";
+    state.adminRequestsError = "Nie udało się uruchomić aktualizacji wniosków na żywo.";
+    updateAuthButton();
+    if (state.view === "admin") render();
+  });
+}
+
+function normalizeAdminPrivatePlayer(value = {}) {
+  const uid = typeof value?.uid === "string" ? value.uid : "";
+  if (!uid) return null;
+  return {
+    uid,
+    email: typeof value?.email === "string" ? value.email.trim().slice(0, 320) : "",
+    googleName: normalizeDisplayName(value?.googleName).slice(0, 120),
+    lastSeenAt: value?.lastSeenAt || null,
+    hasProfile: false
+  };
+}
+
+async function loadAdminPlayers({ force = false } = {}) {
+  if (!isCurrentUserAdmin() || !state.db || !state.firebaseModules) return;
+  if (!force && state.adminPlayersStatus === "loading") return;
+  state.adminPlayersStatus = "loading";
+  state.adminPlayersError = "";
+  if (state.view === "admin") render();
+  const { collection, getDocs } = state.firebaseModules;
+  const [privateResult, profilesResult] = await Promise.allSettled([
+    notificationApiRequest("/api/admin/players", {}, { method: "GET" }),
+    getDocs(collection(state.db, "profiles"))
+  ]);
+  if (!isCurrentUserAdmin()) return;
+  if (privateResult.status === "rejected" && profilesResult.status === "rejected") {
+    state.adminPlayers = [];
+    state.adminPlayersStatus = "error";
+    state.adminPlayersError = "Nie udało się pobrać ani danych kont, ani publicznych profili.";
+    if (state.view === "admin") render();
+    return;
+  }
+
+  const byUid = new Map();
+  if (privateResult.status === "fulfilled") {
+    const privatePlayers = Array.isArray(privateResult.value?.players) ? privateResult.value.players : [];
+    privatePlayers.forEach((value) => {
+      const player = normalizeAdminPrivatePlayer(value);
+      if (player) byUid.set(player.uid, { ...player });
+    });
+  }
+  if (profilesResult.status === "fulfilled") {
+    profilesResult.value.forEach((snapshot) => {
+      const data = snapshot.data({ serverTimestamps: "estimate" });
+      const previous = byUid.get(snapshot.id) || { uid: snapshot.id, email: "", googleName: "", lastSeenAt: null };
+      const policy = normalizeProfileNamePolicy(data);
+      byUid.set(snapshot.id, {
+        ...previous,
+        hasProfile: true,
+        displayName: normalizeDisplayName(data?.displayName).slice(0, MAX_DISPLAY_NAME_LENGTH),
+        avatarType: typeof data?.avatarType === "string" ? data.avatarType : "",
+        avatarValue: typeof data?.avatarValue === "string" ? data.avatarValue : "",
+        ...policy
+      });
+    });
+  }
+  state.adminRequests.forEach((request) => {
+    if (!byUid.has(request.uid)) {
+      byUid.set(request.uid, {
+        uid: request.uid,
+        email: "",
+        googleName: "",
+        lastSeenAt: null,
+        hasProfile: false,
+        displayName: request.currentName,
+        selfRenameUsed: true,
+        pendingNameRequestId: request.status === "pending" ? request.id : "",
+        nameVersion: 0
+      });
+    }
+  });
+  state.adminPlayers = [...byUid.values()].sort((a, b) => (
+    String(a.displayName || a.googleName || a.email || a.uid)
+      .localeCompare(String(b.displayName || b.googleName || b.email || b.uid), "pl", { sensitivity: "base" })
+  ));
+  state.adminPlayersStatus = "ready";
+  const partialErrors = [];
+  if (privateResult.status === "rejected") partialErrors.push("Prywatne dane kont są chwilowo niedostępne.");
+  if (profilesResult.status === "rejected") partialErrors.push("Publiczne profile są chwilowo niedostępne.");
+  state.adminPlayersError = partialErrors.join(" ");
+  if (state.view === "admin") render();
+}
+
+function filterAdminPlayers(event) {
+  const input = event?.currentTarget || document.querySelector("#adminPlayerSearch");
+  if (!input) return;
+  state.adminSearch = String(input.value || "").trim();
+  const queryValue = state.adminSearch.toLocaleLowerCase("pl");
+  let visible = 0;
+  app.querySelectorAll("[data-admin-player]").forEach((card) => {
+    const matches = !queryValue || card.textContent.toLocaleLowerCase("pl").includes(queryValue);
+    card.hidden = !matches;
+    if (matches) visible += 1;
+  });
+  const empty = app.querySelector("[data-admin-search-empty]");
+  if (empty) empty.hidden = visible > 0;
+}
+
+function normalizeAdminNote(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 300);
+}
+
+async function resolveAdminNameRequest(requestId, decision, adminNote = "") {
+  if (!isCurrentUserAdmin() || !["approved", "rejected"].includes(decision)) throw new Error("Brak uprawnień administratora.");
+  const { doc, runTransaction, serverTimestamp } = state.firebaseModules;
+  const requestReference = doc(state.db, "nameChangeRequests", requestId);
+  return runTransaction(state.db, async (transaction) => {
+    const requestSnapshot = await transaction.get(requestReference);
+    const request = requestSnapshot.exists() ? normalizeNameChangeRequest(requestSnapshot.id, requestSnapshot.data()) : null;
+    if (!request || request.status !== "pending") {
+      const error = new Error("Wniosek został już rozpatrzony albo nie istnieje.");
+      error.code = "admin/request-resolved";
+      throw error;
+    }
+    const profileReference = doc(state.db, "profiles", request.uid);
+    const leaderboardReference = doc(state.db, "seasons", SEASON_ID, "leaderboard", request.uid);
+    const [profileSnapshot, leaderboardSnapshot] = await Promise.all([
+      transaction.get(profileReference),
+      transaction.get(leaderboardReference)
+    ]);
+    if (!profileSnapshot.exists()) throw new Error("Profil gracza nie istnieje.");
+    const profile = profileSnapshot.data();
+    const policy = normalizeProfileNamePolicy(profile);
+    if (decision === "approved") {
+      if (policy.pendingNameRequestId !== requestId) {
+        const error = new Error("Wniosek nie jest już aktywnym wnioskiem tego gracza.");
+        error.code = "admin/request-stale";
+        throw error;
+      }
+      if (!leaderboardSnapshot.exists()) throw new Error("Gracz nie ma wpisu w rankingu.");
+      const nextVersion = policy.nameVersion + 1;
+      transaction.update(profileReference, {
+        displayName: request.requestedName,
+        pendingNameRequestId: "",
+        nameVersion: nextVersion,
+        updatedAt: serverTimestamp()
+      });
+      transaction.update(leaderboardReference, {
+        displayName: request.requestedName,
+        updatedAt: serverTimestamp()
+      });
+    } else if (policy.pendingNameRequestId === requestId) {
+      transaction.update(profileReference, {
+        pendingNameRequestId: "",
+        updatedAt: serverTimestamp()
+      });
+    }
+    transaction.update(requestReference, {
+      status: decision,
+      resolvedAt: serverTimestamp(),
+      resolvedBy: state.user.uid,
+      adminNote
+    });
+    return {
+      requestId,
+      uid: request.uid,
+      status: decision,
+      currentName: request.currentName,
+      requestedName: request.requestedName,
+      adminNote
+    };
+  });
+}
+
+async function decideAdminNameRequest(event) {
+  const button = event.currentTarget;
+  const requestId = button.dataset.requestId || "";
+  const decision = button.dataset.adminRequestAction === "approve" ? "approved" : "rejected";
+  if (!requestId || state.adminBusyId || !isCurrentUserAdmin()) return;
+  const note = normalizeAdminNote(button.closest("[data-admin-request]")?.querySelector("[name='adminNote']")?.value);
+  state.adminBusyId = requestId;
+  render();
+  try {
+    const result = await resolveAdminNameRequest(requestId, decision, note);
+    await enqueueAndFlushNameEvent("name-decision", { requestId: result.requestId }, state.user.uid);
+    notify(decision === "approved" ? "Nick gracza został zatwierdzony." : "Wniosek został odrzucony.");
+    await loadAdminPlayers({ force: true });
+  } catch (error) {
+    console.error("Nie udało się rozpatrzyć wniosku:", error);
+    notify(error?.message || "Nie udało się rozpatrzyć wniosku.");
+  } finally {
+    if (isCurrentUserAdmin()) {
+      state.adminBusyId = "";
+      if (state.view === "admin") render();
+    }
+  }
+}
+
+async function editAdminPlayerName(uid, displayName) {
+  if (!isCurrentUserAdmin()) throw new Error("Brak uprawnień administratora.");
+  const normalizedName = normalizeDisplayName(displayName);
+  if (!validDisplayName(normalizedName)) throw new Error(`Nick musi mieć od 1 do ${MAX_DISPLAY_NAME_LENGTH} znaków.`);
+  const { doc, runTransaction, serverTimestamp } = state.firebaseModules;
+  const profileReference = doc(state.db, "profiles", uid);
+  const leaderboardReference = doc(state.db, "seasons", SEASON_ID, "leaderboard", uid);
+  return runTransaction(state.db, async (transaction) => {
+    const [profileSnapshot, leaderboardSnapshot] = await Promise.all([
+      transaction.get(profileReference),
+      transaction.get(leaderboardReference)
+    ]);
+    if (!profileSnapshot.exists()) throw new Error("Profil gracza nie istnieje.");
+    if (!leaderboardSnapshot.exists()) throw new Error("Gracz nie ma wpisu w rankingu.");
+    const profile = profileSnapshot.data();
+    const previousName = normalizeDisplayName(profile.displayName);
+    if (previousName === normalizedName) throw new Error("To już jest aktualny nick gracza.");
+    const policy = normalizeProfileNamePolicy(profile);
+    let pendingRequestReference = null;
+    let pendingRequest = null;
+    if (policy.pendingNameRequestId) {
+      pendingRequestReference = doc(state.db, "nameChangeRequests", policy.pendingNameRequestId);
+      const pendingSnapshot = await transaction.get(pendingRequestReference);
+      pendingRequest = pendingSnapshot.exists()
+        ? normalizeNameChangeRequest(pendingSnapshot.id, pendingSnapshot.data())
+        : null;
+    }
+    const nextVersion = policy.nameVersion + 1;
+    transaction.update(profileReference, {
+      displayName: normalizedName,
+      selfRenameUsed: policy.selfRenameUsed,
+      pendingNameRequestId: "",
+      nameVersion: nextVersion,
+      updatedAt: serverTimestamp()
+    });
+    transaction.update(leaderboardReference, {
+      displayName: normalizedName,
+      updatedAt: serverTimestamp()
+    });
+    if (pendingRequestReference && pendingRequest?.status === "pending") {
+      transaction.update(pendingRequestReference, {
+        status: "rejected",
+        resolvedAt: serverTimestamp(),
+        resolvedBy: state.user.uid,
+        adminNote: "Nick został zmieniony bezpośrednio przez administratora."
+      });
+    }
+    return {
+      uid,
+      previousName,
+      displayName: normalizedName,
+      nameVersion: nextVersion,
+      rejectedRequestId: pendingRequest?.status === "pending" ? pendingRequest.id : ""
+    };
+  });
+}
+
+async function saveAdminDisplayName(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const uid = form.dataset.adminNameForm || "";
+  const nextName = normalizeDisplayName(form.querySelector("[name='displayName']")?.value);
+  if (!uid || state.adminBusyId || !isCurrentUserAdmin()) return;
+  if (!validDisplayName(nextName)) {
+    notify(`Nick musi mieć od 1 do ${MAX_DISPLAY_NAME_LENGTH} znaków.`);
+    return;
+  }
+  state.adminBusyId = uid;
+  render();
+  try {
+    const result = await editAdminPlayerName(uid, nextName);
+    await enqueueAndFlushNameEvent("admin-name-edited", {
+      uid: result.uid,
+      nameVersion: result.nameVersion
+    }, state.user.uid);
+    notify("Nick gracza został zmieniony przez administratora.");
+    await loadAdminPlayers({ force: true });
+  } catch (error) {
+    console.error("Nie udało się zmienić nicku gracza:", error);
+    notify(error?.message || "Nie udało się zmienić nicku gracza.");
+  } finally {
+    if (isCurrentUserAdmin()) {
+      state.adminBusyId = "";
+      if (state.view === "admin") render();
+    }
+  }
 }
 
 async function migrateLegacyLocalPredictions(uid) {
@@ -4525,6 +5392,12 @@ document.addEventListener("click", (event) => {
   if (event.target.closest?.("[data-account-settings]")) {
     document.querySelector("#accountDialog")?.close();
     setView("settings");
+    return;
+  }
+
+  if (event.target.closest?.("[data-account-admin]")) {
+    document.querySelector("#accountDialog")?.close();
+    if (isCurrentUserAdmin()) setView("admin");
     return;
   }
 

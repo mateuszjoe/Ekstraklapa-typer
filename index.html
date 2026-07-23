@@ -40,7 +40,7 @@
       @keyframes loader-dot { 0%, 70%, 100% { opacity: .25; transform: translateY(0); } 35% { opacity: 1; transform: translateY(-3px); } }
       @media (prefers-reduced-motion: reduce) { .loader-emblem::before, .loader-emblem img, .loader-track i, .loader-status i { animation: none; } }
     </style>
-    <link rel="stylesheet" href="./styles.css?v=24" />
+    <link rel="stylesheet" href="./styles.css?v=25" />
   </head>
   <body>
     <div id="appLoader" role="status" aria-live="polite" aria-label="Wczytywanie Ekstraklapa Typer">
@@ -64,6 +64,7 @@
         <a href="#ranking" class="nav-link" data-view="ranking">Ranking</a>
         <a href="#rules" class="nav-link" data-view="rules">Zasady</a>
         <a href="#settings" class="nav-link" data-view="settings">Ustawienia</a>
+        <a href="#admin" class="nav-link nav-admin" data-view="admin" data-admin-nav hidden>Panel admina <span class="nav-admin-badge" data-admin-badge hidden>0</span></a>
         <div class="nav-account-summary" hidden><span>Zalogowano jako</span><strong id="mobileAccountName">Gracz</strong></div>
         <button type="button" class="nav-link nav-signout" data-sign-out hidden>Wyloguj się</button>
       </nav>
@@ -98,6 +99,7 @@
       <h2 id="accountName">Gracz</h2>
       <p class="modal-copy" id="accountDetails">Zalogowano przez Google</p>
       <button type="button" class="provider account-settings" data-account-settings>Ustawienia profilu</button>
+      <button type="button" class="provider account-admin" data-account-admin hidden>Panel administratora</button>
       <button type="button" class="provider signout" data-sign-out>WYLOGUJ SIĘ Z TYPERA</button>
     </dialog>
 
@@ -124,6 +126,6 @@
 
     <dialog id="matchDialog" class="modal match-modal"></dialog>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="./app.js?v=28"></script>
+    <script type="module" src="./app.js?v=29"></script>
   </body>
 </html>

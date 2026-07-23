@@ -12,6 +12,7 @@ const webpush = webpushPackage?.default || webpushPackage;
 const SEASON_ID = "2026-27";
 const FIREBASE_PROJECT_ID = "ekstraklasa-typer-2026-27";
 const PUBLIC_FIREBASE_API_KEY = "AIzaSyD3kgRWw3BROjcmulITWFXKcePgvhtpIDY";
+const ADMIN_EMAIL = "mateuszjoe@gmail.com";
 const VAPID_PUBLIC_KEY = "BHxWAMhHw3KJBpTqgJZK38Kr-fPA_dvKIYurfBjxTfuw9ie4D9I0cpYR8S9-5FEmzDYoLoBwdutcR_kLW7cADd0";
 const VAPID_SUBJECT = "mailto:mateuszjoe@gmail.com";
 const MAX_BODY_BYTES = 64 * 1024;
@@ -34,8 +35,10 @@ const NEXT_LEAGUE_REFRESH_STATE_KEY = "next_official_league_refresh_at";
 const LEAGUE_REFRESH_MS = 5 * 60 * 1000;
 const LINEUP_POLL_WINDOW_MS = 120 * 60 * 1000;
 const FRESH_STORED_LINEUP_MS = 45 * 1000;
+const ADMIN_NOTIFICATION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const FINAL_STATUSES = new Set(["FT", "AWD"]);
 const VALID_PICKS = new Set(["1", "X", "2"]);
+const ADMIN_NOTIFICATION_TYPES = new Set(["admin-name-request", "admin-name-changed"]);
 const MATCH_BY_ID = new Map(matches.map((match) => [match.id, match]));
 const TEAM_BY_ID = new Map(teams.map((team) => [team.id, team]));
 
@@ -50,6 +53,30 @@ class HttpError extends Error {
 function compactText(value, limit = 160) {
   const text = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
   return text.length <= limit ? text : `${text.slice(0, Math.max(0, limit - 1)).trimEnd()}…`;
+}
+
+function normalizedEmail(value) {
+  const email = typeof value === "string" ? value.normalize("NFKC").trim().toLowerCase() : "";
+  if (email.length < 3 || email.length > 254 || /[\u0000-\u0020\u007f]/.test(email)) return "";
+  return /^[^@]+@[^@]+\.[^@]+$/.test(email) ? email : "";
+}
+
+function normalizedGoogleName(value) {
+  const name = typeof value === "string"
+    ? value.normalize("NFKC").replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim()
+    : "";
+  return (name || "Gracz").slice(0, 120);
+}
+
+function normalizedPlayerName(value) {
+  if (typeof value !== "string" || value.length < 1 || value.length > 40 || /[\u0000-\u001f\u007f]/.test(value)) {
+    throw new HttpError(409, "invalid-player-name", "Nazwa gracza zapisana w profilu jest nieprawidłowa.");
+  }
+  const name = value.normalize("NFKC").replace(/\s+/g, " ").trim();
+  if (!name || name.length > 40) {
+    throw new HttpError(409, "invalid-player-name", "Nazwa gracza zapisana w profilu jest nieprawidłowa.");
+  }
+  return name;
 }
 
 function appUrl(env, suffix = "") {
@@ -129,13 +156,24 @@ async function firebaseUser(request, env) {
   });
   const payload = await response.json().catch(() => ({}));
   const user = payload?.users?.[0];
-  const googleProvider = user?.providerUserInfo?.some((provider) => provider?.providerId === "google.com");
-  if (!response.ok || !user?.localId || user.emailVerified !== true || !googleProvider || user.disabled === true) {
+  const googleProvider = user?.providerUserInfo?.find((provider) => provider?.providerId === "google.com");
+  const email = normalizedEmail(googleProvider?.email);
+  const accountEmail = normalizedEmail(user?.email);
+  if (!response.ok
+    || !user?.localId
+    || user.emailVerified !== true
+    || !googleProvider
+    || !email
+    || (accountEmail && accountEmail !== email)
+    || user.disabled === true) {
     throw new HttpError(401, "unauthenticated", "Sesja Google wygasła lub jest nieprawidłowa.");
   }
+  const googleName = normalizedGoogleName(googleProvider.displayName || user.displayName);
   return {
     uid: String(user.localId),
-    displayName: compactText(user.displayName || "Gracz", 60) || "Gracz",
+    email,
+    googleName,
+    displayName: googleName,
     token
   };
 }
@@ -203,6 +241,131 @@ async function authenticatedParticipant(request, env) {
     throw new HttpError(403, "participant-disabled", "To konto zostało wyłączone z typera.");
   }
   return { ...user, participant };
+}
+
+function isAdminUser(user) {
+  return user?.email === ADMIN_EMAIL;
+}
+
+async function authenticatedAdmin(request, env) {
+  const user = await authenticatedParticipant(request, env);
+  if (!isAdminUser(user)) {
+    throw new HttpError(403, "admin-required", "Ten panel jest dostępny wyłącznie dla administratora.");
+  }
+  return user;
+}
+
+function exactBodyFields(body, fields) {
+  const keys = Object.keys(body || {}).sort();
+  const expected = [...fields].sort();
+  if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) {
+    throw new HttpError(400, "invalid-fields", "Żądanie zawiera nieprawidłowe pola.");
+  }
+}
+
+function positiveNameVersion(value) {
+  const version = Number(value);
+  if (!Number.isInteger(version) || version < 1 || version > 1_000_000_000) {
+    throw new HttpError(400, "invalid-name-version", "Nieprawidłowa wersja nazwy gracza.");
+  }
+  return version;
+}
+
+function firestoreTimeMs(value, fallback = "") {
+  const timestamp = new Date(value || fallback || 0).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function requestOwnerUid(data) {
+  const candidates = [data?.uid, data?.requesterUid]
+    .filter((value) => typeof value === "string" && value.trim())
+    .map((value) => value.trim());
+  const unique = [...new Set(candidates)];
+  if (unique.length !== 1) {
+    throw new HttpError(409, "invalid-request-owner", "Wniosek nie ma jednoznacznego właściciela.");
+  }
+  return safeDocumentSegment(unique[0], "uid gracza");
+}
+
+async function upsertPlayerIdentity(env, user) {
+  const now = Date.now();
+  const statements = [
+    env.DB.prepare(`
+      INSERT INTO player_identities
+        (uid, google_email, google_full_name, first_seen_at, last_seen_at)
+      VALUES (?1, ?2, ?3, ?4, ?4)
+      ON CONFLICT(uid) DO UPDATE SET
+        google_email = excluded.google_email,
+        google_full_name = excluded.google_full_name,
+        last_seen_at = excluded.last_seen_at
+    `).bind(user.uid, user.email, user.googleName, now)
+  ];
+  if (isAdminUser(user)) {
+    statements.push(env.DB.prepare(`
+      INSERT INTO notification_admins
+        (email, uid, verified_at, updated_at)
+      VALUES (?1, ?2, ?3, ?3)
+      ON CONFLICT(email) DO UPDATE SET
+        uid = excluded.uid,
+        verified_at = excluded.verified_at,
+        updated_at = excluded.updated_at
+    `).bind(ADMIN_EMAIL, user.uid, now));
+    statements.push(env.DB.prepare(`
+      UPDATE notification_events
+      SET target_uid = ?1, updated_at = ?2
+      WHERE kind IN ('admin-name-request', 'admin-name-changed')
+        AND status IN ('pending', 'failed')
+        AND target_uid != ?1
+    `).bind(user.uid, now));
+  }
+  await env.DB.batch(statements);
+  return now;
+}
+
+async function configuredAdminUid(env) {
+  const row = await env.DB.prepare(`
+    SELECT uid FROM notification_admins WHERE email = ?1 LIMIT 1
+  `).bind(ADMIN_EMAIL).first();
+  const uid = typeof row?.uid === "string" ? row.uid.trim() : "";
+  if (!uid) {
+    throw new HttpError(503, "admin-not-ready", "Kanał administratora nie jest jeszcze gotowy. Spróbuj ponownie za chwilę.");
+  }
+  return uid;
+}
+
+async function profileSync(request, env) {
+  const user = await authenticatedParticipant(request, env);
+  await consumeRateLimit(env, user.uid, "profile-sync", 20);
+  await upsertPlayerIdentity(env, user);
+  return { status: "synced", uid: user.uid, admin: isAdminUser(user) };
+}
+
+async function adminBootstrap(request, env) {
+  const user = await authenticatedAdmin(request, env);
+  await consumeRateLimit(env, user.uid, "admin-bootstrap", 12);
+  await upsertPlayerIdentity(env, user);
+  const pendingScheduled = await wakePendingAdminEvents(env, user.uid);
+  return { status: "ready", uid: user.uid, pendingScheduled };
+}
+
+async function adminPlayers(request, env) {
+  const user = await authenticatedAdmin(request, env);
+  await consumeRateLimit(env, user.uid, "admin-players", 30);
+  await upsertPlayerIdentity(env, user);
+  const result = await env.DB.prepare(`
+    SELECT uid, google_email, google_full_name, last_seen_at
+    FROM player_identities
+    ORDER BY google_full_name COLLATE NOCASE, google_email COLLATE NOCASE, uid
+    LIMIT 500
+  `).all();
+  return {
+    players: (result.results || []).map((row) => ({
+      uid: String(row.uid || ""),
+      email: String(row.google_email || ""),
+      googleName: String(row.google_full_name || ""),
+      lastSeenAt: new Date(Number(row.last_seen_at) || 0).toISOString()
+    }))
+  };
 }
 
 async function consumeRateLimit(env, uid, bucket, limit, windowMs = 60 * 1000) {
@@ -310,6 +473,7 @@ function createRotationToken() {
 async function registerSubscription(request, env) {
   const user = await authenticatedParticipant(request, env);
   await consumeRateLimit(env, user.uid, "push-register", 12);
+  await upsertPlayerIdentity(env, user);
   const body = await jsonBody(request);
   const subscription = normalizedSubscription(body.subscription || body);
   const id = await subscriptionId(subscription.endpoint);
@@ -345,7 +509,8 @@ async function registerSubscription(request, env) {
       SELECT id FROM subscriptions WHERE uid = ?1 ORDER BY updated_at DESC, id DESC LIMIT ?2
     )
   `).bind(user.uid, MAX_SUBSCRIPTIONS_PER_USER).run();
-  return { status: "registered", subscriptionId: id, rotationToken };
+  const pendingScheduled = isAdminUser(user) ? await wakePendingAdminEvents(env, user.uid) : 0;
+  return { status: "registered", subscriptionId: id, rotationToken, pendingScheduled };
 }
 
 async function unregisterSubscription(request, env) {
@@ -618,6 +783,34 @@ async function scheduleEventDispatch(env, eventKey, delaySeconds = 0) {
   await queue.send({ type: "dispatch", eventKey }, options);
 }
 
+async function wakePendingAdminEvents(env, adminUid) {
+  if (!env.VAPID_PRIVATE_KEY) return 0;
+  const result = await env.DB.prepare(`
+    SELECT event_key
+    FROM notification_events
+    WHERE target_uid = ?1
+      AND kind IN ('admin-name-request', 'admin-name-changed')
+      AND (
+        status = 'pending'
+        OR (status = 'processing' AND lease_until <= ?2)
+        OR (status = 'failed' AND attempts < ?3)
+      )
+    ORDER BY updated_at, created_at, event_key
+    LIMIT 12
+  `).bind(adminUid, Date.now(), MAX_EVENT_ATTEMPTS).all();
+  const eventKeys = (result.results || [])
+    .map((row) => row.event_key)
+    .filter((eventKey) => typeof eventKey === "string" && eventKey.length <= 220);
+  if (!eventKeys.length) return 0;
+  const queue = requireNotificationQueue(env);
+  if (typeof queue.sendBatch === "function") {
+    await queue.sendBatch(eventKeys.map((eventKey) => ({ body: { type: "dispatch", eventKey } })));
+  } else {
+    for (const eventKey of eventKeys) await scheduleEventDispatch(env, eventKey);
+  }
+  return eventKeys.length;
+}
+
 async function enqueueAndScheduleEvent(env, eventKey, kind, payload, recipientFilter = {}) {
   const inserted = await enqueueEvent(env, eventKey, kind, payload, recipientFilter);
   if (!env.VAPID_PRIVATE_KEY) {
@@ -687,7 +880,11 @@ async function pushTopic(eventKey) {
 }
 
 function pushPayload(env, payload) {
-  const { recipientBefore: _recipientBefore, ...publicPayload } = payload;
+  const {
+    recipientBefore: _recipientBefore,
+    expiresAt: _expiresAt,
+    ...publicPayload
+  } = payload;
   return {
     ...publicPayload,
     title: compactText(payload.title, 80),
@@ -699,6 +896,10 @@ function pushPayload(env, payload) {
 }
 
 function pushTtlSeconds(payload) {
+  if (ADMIN_NOTIFICATION_TYPES.has(payload.type)
+    || ["name-change-approved", "name-change-rejected", "name-change-admin-edited"].includes(payload.type)) {
+    return 7 * 24 * 60 * 60;
+  }
   if (["match-result", "matchday-summary"].includes(payload.type)) return 72 * 60 * 60;
   if (["chat-message", "player-joined"].includes(payload.type)) return 24 * 60 * 60;
   if (payload.type === "lineup-published") {
@@ -768,12 +969,14 @@ async function dispatchEvent(env, eventKey, kind, payload, recipientFilter = {},
       await markEvent(env, eventKey, "failed", claim.leaseToken);
       throw new Error("One or more Web Push deliveries failed");
     }
-    const nextStatus = selected.capped ? "pending" : "completed";
+    const sent = outcomes.filter((outcome) => outcome.status === "sent").length;
+    const waitingForAdmin = ADMIN_NOTIFICATION_TYPES.has(payload.type) && sent === 0 && !selected.capped;
+    const nextStatus = waitingForAdmin || selected.capped ? "pending" : "completed";
     const completed = await markEvent(env, eventKey, nextStatus, claim.leaseToken);
     if (completed.meta?.changes !== 1) throw new Error("Notification event lease was lost");
     return {
-      status: nextStatus,
-      sent: outcomes.filter((outcome) => outcome.status === "sent").length,
+      status: waitingForAdmin ? "waiting-recipient" : nextStatus,
+      sent,
       invalid: invalid.length,
       capped: selected.capped
     };
@@ -832,6 +1035,149 @@ async function chatMessage(request, env) {
     body: notificationBodyForChat(message.data),
     url: appUrl(env, "?chat=open#matches")
   }, { excludeUid: user.uid });
+}
+
+async function nameChangeRequest(request, env) {
+  const user = await authenticatedParticipant(request, env);
+  await consumeRateLimit(env, user.uid, "name-change-request", 5, 24 * 60 * 60 * 1000);
+  const body = await jsonBody(request);
+  exactBodyFields(body, ["requestId"]);
+  const requestId = safeDocumentSegment(body.requestId, "requestId");
+  const requestDocument = await firestoreDocument(env, user.token, ["nameChangeRequests", requestId], 404);
+  const ownerUid = requestOwnerUid(requestDocument.data);
+  if (requestDocument.id !== requestId || ownerUid !== user.uid) {
+    throw new HttpError(403, "request-owner-mismatch", "Wniosek nie należy do zalogowanego gracza.");
+  }
+  if (String(requestDocument.data.status || "").trim().toLowerCase() !== "pending") {
+    throw new HttpError(409, "request-not-pending", "Ten wniosek nie oczekuje już na decyzję.");
+  }
+  const createdAt = firestoreTimeMs(requestDocument.data.createdAt, requestDocument.createTime);
+  if (!createdAt
+    || createdAt < Date.now() - ADMIN_NOTIFICATION_RETENTION_MS
+    || createdAt > Date.now() + 2 * 60 * 1000) {
+    throw new HttpError(409, "stale-name-request", "Wniosek jest zbyt stary albo ma nieprawidłową datę.");
+  }
+  const requestedName = normalizedPlayerName(requestDocument.data.requestedName);
+  const profile = await firestoreDocument(env, user.token, ["profiles", user.uid]);
+  if (profile.data.uid !== user.uid) {
+    throw new HttpError(409, "invalid-profile", "Profil gracza jest nieprawidłowy.");
+  }
+  const currentName = normalizedPlayerName(profile.data.displayName);
+  await upsertPlayerIdentity(env, user);
+  const adminUid = await configuredAdminUid(env);
+  return enqueueAndScheduleEvent(env, `admin-name-request:${requestId}`, "admin-name-request", {
+    type: "admin-name-request",
+    requestId,
+    playerUid: user.uid,
+    title: "Nowy wniosek o zmianę nicku",
+    body: `${currentName} prosi o zmianę nazwy na „${requestedName}”.`,
+    url: appUrl(env, "#admin"),
+    expiresAt: Date.now() + ADMIN_NOTIFICATION_RETENTION_MS
+  }, { uid: adminUid });
+}
+
+async function playerNameChanged(request, env) {
+  const user = await authenticatedParticipant(request, env);
+  await consumeRateLimit(env, user.uid, "player-name-changed", 5, 24 * 60 * 60 * 1000);
+  const body = await jsonBody(request);
+  exactBodyFields(body, ["nameVersion"]);
+  const nameVersion = positiveNameVersion(body.nameVersion);
+  const profile = await firestoreDocument(env, user.token, ["profiles", user.uid]);
+  if (profile.data.uid !== user.uid
+    || Number(profile.data.nameVersion) !== nameVersion
+    || profile.data.selfRenameUsed !== true) {
+    throw new HttpError(409, "name-version-mismatch", "Profil nie potwierdza tej zmiany nazwy.");
+  }
+  const displayName = normalizedPlayerName(profile.data.displayName);
+  await upsertPlayerIdentity(env, user);
+  const adminUid = await configuredAdminUid(env);
+  return enqueueAndScheduleEvent(
+    env,
+    `admin-name-changed:${user.uid}:${nameVersion}`,
+    "admin-name-changed",
+    {
+      type: "admin-name-changed",
+      playerUid: user.uid,
+      nameVersion,
+      title: "Gracz zmienił swój nick",
+      body: `Nowa nazwa gracza: „${displayName}”.`,
+      url: appUrl(env, "#admin"),
+      expiresAt: Date.now() + ADMIN_NOTIFICATION_RETENTION_MS
+    },
+    { uid: adminUid }
+  );
+}
+
+async function nameChangeDecision(request, env) {
+  const user = await authenticatedAdmin(request, env);
+  await consumeRateLimit(env, user.uid, "name-change-decision", 30);
+  const body = await jsonBody(request);
+  exactBodyFields(body, ["requestId"]);
+  const requestId = safeDocumentSegment(body.requestId, "requestId");
+  const requestDocument = await firestoreDocument(env, user.token, ["nameChangeRequests", requestId], 404);
+  const status = String(requestDocument.data.status || "").trim().toLowerCase();
+  if (!["approved", "rejected"].includes(status)) {
+    throw new HttpError(409, "request-not-resolved", "Wniosek nie został jeszcze rozstrzygnięty.");
+  }
+  const ownerUid = requestOwnerUid(requestDocument.data);
+  const resolvedBy = typeof requestDocument.data.resolvedBy === "string"
+    ? requestDocument.data.resolvedBy.trim()
+    : "";
+  if (!resolvedBy || resolvedBy !== user.uid) {
+    throw new HttpError(409, "decision-owner-mismatch", "Decyzja nie została jednoznacznie potwierdzona przez administratora.");
+  }
+  const requestedName = status === "approved"
+    ? normalizedPlayerName(requestDocument.data.requestedName)
+    : "";
+  await upsertPlayerIdentity(env, user);
+  const approved = status === "approved";
+  return enqueueAndScheduleEvent(
+    env,
+    `name-change-decision:${requestId}:${status}`,
+    approved ? "name-change-approved" : "name-change-rejected",
+    {
+      type: approved ? "name-change-approved" : "name-change-rejected",
+      requestId,
+      nameVersion: Number(requestDocument.data.nameVersion) || undefined,
+      title: approved ? "Zmiana nicku zaakceptowana" : "Zmiana nicku odrzucona",
+      body: approved
+        ? `Twój nick został zmieniony na „${requestedName}”.`
+        : "Administrator odrzucił Twój wniosek o zmianę nicku.",
+      url: appUrl(env, "#settings"),
+      expiresAt: Date.now() + ADMIN_NOTIFICATION_RETENTION_MS
+    },
+    { uid: ownerUid }
+  );
+}
+
+async function adminNameEdited(request, env) {
+  const user = await authenticatedAdmin(request, env);
+  await consumeRateLimit(env, user.uid, "admin-name-edited", 30);
+  const body = await jsonBody(request);
+  exactBodyFields(body, ["uid", "nameVersion"]);
+  const targetUid = safeDocumentSegment(body.uid, "uid gracza");
+  const nameVersion = positiveNameVersion(body.nameVersion);
+  const profile = await firestoreDocument(env, user.token, ["profiles", targetUid], 404);
+  if (profile.data.uid !== targetUid || Number(profile.data.nameVersion) !== nameVersion) {
+    throw new HttpError(409, "name-version-mismatch", "Profil nie potwierdza tej zmiany nazwy.");
+  }
+  const displayName = normalizedPlayerName(profile.data.displayName);
+  await upsertPlayerIdentity(env, user);
+  return enqueueAndScheduleEvent(
+    env,
+    `name-change-admin-edited:${targetUid}:${nameVersion}`,
+    "name-change-admin-edited",
+    {
+      type: "name-change-admin-edited",
+      playerUid: targetUid,
+      nameVersion,
+      title: "Administrator zmienił Twój nick",
+      body: `Twoja aktualna nazwa gracza to „${displayName}”.`,
+      url: appUrl(env, "#settings"),
+      expiresAt: Date.now() + ADMIN_NOTIFICATION_RETENTION_MS
+    },
+    { uid: targetUid }
+  );
 }
 
 function resultForScore(home, away) {
@@ -1372,6 +1718,18 @@ async function dispatchStoredEvent(env, eventKey) {
     console.error("Dropped event with invalid stored payload", { eventKey });
     return { status: "invalid-payload" };
   }
+  if (ADMIN_NOTIFICATION_TYPES.has(payload.type)) {
+    const expiresAt = Number(payload.expiresAt) || 0;
+    if (!expiresAt || expiresAt <= Date.now()) {
+      const now = Date.now();
+      await env.DB.prepare(`
+        UPDATE notification_events
+        SET status = 'completed', lease_until = 0, completed_at = ?2, updated_at = ?2
+        WHERE event_key = ?1
+      `).bind(eventKey, now).run();
+      return { status: "expired" };
+    }
+  }
   if (payload.type === "matchday-reminder") {
     const startsAt = new Date(payload.startsAt || 0).getTime();
     if (Number.isFinite(startsAt) && startsAt <= Date.now()) {
@@ -1555,14 +1913,23 @@ async function handleRequest(request, env) {
       "Cache-Control": "public, max-age=15, s-maxage=30, stale-while-revalidate=30"
     });
   }
+  if (request.method === "GET" && url.pathname === "/api/admin/players") {
+    return jsonResponse(request, env, await adminPlayers(request, env));
+  }
   if (request.method !== "POST") throw new HttpError(404, "not-found", "Nie znaleziono endpointu.");
 
   const routes = {
+    "/api/profile/sync": profileSync,
+    "/api/admin/bootstrap": adminBootstrap,
     "/api/push/register": registerSubscription,
     "/api/push/unregister": unregisterSubscription,
     "/api/push/rotate": rotateSubscription,
     "/api/events/player-joined": playerJoined,
     "/api/events/chat-message": chatMessage,
+    "/api/events/name-change-request": nameChangeRequest,
+    "/api/events/player-name-changed": playerNameChanged,
+    "/api/events/name-change-decision": nameChangeDecision,
+    "/api/events/admin-name-edited": adminNameEdited,
     "/api/picks/sync": syncPicks
   };
   const handler = routes[url.pathname];

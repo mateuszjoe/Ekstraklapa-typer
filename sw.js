@@ -1,4 +1,4 @@
-const CACHE_NAME = "ekstraklasa-typer-v29";
+const CACHE_NAME = "ekstraklasa-typer-v30";
 const PUSH_STATE_CACHE = "ekstraklasa-typer-push-state-v1";
 const PUSH_STATE_URL = new URL("./__chat-push-state__", self.registration.scope).href;
 const VAPID_PUBLIC_KEY = "BHxWAMhHw3KJBpTqgJZK38Kr-fPA_dvKIYurfBjxTfuw9ie4D9I0cpYR8S9-5FEmzDYoLoBwdutcR_kLW7cADd0";
@@ -8,8 +8,8 @@ const MAX_ROTATION_RETRIES = 4;
 const OFFLINE_ASSETS = [
   "./",
   "./?app=typer-v2",
-  "./styles.css?v=24",
-  "./app.js?v=28",
+  "./styles.css?v=25",
+  "./app.js?v=29",
   "./data.js",
   "./firebase-config.js",
   "./live-provider.js",
@@ -93,6 +93,36 @@ const NOTIFICATION_TYPES = Object.freeze({
     body: "Sprawdź wyjściowe jedenastki przed pierwszym gwizdkiem.",
     url: "./#ekstraklasa",
     idFields: ["localMatchId", "matchId", "providerMatchId"]
+  }),
+  "admin-name-request": Object.freeze({
+    title: "Nowy wniosek o zmianę nicku",
+    body: "Otwórz panel administratora i podejmij decyzję.",
+    url: "./#admin",
+    idFields: ["requestId"]
+  }),
+  "admin-name-changed": Object.freeze({
+    title: "Gracz zmienił swój nick",
+    body: "Otwórz panel administratora, aby zobaczyć szczegóły.",
+    url: "./#admin",
+    idFields: ["playerUid", "nameVersion"]
+  }),
+  "name-change-approved": Object.freeze({
+    title: "Zmiana nicku zaakceptowana",
+    body: "Otwórz ustawienia, aby zobaczyć aktualną nazwę gracza.",
+    url: "./#settings",
+    idFields: ["requestId", "nameVersion"]
+  }),
+  "name-change-rejected": Object.freeze({
+    title: "Zmiana nicku odrzucona",
+    body: "Otwórz ustawienia, aby zobaczyć status wniosku.",
+    url: "./#settings",
+    idFields: ["requestId"]
+  }),
+  "name-change-admin-edited": Object.freeze({
+    title: "Administrator zmienił Twój nick",
+    body: "Otwórz ustawienia, aby zobaczyć aktualną nazwę gracza.",
+    url: "./#settings",
+    idFields: ["playerUid", "nameVersion"]
   })
 });
 

@@ -106,25 +106,346 @@ service cloud.firestore {
         );
     }
 
-    function validDisplayName() {
-      return request.resource.data.displayName is string
-        && request.resource.data.displayName.size() > 0
-        && request.resource.data.displayName.size() <= 40
-        && request.resource.data.displayName.matches('^[^\\n\\r\\t]{1,40}$')
-        && request.resource.data.displayName.matches('.*[^ ].*');
+    function validDisplayNameValue(value) {
+      return value is string
+        && value.size() > 0
+        && value.size() <= 40
+        && value.matches('^[^\\n\\r\\t]{1,40}$')
+        && value.matches('.*[^ ].*');
     }
 
-    function validOwnProfile(uid) {
-      return googleSignedIn()
-        && uid == request.auth.uid
-        && request.resource.data.uid == request.auth.uid
+    function validDisplayName() {
+      return validDisplayNameValue(request.resource.data.displayName);
+    }
+
+    function profilePolicyComplete(data) {
+      return data.keys().hasAll([
+        'selfRenameUsed', 'pendingNameRequestId', 'nameVersion'
+      ]);
+    }
+
+    function profilePolicyLegacy(data) {
+      return !data.keys().hasAny([
+        'selfRenameUsed', 'pendingNameRequestId', 'nameVersion'
+      ]);
+    }
+
+    function profileSelfRenameUsed(data) {
+      return data.get('selfRenameUsed', false);
+    }
+
+    function profilePendingRequest(data) {
+      return data.get('pendingNameRequestId', '');
+    }
+
+    function profileNameVersion(data) {
+      return data.get('nameVersion', 0);
+    }
+
+    function validProfilePolicy(data) {
+      return profilePolicyLegacy(data)
+        || (
+          profilePolicyComplete(data)
+          && data.selfRenameUsed is bool
+          && data.pendingNameRequestId is string
+          && data.pendingNameRequestId.size() <= 100
+          && data.nameVersion is int
+          && data.nameVersion >= 0
+        );
+    }
+
+    function validProfileDocument(uid) {
+      return request.resource.data.uid == uid
         && validDisplayName()
         && request.resource.data.joinedAt is timestamp
         && request.resource.data.updatedAt == request.time
         && request.resource.data.keys().hasOnly([
-          'uid', 'displayName', 'avatarType', 'avatarValue', 'joinedAt', 'updatedAt'
+          'uid', 'displayName', 'avatarType', 'avatarValue', 'joinedAt', 'updatedAt',
+          'selfRenameUsed', 'pendingNameRequestId', 'nameVersion'
         ])
+        && validProfilePolicy(request.resource.data)
         && validAvatar();
+    }
+
+    function validOwnProfileCreate(uid) {
+      return googleSignedIn()
+        && uid == request.auth.uid
+        && validProfileDocument(uid)
+        && (
+          profilePolicyLegacy(request.resource.data)
+          || (
+            request.resource.data.selfRenameUsed == false
+            && request.resource.data.pendingNameRequestId == ''
+            && request.resource.data.nameVersion == 0
+          )
+        );
+    }
+
+    function validProfilePolicyBootstrap(uid) {
+      return validProfileDocument(uid)
+        && profilePolicyLegacy(resource.data)
+        && profilePolicyComplete(request.resource.data)
+        && request.resource.data.selfRenameUsed == false
+        && request.resource.data.pendingNameRequestId == ''
+        && request.resource.data.nameVersion == 0
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.displayName == resource.data.displayName
+        && request.resource.data.avatarType == resource.data.avatarType
+        && request.resource.data.avatarValue == resource.data.avatarValue
+        && request.resource.data.joinedAt == resource.data.joinedAt
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'selfRenameUsed', 'pendingNameRequestId', 'nameVersion', 'updatedAt'
+        ]);
+    }
+
+    function validOwnAvatarUpdate(uid) {
+      return googleSignedIn()
+        && uid == request.auth.uid
+        && validProfileDocument(uid)
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.displayName == resource.data.displayName
+        && request.resource.data.joinedAt == resource.data.joinedAt
+        && profileSelfRenameUsed(request.resource.data) == profileSelfRenameUsed(resource.data)
+        && profilePendingRequest(request.resource.data) == profilePendingRequest(resource.data)
+        && profileNameVersion(request.resource.data) == profileNameVersion(resource.data)
+        && (
+          (profilePolicyLegacy(resource.data) && profilePolicyLegacy(request.resource.data))
+          || (profilePolicyComplete(resource.data) && profilePolicyComplete(request.resource.data))
+        )
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'avatarType', 'avatarValue', 'updatedAt'
+        ]);
+    }
+
+    function validOwnFirstRename(uid) {
+      return googleSignedIn()
+        && uid == request.auth.uid
+        && validProfileDocument(uid)
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.displayName != resource.data.displayName
+        && request.resource.data.avatarType == resource.data.avatarType
+        && request.resource.data.avatarValue == resource.data.avatarValue
+        && request.resource.data.joinedAt == resource.data.joinedAt
+        && profileSelfRenameUsed(resource.data) == false
+        && profilePendingRequest(resource.data) == ''
+        && profilePolicyComplete(request.resource.data)
+        && request.resource.data.selfRenameUsed == true
+        && request.resource.data.pendingNameRequestId == ''
+        && request.resource.data.nameVersion == profileNameVersion(resource.data) + 1
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'displayName', 'selfRenameUsed', 'pendingNameRequestId', 'nameVersion', 'updatedAt'
+        ])
+        && exists(/databases/$(database)/documents/seasons/2026-27/leaderboard/$(uid))
+        && getAfter(/databases/$(database)/documents/seasons/2026-27/leaderboard/$(uid)).data.displayName
+          == request.resource.data.displayName
+        && getAfter(/databases/$(database)/documents/seasons/2026-27/leaderboard/$(uid)).data.updatedAt
+          == request.time;
+    }
+
+    function validOwnRequestStart(uid) {
+      return googleSignedIn()
+        && uid == request.auth.uid
+        && validProfileDocument(uid)
+        && profilePolicyComplete(resource.data)
+        && profilePolicyComplete(request.resource.data)
+        && resource.data.selfRenameUsed == true
+        && request.resource.data.selfRenameUsed == true
+        && resource.data.pendingNameRequestId == ''
+        && request.resource.data.pendingNameRequestId.size() > 0
+        && request.resource.data.nameVersion == resource.data.nameVersion
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.displayName == resource.data.displayName
+        && request.resource.data.avatarType == resource.data.avatarType
+        && request.resource.data.avatarValue == resource.data.avatarValue
+        && request.resource.data.joinedAt == resource.data.joinedAt
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'pendingNameRequestId', 'updatedAt'
+        ])
+        && existsAfter(/databases/$(database)/documents/nameChangeRequests/$(request.resource.data.pendingNameRequestId))
+        && getAfter(/databases/$(database)/documents/nameChangeRequests/$(request.resource.data.pendingNameRequestId)).data.uid
+          == uid
+        && getAfter(/databases/$(database)/documents/nameChangeRequests/$(request.resource.data.pendingNameRequestId)).data.status
+          == 'pending';
+    }
+
+    function validAdminDirectProfileRename(uid) {
+      return isAdmin()
+        && validProfileDocument(uid)
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.displayName != resource.data.displayName
+        && request.resource.data.avatarType == resource.data.avatarType
+        && request.resource.data.avatarValue == resource.data.avatarValue
+        && request.resource.data.joinedAt == resource.data.joinedAt
+        && profilePendingRequest(resource.data) == ''
+        && request.resource.data.pendingNameRequestId == ''
+        && profilePolicyComplete(request.resource.data)
+        && request.resource.data.selfRenameUsed == profileSelfRenameUsed(resource.data)
+        && request.resource.data.nameVersion == profileNameVersion(resource.data) + 1
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'displayName', 'selfRenameUsed', 'pendingNameRequestId', 'nameVersion', 'updatedAt'
+        ])
+        && exists(/databases/$(database)/documents/seasons/2026-27/leaderboard/$(uid))
+        && getAfter(/databases/$(database)/documents/seasons/2026-27/leaderboard/$(uid)).data.displayName
+          == request.resource.data.displayName
+        && getAfter(/databases/$(database)/documents/seasons/2026-27/leaderboard/$(uid)).data.updatedAt
+          == request.time;
+    }
+
+    function validAdminPendingProfileResolution(uid) {
+      return isAdmin()
+        && validProfileDocument(uid)
+        && profilePolicyComplete(resource.data)
+        && profilePolicyComplete(request.resource.data)
+        && resource.data.pendingNameRequestId.size() > 0
+        && request.resource.data.pendingNameRequestId == ''
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.avatarType == resource.data.avatarType
+        && request.resource.data.avatarValue == resource.data.avatarValue
+        && request.resource.data.joinedAt == resource.data.joinedAt
+        && request.resource.data.selfRenameUsed == resource.data.selfRenameUsed
+        && existsAfter(/databases/$(database)/documents/nameChangeRequests/$(resource.data.pendingNameRequestId))
+        && getAfter(/databases/$(database)/documents/nameChangeRequests/$(resource.data.pendingNameRequestId)).data.uid
+          == uid
+        && (
+          (
+            getAfter(/databases/$(database)/documents/nameChangeRequests/$(resource.data.pendingNameRequestId)).data.status
+              == 'approved'
+            && request.resource.data.displayName
+              == getAfter(/databases/$(database)/documents/nameChangeRequests/$(resource.data.pendingNameRequestId)).data.requestedName
+            && request.resource.data.nameVersion == resource.data.nameVersion + 1
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'displayName', 'pendingNameRequestId', 'nameVersion', 'updatedAt'
+            ])
+            && getAfter(/databases/$(database)/documents/seasons/2026-27/leaderboard/$(uid)).data.displayName
+              == request.resource.data.displayName
+            && getAfter(/databases/$(database)/documents/seasons/2026-27/leaderboard/$(uid)).data.updatedAt
+              == request.time
+          )
+          || (
+            getAfter(/databases/$(database)/documents/nameChangeRequests/$(resource.data.pendingNameRequestId)).data.status
+              == 'rejected'
+            && request.resource.data.displayName == resource.data.displayName
+            && request.resource.data.nameVersion == resource.data.nameVersion
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'pendingNameRequestId', 'updatedAt'
+            ])
+          )
+          || (
+            getAfter(/databases/$(database)/documents/nameChangeRequests/$(resource.data.pendingNameRequestId)).data.status
+              == 'rejected'
+            && request.resource.data.displayName != resource.data.displayName
+            && request.resource.data.nameVersion == resource.data.nameVersion + 1
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'displayName', 'pendingNameRequestId', 'nameVersion', 'updatedAt'
+            ])
+            && getAfter(/databases/$(database)/documents/seasons/2026-27/leaderboard/$(uid)).data.displayName
+              == request.resource.data.displayName
+            && getAfter(/databases/$(database)/documents/seasons/2026-27/leaderboard/$(uid)).data.updatedAt
+              == request.time
+          )
+        );
+    }
+
+    function validNameChangeRequestCreate(requestId) {
+      return googleSignedIn()
+        && requestId.size() > 0
+        && requestId.size() <= 100
+        && request.resource.data.uid == request.auth.uid
+        && validDisplayNameValue(request.resource.data.currentName)
+        && validDisplayNameValue(request.resource.data.requestedName)
+        && request.resource.data.requestedName != request.resource.data.currentName
+        && request.resource.data.status == 'pending'
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.resolvedAt == null
+        && request.resource.data.resolvedBy == ''
+        && request.resource.data.adminNote == ''
+        && request.resource.data.keys().hasOnly([
+          'uid', 'currentName', 'requestedName', 'status', 'createdAt',
+          'resolvedAt', 'resolvedBy', 'adminNote'
+        ])
+        && exists(/databases/$(database)/documents/profiles/$(request.auth.uid))
+        && get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.displayName
+          == request.resource.data.currentName
+        && profileSelfRenameUsed(
+          get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data
+        ) == true
+        && profilePendingRequest(
+          get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data
+        ) == ''
+        && getAfter(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.pendingNameRequestId
+          == requestId
+        && getAfter(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.displayName
+          == request.resource.data.currentName
+        && getAfter(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.updatedAt
+          == request.time;
+    }
+
+    function validAdminNameRequestResolution(requestId) {
+      return isAdmin()
+        && resource.data.status == 'pending'
+        && request.resource.data.status in ['approved', 'rejected']
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.currentName == resource.data.currentName
+        && request.resource.data.requestedName == resource.data.requestedName
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.resolvedAt == request.time
+        && request.resource.data.resolvedBy == request.auth.uid
+        && request.resource.data.adminNote is string
+        && request.resource.data.adminNote.size() <= 500
+        && request.resource.data.keys().hasOnly([
+          'uid', 'currentName', 'requestedName', 'status', 'createdAt',
+          'resolvedAt', 'resolvedBy', 'adminNote'
+        ])
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status', 'resolvedAt', 'resolvedBy', 'adminNote'
+        ])
+        && exists(/databases/$(database)/documents/profiles/$(resource.data.uid))
+        && profilePendingRequest(
+          get(/databases/$(database)/documents/profiles/$(resource.data.uid)).data
+        ) == requestId
+        && get(/databases/$(database)/documents/profiles/$(resource.data.uid)).data.displayName
+          == resource.data.currentName
+        && getAfter(/databases/$(database)/documents/profiles/$(resource.data.uid)).data.pendingNameRequestId
+          == ''
+        && getAfter(/databases/$(database)/documents/profiles/$(resource.data.uid)).data.updatedAt
+          == request.time
+        && (
+          (
+            request.resource.data.status == 'approved'
+            && getAfter(/databases/$(database)/documents/profiles/$(resource.data.uid)).data.displayName
+              == resource.data.requestedName
+            && getAfter(/databases/$(database)/documents/profiles/$(resource.data.uid)).data.nameVersion
+              == profileNameVersion(
+                get(/databases/$(database)/documents/profiles/$(resource.data.uid)).data
+              ) + 1
+            && getAfter(/databases/$(database)/documents/seasons/2026-27/leaderboard/$(resource.data.uid)).data.displayName
+              == resource.data.requestedName
+            && getAfter(/databases/$(database)/documents/seasons/2026-27/leaderboard/$(resource.data.uid)).data.updatedAt
+              == request.time
+          )
+          || (
+            request.resource.data.status == 'rejected'
+            && getAfter(/databases/$(database)/documents/profiles/$(resource.data.uid)).data.displayName
+              == resource.data.currentName
+            && getAfter(/databases/$(database)/documents/profiles/$(resource.data.uid)).data.nameVersion
+              == profileNameVersion(
+                get(/databases/$(database)/documents/profiles/$(resource.data.uid)).data
+              )
+          )
+          || (
+            request.resource.data.status == 'rejected'
+            && getAfter(/databases/$(database)/documents/profiles/$(resource.data.uid)).data.displayName
+              != resource.data.currentName
+            && getAfter(/databases/$(database)/documents/profiles/$(resource.data.uid)).data.nameVersion
+              == profileNameVersion(
+                get(/databases/$(database)/documents/profiles/$(resource.data.uid)).data
+              ) + 1
+            && getAfter(/databases/$(database)/documents/seasons/2026-27/leaderboard/$(resource.data.uid)).data.displayName
+              == getAfter(/databases/$(database)/documents/profiles/$(resource.data.uid)).data.displayName
+            && getAfter(/databases/$(database)/documents/seasons/2026-27/leaderboard/$(resource.data.uid)).data.updatedAt
+              == request.time
+          )
+        );
     }
 
     function validChatMessage() {
@@ -188,7 +509,6 @@ service cloud.firestore {
     function validLeaderboardDocument(seasonId, uid) {
       return googleSignedIn()
         && seasonId == '2026-27'
-        && uid == request.auth.uid
         && request.resource.data.uid == uid
         && validDisplayName()
         && validAvatar()
@@ -212,7 +532,16 @@ service cloud.firestore {
     }
 
     function validLeaderboardCreate(seasonId, uid) {
-      return validLeaderboardDocument(seasonId, uid)
+      return uid == request.auth.uid
+        && validLeaderboardDocument(seasonId, uid)
+        && existsAfter(/databases/$(database)/documents/profiles/$(uid))
+        && getAfter(/databases/$(database)/documents/profiles/$(uid)).data.uid == uid
+        && getAfter(/databases/$(database)/documents/profiles/$(uid)).data.displayName
+          == request.resource.data.displayName
+        && getAfter(/databases/$(database)/documents/profiles/$(uid)).data.avatarType
+          == request.resource.data.avatarType
+        && getAfter(/databases/$(database)/documents/profiles/$(uid)).data.avatarValue
+          == request.resource.data.avatarValue
         && existsAfter(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(uid))
         && request.resource.data.joinedAt
           == getAfter(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(uid)).data.joinedAt
@@ -223,18 +552,56 @@ service cloud.firestore {
     }
 
     function validLeaderboardIdentityUpdate(seasonId, uid) {
-      return validLeaderboardDocument(seasonId, uid)
+      return uid == request.auth.uid
+        && validLeaderboardDocument(seasonId, uid)
         && isSeasonParticipant()
         && resource.data.uid == uid
         && request.resource.data.joinedAt == resource.data.joinedAt
         && request.resource.data.points == resource.data.points
         && request.resource.data.typed == resource.data.typed
         && request.resource.data.lastScoreMatchId == resource.data.lastScoreMatchId
-        && request.resource.data.settledMatchIds == resource.data.settledMatchIds;
+        && request.resource.data.settledMatchIds == resource.data.settledMatchIds
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'displayName', 'avatarType', 'avatarValue', 'updatedAt'
+        ])
+        && exists(/databases/$(database)/documents/profiles/$(uid))
+        && getAfter(/databases/$(database)/documents/profiles/$(uid)).data.displayName
+          == request.resource.data.displayName
+        && getAfter(/databases/$(database)/documents/profiles/$(uid)).data.avatarType
+          == request.resource.data.avatarType
+        && getAfter(/databases/$(database)/documents/profiles/$(uid)).data.avatarValue
+          == request.resource.data.avatarValue;
+    }
+
+    function validAdminLeaderboardIdentityUpdate(seasonId, uid) {
+      return isAdmin()
+        && validLeaderboardDocument(seasonId, uid)
+        && resource.data.uid == uid
+        && request.resource.data.displayName != resource.data.displayName
+        && request.resource.data.avatarType == resource.data.avatarType
+        && request.resource.data.avatarValue == resource.data.avatarValue
+        && request.resource.data.joinedAt == resource.data.joinedAt
+        && request.resource.data.points == resource.data.points
+        && request.resource.data.typed == resource.data.typed
+        && request.resource.data.lastScoreMatchId == resource.data.lastScoreMatchId
+        && request.resource.data.settledMatchIds == resource.data.settledMatchIds
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'displayName', 'updatedAt'
+        ])
+        && exists(/databases/$(database)/documents/profiles/$(uid))
+        && getAfter(/databases/$(database)/documents/profiles/$(uid)).data.displayName
+          == request.resource.data.displayName
+        && getAfter(/databases/$(database)/documents/profiles/$(uid)).data.avatarType
+          == request.resource.data.avatarType
+        && getAfter(/databases/$(database)/documents/profiles/$(uid)).data.avatarValue
+          == request.resource.data.avatarValue
+        && getAfter(/databases/$(database)/documents/profiles/$(uid)).data.updatedAt
+          == request.time;
     }
 
     function validLeaderboardScoreUpdate(seasonId, uid) {
-      return validLeaderboardDocument(seasonId, uid)
+      return uid == request.auth.uid
+        && validLeaderboardDocument(seasonId, uid)
         && isSeasonParticipant()
         && resource.data.uid == uid
         && request.resource.data.displayName == resource.data.displayName
@@ -317,10 +684,12 @@ service cloud.firestore {
     match /seasons/{seasonId}/leaderboard/{uid} {
       allow get: if googleSignedIn()
         && seasonId == '2026-27'
-        && (uid == request.auth.uid || isSeasonParticipant());
-      allow list: if isSeasonParticipant() && seasonId == '2026-27';
+        && (uid == request.auth.uid || isSeasonParticipant() || isAdmin());
+      allow list: if seasonId == '2026-27'
+        && (isSeasonParticipant() || isAdmin());
       allow create: if validLeaderboardCreate(seasonId, uid);
       allow update: if validLeaderboardIdentityUpdate(seasonId, uid)
+        || validAdminLeaderboardIdentityUpdate(seasonId, uid)
         || validLeaderboardScoreUpdate(seasonId, uid);
       allow delete: if false;
     }
@@ -339,12 +708,40 @@ service cloud.firestore {
 
     match /profiles/{uid} {
       allow get: if googleSignedIn()
-        && (uid == request.auth.uid || isSeasonParticipant());
-      allow list: if false;
-      allow create: if validOwnProfile(uid)
+        && (uid == request.auth.uid || isSeasonParticipant() || isAdmin());
+      allow list: if isAdmin();
+      allow create: if validOwnProfileCreate(uid)
         && request.resource.data.joinedAt == request.time;
-      allow update: if validOwnProfile(uid)
-        && request.resource.data.joinedAt == resource.data.get('joinedAt', request.time);
+      allow update: if request.resource.data.joinedAt == resource.data.get('joinedAt', request.time)
+        && (
+          (
+            googleSignedIn()
+            && uid == request.auth.uid
+            && (
+              validProfilePolicyBootstrap(uid)
+              || validOwnAvatarUpdate(uid)
+              || validOwnFirstRename(uid)
+              || validOwnRequestStart(uid)
+            )
+          )
+          || (
+            isAdmin()
+            && (
+              validProfilePolicyBootstrap(uid)
+              || validAdminDirectProfileRename(uid)
+              || validAdminPendingProfileResolution(uid)
+            )
+          )
+        );
+      allow delete: if false;
+    }
+
+    match /nameChangeRequests/{requestId} {
+      allow get: if googleSignedIn()
+        && (resource.data.uid == request.auth.uid || isAdmin());
+      allow list: if isAdmin();
+      allow create: if validNameChangeRequestCreate(requestId);
+      allow update: if validAdminNameRequestResolution(requestId);
       allow delete: if false;
     }
 

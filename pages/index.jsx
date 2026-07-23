@@ -7,7 +7,7 @@ export default function Home() {
 
     const script = document.createElement("script");
     script.type = "module";
-    script.src = "/legacy/app.js?v=28";
+    script.src = "/legacy/app.js?v=29";
     script.dataset.ekstraklasaRuntime = "true";
     document.body.appendChild(script);
   }, []);
@@ -35,6 +35,9 @@ export default function Home() {
           <a href="#ranking" className="nav-link" data-view="ranking">Ranking</a>
           <a href="#rules" className="nav-link" data-view="rules">Zasady</a>
           <a href="#settings" className="nav-link" data-view="settings">Ustawienia</a>
+          <a href="#admin" className="nav-link nav-admin" data-view="admin" data-admin-nav hidden>Panel admina <span className="nav-admin-badge" data-admin-badge hidden>0</span></a>
+          <div className="nav-account-summary" hidden><span>Zalogowano jako</span><strong id="mobileAccountName">Gracz</strong></div>
+          <button type="button" className="nav-link nav-signout" data-sign-out hidden>Wyloguj się</button>
         </nav>
         <button id="authButton" className="auth-button"><span className="user-icon">◉</span><span>Zaloguj się</span></button>
         <button id="menuButton" className="menu-button" aria-label="Otwórz menu">☰</button>
@@ -67,6 +70,7 @@ export default function Home() {
         <h2 id="accountName">Gracz</h2>
         <p className="modal-copy" id="accountDetails">Zalogowano przez Google</p>
         <button className="provider account-settings" data-account-settings>Ustawienia profilu</button>
+        <button className="provider account-admin" data-account-admin hidden>Panel administratora</button>
         <button className="provider signout" data-sign-out>Wyloguj się</button>
       </dialog>
 

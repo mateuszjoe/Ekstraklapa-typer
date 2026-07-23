@@ -19,6 +19,35 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 CREATE INDEX IF NOT EXISTS subscriptions_uid_updated
   ON subscriptions(uid, updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS player_identities (
+  uid TEXT PRIMARY KEY,
+  google_email TEXT NOT NULL,
+  google_full_name TEXT NOT NULL,
+  first_seen_at INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL,
+  CHECK (length(uid) BETWEEN 1 AND 128),
+  CHECK (length(google_email) BETWEEN 3 AND 254),
+  CHECK (google_email = lower(google_email)),
+  CHECK (length(google_full_name) BETWEEN 1 AND 120),
+  CHECK (first_seen_at > 0),
+  CHECK (last_seen_at >= first_seen_at)
+);
+
+CREATE INDEX IF NOT EXISTS player_identities_last_seen
+  ON player_identities(last_seen_at DESC, uid);
+
+CREATE TABLE IF NOT EXISTS notification_admins (
+  email TEXT PRIMARY KEY,
+  uid TEXT NOT NULL UNIQUE,
+  verified_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  CHECK (email = 'mateuszjoe@gmail.com'),
+  CHECK (length(uid) BETWEEN 1 AND 128),
+  CHECK (verified_at > 0),
+  CHECK (updated_at >= verified_at),
+  FOREIGN KEY (uid) REFERENCES player_identities(uid) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS picks (
   uid TEXT NOT NULL,
   match_id TEXT NOT NULL,
