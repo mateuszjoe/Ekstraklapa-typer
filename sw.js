@@ -1,4 +1,4 @@
-const CACHE_NAME = "ekstraklasa-typer-v32";
+const CACHE_NAME = "ekstraklasa-typer-v33";
 const PUSH_STATE_CACHE = "ekstraklasa-typer-push-state-v1";
 const PUSH_STATE_URL = new URL("./__chat-push-state__", self.registration.scope).href;
 const VAPID_PUBLIC_KEY = "BHxWAMhHw3KJBpTqgJZK38Kr-fPA_dvKIYurfBjxTfuw9ie4D9I0cpYR8S9-5FEmzDYoLoBwdutcR_kLW7cADd0";
@@ -8,8 +8,8 @@ const MAX_ROTATION_RETRIES = 4;
 const OFFLINE_ASSETS = [
   "./",
   "./?app=typer-v2",
-  "./styles.css?v=27",
-  "./app.js?v=31",
+  "./styles.css?v=28",
+  "./app.js?v=32",
   "./data.js",
   "./firebase-config.js",
   "./live-provider.js",

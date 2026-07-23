@@ -916,24 +916,24 @@ function leaguePlayerRowHtml(player) {
   const photo = player?.photoUrl
     ? `<img src="${escapeHtml(player.photoUrl)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" data-player-photo>`
     : "";
-  const numericCells = isGoalkeeper
+  const statisticCells = isGoalkeeper
     ? [
-        Number(stats.appearances) || 0,
-        Number(stats.cleanSheets) || 0,
-        Number(stats.yellowCards) || 0,
-        Number(stats.redCards) || 0
+        ["Wyst.", Number(stats.appearances) || 0],
+        ["Czyste", Number(stats.cleanSheets) || 0],
+        ["ŻK", Number(stats.yellowCards) || 0],
+        ["CzK", Number(stats.redCards) || 0]
       ]
     : [
-        Number(stats.appearances) || 0,
-        Number(stats.goals) || 0,
-        Number(stats.assists) || 0,
-        Number(stats.yellowCards) || 0,
-        Number(stats.redCards) || 0
+        ["Wyst.", Number(stats.appearances) || 0],
+        ["Gole", Number(stats.goals) || 0],
+        ["Asysty", Number(stats.assists) || 0],
+        ["ŻK", Number(stats.yellowCards) || 0],
+        ["CzK", Number(stats.redCards) || 0]
       ];
-  return `<tr>
-    <th scope="row"><span class="squad-table-player"><span class="squad-player-photo" data-player-photo-frame>${photo}<i aria-hidden="true">${escapeHtml(playerInitials(player?.name))}</i></span><strong>${escapeHtml(player?.name || "Zawodnik")}</strong></span></th>
-    ${numericCells.map((value) => `<td>${value}</td>`).join("")}
-    <td class="squad-rating" title="${escapeHtml(ratingTitle)}"><strong>${escapeHtml(rating)}</strong>${ratedAppearances ? `<small>${ratedAppearances} ${ratedAppearances === 1 ? "mecz" : "mecze"}</small>` : ""}</td>
+  return `<tr role="row">
+    <th scope="row" role="rowheader"><span class="squad-table-player"><span class="squad-player-photo" data-player-photo-frame>${photo}<i aria-hidden="true">${escapeHtml(playerInitials(player?.name))}</i></span><strong>${escapeHtml(player?.name || "Zawodnik")}</strong></span></th>
+    ${statisticCells.map(([label, value]) => `<td role="cell" data-label="${escapeHtml(label)}">${value}</td>`).join("")}
+    <td class="squad-rating" role="cell" data-label="Ocena" title="${escapeHtml(ratingTitle)}"><strong>${escapeHtml(rating)}</strong>${ratedAppearances ? `<small>${ratedAppearances} ${ratedAppearances === 1 ? "mecz" : "mecze"}</small>` : ""}</td>
   </tr>`;
 }
 
@@ -947,9 +947,9 @@ function leagueSquadGroupHtml(group, teamId) {
   return `<section class="squad-group" aria-labelledby="squad-${escapeHtml(teamId)}-${escapeHtml(group?.id || "")}">
     <header><h3 id="squad-${escapeHtml(teamId)}-${escapeHtml(group?.id || "")}">${escapeHtml(groupLabel)}</h3><span>${players.length}</span></header>
     ${players.length ? `<div class="squad-table-scroll" tabindex="0" role="region" aria-label="${escapeHtml(`${groupLabel} – tabela statystyk`)}">
-      <table class="squad-table${isGoalkeeperGroup ? " is-goalkeeper" : ""}">
-        <thead><tr>${headers.map((header) => `<th scope="col">${escapeHtml(header)}</th>`).join("")}</tr></thead>
-        <tbody>${players.map(leaguePlayerRowHtml).join("")}</tbody>
+      <table class="squad-table${isGoalkeeperGroup ? " is-goalkeeper" : ""}" role="table">
+        <thead role="rowgroup"><tr role="row">${headers.map((header) => `<th scope="col" role="columnheader">${escapeHtml(header)}</th>`).join("")}</tr></thead>
+        <tbody role="rowgroup">${players.map(leaguePlayerRowHtml).join("")}</tbody>
       </table>
     </div>` : `<p class="league-empty">Brak zgłoszonych zawodników w tej formacji.</p>`}
   </section>`;
