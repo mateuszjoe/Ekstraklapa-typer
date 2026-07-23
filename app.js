@@ -643,7 +643,7 @@ function applyRouteFromLocation() {
 
 function rankingPosition(players, player) {
   if (!player) return null;
-  const index = players.findIndex((candidate) => candidate.points === player.points);
+  const index = players.findIndex((candidate) => candidate.uid === player.uid);
   return index >= 0 ? index + 1 : null;
 }
 
@@ -1316,7 +1316,7 @@ function rankingView() {
             ? players.map((player, index) => {
               const profile = profileForUid(player.uid);
               const mine = player.uid === state.user?.uid;
-              const rank = players.findIndex((candidate) => candidate.points === player.points) + 1;
+              const rank = index + 1;
               return `<div class="ranking-row${mine ? " me" : ""}"><b>${rank}</b><span>${playerAvatarButton(player.uid, "ranking-avatar")}<strong>${escapeHtml(profile.name)}</strong>${mine ? "<small>TY</small>" : ""}</span><strong>${player.points}</strong><span>${player.typed}</span><span>${player.accuracy}%</span></div>`;
             }).join("")
             : `<div class="ranking-empty"><strong>Brak graczy do wyświetlenia</strong><span>Ranking pokazuje wyłącznie prawdziwe konta Google — bez fikcyjnych wpisów.</span></div>`}
