@@ -190,6 +190,9 @@ const state = {
   rankingPlayers: [],
   rankingStatus: "idle",
   rankingError: "",
+  playerForm: [],
+  playerFormStatus: "idle",
+  playerFormError: "",
   user: null,
   chat: [],
   chatLive: [],
@@ -258,6 +261,8 @@ let playerPicksLoadId = 0;
 let rankingLoadPromise = null;
 let rankingLoadRevision = 0;
 let rankingReloadPending = false;
+let playerFormLoadPromise = null;
+let playerFormLoadRevision = 0;
 let trustedMatchesSyncPromise = null;
 let notificationDeepLinkHandled = false;
 let notificationPrimerTimer = null;
@@ -530,6 +535,14 @@ function pointsFor(match) {
   return result && state.predictions[match.id] === result ? 1 : 0;
 }
 
+function settledResultsSignature() {
+  return state.matches
+    .filter((match) => typerMatchIds.has(match.id) && resultOf(match))
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map((match) => `${match.id}:${resultOf(match)}`)
+    .join("|");
+}
+
 function setMainMenuOpen(open, restoreFocus = false) {
   const navigation = document.querySelector(".main-nav");
   const button = document.querySelector("#menuButton");
@@ -588,6 +601,8 @@ function applyAppRoute(route, { historyMode = "none", focus = true } = {}) {
   setMainMenuOpen(false);
   render();
   if (view === "ranking" && state.user && state.participantReady) void loadRankingData();
+  if (view === "matches" && state.user && state.userDataReady && state.participantReady
+    && (state.rankingStatus !== "ready" || state.playerFormStatus !== "ready")) void loadPlayerDashboardData();
   if (view === "ekstraklasa") void loadLeagueData();
   if (view === "admin" && isCurrentUserAdmin()) void loadAdminPlayers();
   if (focus) app.focus({ preventScroll: true });
@@ -627,6 +642,119 @@ function applyRouteFromLocation() {
   applyAppRoute(normalized, { historyMode: "none", focus: false });
 }
 
+function rankingPosition(players, player) {
+  if (!player) return null;
+  const index = players.findIndex((candidate) => candidate.points === player.points);
+  return index >= 0 ? index + 1 : null;
+}
+
+function playerMiniRankingHtml(players, ownUid) {
+  if (state.rankingStatus === "error") {
+    return `<div class="player-mini-ranking-state">Ranking jest chwilowo niedostępny.</div>`;
+  }
+  if (state.rankingStatus !== "ready") {
+    return `<div class="player-mini-ranking-state is-loading"><i></i><span>Pobieramy klasyfikację…</span></div>`;
+  }
+  if (!players.length) {
+    return `<div class="player-mini-ranking-state">Klasyfikacja pojawi się po dołączeniu graczy.</div>`;
+  }
+
+  const ownIndex = players.findIndex((player) => player.uid === ownUid);
+  const visible = players.slice(0, 3).map((player) => ({ player, separated: false }));
+  if (ownIndex >= 3) visible.push({ player: players[ownIndex], separated: true });
+
+  return `<div class="player-mini-ranking-list">${visible.map(({ player, separated }) => {
+    const profile = profileForUid(player.uid);
+    const position = rankingPosition(players, player);
+    const mine = player.uid === ownUid;
+    return `<div class="player-mini-ranking-row${mine ? " is-me" : ""}${separated ? " is-separated" : ""}">
+      <b>${position || "—"}</b>
+      ${playerAvatarButton(player.uid, "player-mini-avatar")}
+      <span>${escapeHtml(profile.name)}${mine ? "<small>TY</small>" : ""}</span>
+      <strong>${player.points}<small>pkt</small></strong>
+    </div>`;
+  }).join("")}</div>`;
+}
+
+function playerFormHtml() {
+  if (state.playerFormStatus === "error") {
+    return `<p class="player-form-empty">Nie udało się pobrać ostatnich typów.</p>`;
+  }
+  if (state.playerFormStatus !== "ready") {
+    return `<div class="player-form-loading" aria-label="Pobieramy ostatnie typy"><i></i><i></i><i></i><i></i><i></i></div>`;
+  }
+  if (!state.playerForm.length) {
+    return `<p class="player-form-empty">Forma pojawi się po rozliczeniu pierwszego typu.</p>`;
+  }
+
+  return `<div class="player-form-dots">${state.playerForm.map((item) => {
+    const match = state.matches.find((candidate) => candidate.id === item.matchId);
+    const home = teamById[match?.home]?.name || "Gospodarze";
+    const away = teamById[match?.away]?.name || "Goście";
+    const result = match ? resultOf(match) : null;
+    const label = `${item.hit ? "Trafiony" : "Nietrafiony"} typ ${item.pick}${result ? `, wynik 1X2: ${result}` : ""}, ${home} – ${away}`;
+    return `<span class="player-form-dot ${item.hit ? "is-hit" : "is-miss"}" role="img" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}">${item.hit ? "✓" : "×"}</span>`;
+  }).join("")}</div>`;
+}
+
+function playerDashboardHtml() {
+  if (!state.user) {
+    return `<div class="player-dashboard-card is-guest">
+      <span class="season-pill">SEZON 2026/27 · RUNDA JESIENNA</span>
+      <div class="player-dashboard-guest">
+        <span class="player-dashboard-guest-avatar">G</span>
+        <div><p class="eyebrow">PANEL GRACZA</p><h1>Zaloguj się do gry</h1><p>Po zalogowaniu zobaczysz tutaj swoje miejsce, punkty, ostatnią formę i czołówkę rankingu.</p></div>
+      </div>
+      <div class="player-dashboard-actions">
+        <button class="primary-button" data-open-auth>ZALOGUJ PRZEZ GOOGLE ${icon("arrow")}</button>
+        <button class="text-button" data-scroll-matches>Zobacz mecze</button>
+      </div>
+    </div>`;
+  }
+
+  const players = rankingRows();
+  const own = state.rankingStatus === "ready"
+    ? players.find((player) => player.uid === state.user.uid) || null
+    : null;
+  const position = rankingPosition(players, own);
+  const points = own?.points;
+  const typed = own?.typed;
+  const accuracy = own?.accuracy;
+  const recentHits = state.playerForm.filter((item) => item.hit).length;
+  const positionLabel = state.rankingStatus === "ready" && position ? `#${position}` : "—";
+  const positionStatus = state.rankingStatus === "error" ? "brak danych" : state.rankingStatus === "ready" ? "miejsce" : "liczymy";
+  const formStatus = state.playerFormStatus === "ready" && state.playerForm.length
+    ? `${recentHits}/${state.playerForm.length} trafionych`
+    : state.playerFormStatus === "error" ? "brak danych" : "ostatnie 5";
+
+  return `<div class="player-dashboard-card" aria-busy="${state.rankingStatus === "loading" || state.playerFormStatus === "loading"}">
+    <span class="season-pill">SEZON 2026/27 · RUNDA JESIENNA</span>
+    <header class="player-dashboard-head">
+      ${avatarVisualMarkup("player-dashboard-avatar", `Avatar ${state.user.name}`)}
+      <div class="player-dashboard-identity"><p class="eyebrow">TWÓJ PANEL GRACZA</p><h1>${escapeHtml(state.user.name)}</h1><span>${Number.isInteger(typed) ? `${typed} rozliczonych typów` : "Synchronizujemy wynik"}</span></div>
+      <div class="player-dashboard-place"><small>${positionStatus}</small><strong>${positionLabel}</strong></div>
+    </header>
+    <div class="player-dashboard-stats">
+      <span><b>${Number.isInteger(points) ? points : "—"}</b>punkty</span>
+      <span><b>${Number.isInteger(typed) ? typed : "—"}</b>rozliczone</span>
+      <span><b>${Number.isInteger(accuracy) ? `${accuracy}%` : "—"}</b>skuteczność</span>
+    </div>
+    <div class="player-dashboard-data">
+      <section class="player-form-panel" aria-label="Forma gracza w ostatnich typach">
+        <header><span>OSTATNIE TYPY</span><small>${formStatus}</small></header>
+        ${playerFormHtml()}
+      </section>
+      <section class="player-mini-ranking" aria-label="Mini ranking graczy">
+        <header><span>MINI RANKING</span><button type="button" data-view-jump="ranking">PEŁNY</button></header>
+        ${playerMiniRankingHtml(players, state.user.uid)}
+      </section>
+    </div>
+    <div class="player-dashboard-actions">
+      <button class="primary-button" data-scroll-matches>TYPUJ MECZE ${icon("arrow")}</button>
+    </div>
+  </div>`;
+}
+
 function hero() {
   const selected = state.matches.filter((match) => match.matchday === state.matchday);
   const typed = selected.filter((match) => state.predictions[match.id]).length;
@@ -635,15 +763,7 @@ function hero() {
     .sort((a, b) => new Date(a.kickoffAt) - new Date(b.kickoffAt))[0];
   return `<section class="hero">
     <div class="hero-glow"></div>
-    <div class="hero-copy">
-      <span class="season-pill">SEZON 2026/27 · RUNDA JESIENNA</span>
-      <h1>Jeden typ.<br><em>Jedna emocja.</em></h1>
-      <p>Wybierz 1, X albo 2. Każdy trafiony rezultat to punkt. Bez kombinowania — liczy się piłkarskie wyczucie.</p>
-      <div class="hero-actions">
-        <button class="primary-button" data-scroll-matches>Typuj mecze ${icon("arrow")}</button>
-        <button class="text-button" data-view-jump="rules">Jak to działa?</button>
-      </div>
-    </div>
+    ${playerDashboardHtml()}
     <div class="hero-side">
       <p class="eyebrow">NAJBLIŻSZY MECZ</p>
       ${next ? `<div class="next-match">
@@ -1222,7 +1342,7 @@ async function loadRankingData() {
   const revision = ++rankingLoadRevision;
   state.rankingStatus = "loading";
   state.rankingError = "";
-  if (state.view === "ranking") render();
+  if (["matches", "ranking"].includes(state.view)) render();
 
   const operation = (async () => {
     const { collection, getDocs } = state.firebaseModules;
@@ -1253,7 +1373,7 @@ async function loadRankingData() {
     state.rankingError = "Nie udało się pobrać aktualnego rankingu. Sprawdź internet i spróbuj ponownie.";
   }).finally(() => {
     if (revision === rankingLoadRevision) rankingLoadPromise = null;
-    if (state.view === "ranking" && state.user?.uid === uid) render();
+    if (revision === rankingLoadRevision && ["matches", "ranking"].includes(state.view) && state.user?.uid === uid) render();
     if (revision === rankingLoadRevision && rankingReloadPending) {
       rankingReloadPending = false;
       void loadRankingData();
@@ -1262,6 +1382,60 @@ async function loadRankingData() {
 
   rankingLoadPromise = operation;
   return operation;
+}
+
+async function loadOwnPlayerForm() {
+  if (!state.user || !state.participantReady || !state.db || !state.firebaseModules) return;
+  if (playerFormLoadPromise) return playerFormLoadPromise;
+
+  const uid = state.user.uid;
+  const revision = ++playerFormLoadRevision;
+  state.playerFormStatus = "loading";
+  state.playerFormError = "";
+  if (state.view === "matches") render();
+
+  const operation = (async () => {
+    const { collection, getDocs, limit, orderBy, query } = state.firebaseModules;
+    const scoresQuery = query(
+      collection(state.db, "seasons", SEASON_ID, "players", uid, "scores"),
+      orderBy("settledAt", "desc"),
+      limit(5)
+    );
+    const snapshot = await getDocs(scoresQuery);
+    const form = snapshot.docs.map((item) => {
+      const data = item.data();
+      const matchId = typeof data.matchId === "string" ? data.matchId : item.id;
+      const points = Number(data.points);
+      const pick = ["1", "X", "2"].includes(data.pick) ? data.pick : "";
+      if (data.uid !== uid || !typerMatchIds.has(matchId) || !pick || ![0, 1].includes(points)) return null;
+      return { matchId, pick, points, hit: points === 1 };
+    }).filter(Boolean);
+
+    if (state.user?.uid !== uid || revision !== playerFormLoadRevision) return;
+    state.playerForm = form;
+    state.playerFormStatus = "ready";
+    state.playerFormError = "";
+  })().catch((error) => {
+    if (state.user?.uid !== uid || revision !== playerFormLoadRevision) return;
+    console.error("Nie udało się pobrać ostatniej formy gracza:", error);
+    state.playerForm = [];
+    state.playerFormStatus = "error";
+    state.playerFormError = "Nie udało się pobrać ostatnich rozliczonych typów.";
+  }).finally(() => {
+    if (revision === playerFormLoadRevision) playerFormLoadPromise = null;
+    if (revision === playerFormLoadRevision && state.view === "matches" && state.user?.uid === uid) render();
+  });
+
+  playerFormLoadPromise = operation;
+  return operation;
+}
+
+async function loadPlayerDashboardData({ refreshRanking = false, refreshForm = false } = {}) {
+  const uid = state.user?.uid;
+  if (!uid || !state.participantReady) return;
+  if (refreshRanking || state.rankingStatus !== "ready") await loadRankingData();
+  if (state.user?.uid !== uid || !state.participantReady) return;
+  if (refreshForm || state.playerFormStatus !== "ready") await loadOwnPlayerForm();
 }
 
 function formatMoney(value) {
@@ -4189,6 +4363,9 @@ function subscribeSeasonStats() {
     state.participantCountStatus = "ready";
     if (state.view === "rules") render();
     if (state.view === "ranking" && state.user && state.participantReady) void loadRankingData();
+    if (state.view === "matches" && state.user && state.userDataReady && state.participantReady) {
+      void loadPlayerDashboardData({ refreshRanking: true });
+    }
   }, (error) => {
     console.error("Nie udało się pobrać liczby graczy:", error);
     state.participantCount = null;
@@ -4314,6 +4491,7 @@ async function activateSeasonParticipant(uid, options = {}) {
     state.participantActivationError = false;
     if (startRealtime) startChatRealtime(uid);
     if (state.view === "ranking") void loadRankingData();
+    if (state.view === "matches" && state.userDataReady) void loadPlayerDashboardData();
     return true;
   } catch (error) {
     if (state.auth?.currentUser?.uid !== uid || state.user?.uid !== uid) return false;
@@ -4389,9 +4567,14 @@ async function handleAuthState(user) {
   state.rankingPlayers = [];
   state.rankingStatus = "idle";
   state.rankingError = "";
+  state.playerForm = [];
+  state.playerFormStatus = "idle";
+  state.playerFormError = "";
   rankingLoadRevision += 1;
   rankingLoadPromise = null;
   rankingReloadPending = false;
+  playerFormLoadRevision += 1;
+  playerFormLoadPromise = null;
   stopChatRealtime();
   if (user && !isGoogleAccount(user)) {
     resetAdminClientState();
@@ -4527,6 +4710,7 @@ async function handleAuthState(user) {
     });
   });
   if (state.view === "ranking" && state.participantReady) void loadRankingData();
+  if (state.view === "matches" && state.participantReady) void loadPlayerDashboardData();
   if (state.participantReady) startChatRealtime(user.uid);
   if (state.participantReady) reconcileChatPush(user.uid).catch((error) => {
     console.warn("Nie udało się uzgodnić stanu powiadomień tego urządzenia:", error);
@@ -4902,13 +5086,13 @@ function startOwnProfileRealtime(uid) {
       loadOwnNameRequest(uid, nextPolicy.pendingNameRequestId).finally(() => {
         if (revision !== ownProfileRequestRevision || state.auth?.currentUser?.uid !== uid || state.user?.uid !== uid) return;
         updateAuthButton();
-        if (["settings", "ranking"].includes(state.view)) render();
+        if (["matches", "settings", "ranking"].includes(state.view)) render();
       });
       return;
     }
     if (identityChanged || policyChanged) {
       updateAuthButton();
-      if (["settings", "ranking"].includes(state.view)) render();
+      if (["matches", "settings", "ranking"].includes(state.view)) render();
     }
   }, (error) => {
     console.warn("Aktualizacja profilu gracza na żywo jest chwilowo niedostępna:", error);
@@ -5406,6 +5590,7 @@ async function pollLive() {
   let nextDelay = 5 * 60_000;
   try {
     const payload = await loadLivePayloadForClient();
+    const settledResultsBefore = settledResultsSignature();
     const providerInterval = Number(payload.pollIntervalSeconds) * 1000;
     if (Number.isFinite(providerInterval)) {
       nextDelay = Math.min(5 * 60_000, Math.max(30_000, providerInterval));
@@ -5443,13 +5628,26 @@ async function pollLive() {
         resultSource: fixture.source
       });
     });
+    const settledResultsChanged = settledResultsBefore !== settledResultsSignature();
+    if (settledResultsChanged && state.user) {
+      state.rankingStatus = "idle";
+      state.rankingError = "";
+      state.playerFormStatus = "idle";
+      state.playerFormError = "";
+      rankingLoadRevision += 1;
+      rankingLoadPromise = null;
+      rankingReloadPending = false;
+      playerFormLoadRevision += 1;
+      playerFormLoadPromise = null;
+    }
     const trustedMatchSync = syncTrustedMatchTimes();
     if (dataChanged || state.matches.some((match) => typerMatchIds.has(match.id) && LIVE.has(match.status))) render();
     const openMatchDialog = document.querySelector("#matchDialog[open]");
     if (dataChanged && openMatchDialog?.dataset.matchId) showMatchCentre(openMatchDialog.dataset.matchId);
-    if (dataChanged && state.view === "ranking" && state.user && state.participantReady) {
+    if (settledResultsChanged && ["matches", "ranking"].includes(state.view) && state.user && state.userDataReady && state.participantReady) {
       Promise.resolve(trustedMatchSync).finally(() => {
         if (state.view === "ranking" && state.user && state.participantReady) void loadRankingData();
+        if (state.view === "matches" && state.user && state.userDataReady && state.participantReady) void loadPlayerDashboardData();
       });
     }
   } catch (error) {
