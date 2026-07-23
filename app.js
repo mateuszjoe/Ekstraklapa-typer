@@ -2,7 +2,6 @@ import { matches as baseMatches, teamById, teams, roundDatesByNumber } from "./d
 import { firebaseConfig, notificationApiBase, webPushPublicKey } from "./firebase-config.js";
 import { getOfficialLivePayload } from "./live-provider.js";
 import {
-  formatPlayerRating,
   getOfficialLeaguePayload,
   getOfficialMatchLineup,
   getOfficialTeamSquad
@@ -1028,11 +1027,6 @@ function playerInitials(name) {
 function leaguePlayerRowHtml(player) {
   const stats = player?.stats || {};
   const isGoalkeeper = player?.position === "goalkeeper";
-  const rating = formatPlayerRating(stats.recentRating);
-  const ratedAppearances = Number(stats.ratedAppearances) || 0;
-  const ratingTitle = ratedAppearances
-    ? `Ocena Typera z ${ratedAppearances} z maksymalnie 3 ostatnich meczów drużyny`
-    : "Ocena pojawi się po występie trwającym co najmniej 15 minut";
   const photo = player?.photoUrl
     ? `<img src="${escapeHtml(player.photoUrl)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" data-player-photo>`
     : "";
@@ -1053,7 +1047,6 @@ function leaguePlayerRowHtml(player) {
   return `<tr role="row">
     <th scope="row" role="rowheader"><span class="squad-table-player"><span class="squad-player-photo" data-player-photo-frame>${photo}<i aria-hidden="true">${escapeHtml(playerInitials(player?.name))}</i></span><strong>${escapeHtml(player?.name || "Zawodnik")}</strong></span></th>
     ${statisticCells.map(([label, value]) => `<td role="cell" data-label="${escapeHtml(label)}">${value}</td>`).join("")}
-    <td class="squad-rating" role="cell" data-label="Ocena" title="${escapeHtml(ratingTitle)}"><strong>${escapeHtml(rating)}</strong>${ratedAppearances ? `<small>${ratedAppearances} ${ratedAppearances === 1 ? "mecz" : "mecze"}</small>` : ""}</td>
   </tr>`;
 }
 
@@ -1061,8 +1054,8 @@ function leagueSquadGroupHtml(group, teamId) {
   const players = Array.isArray(group?.players) ? group.players : [];
   const isGoalkeeperGroup = group?.id === "goalkeepers";
   const headers = isGoalkeeperGroup
-    ? ["Zawodnik", "Wyst.", "Czyste konta", "ŻK", "CzK", "Ocena"]
-    : ["Zawodnik", "Wyst.", "Gole", "Asysty", "ŻK", "CzK", "Ocena"];
+    ? ["Zawodnik", "Wyst.", "Czyste konta", "ŻK", "CzK"]
+    : ["Zawodnik", "Wyst.", "Gole", "Asysty", "ŻK", "CzK"];
   const groupLabel = String(group?.label || "Zawodnicy");
   return `<section class="squad-group" aria-labelledby="squad-${escapeHtml(teamId)}-${escapeHtml(group?.id || "")}">
     <header><h3 id="squad-${escapeHtml(teamId)}-${escapeHtml(group?.id || "")}">${escapeHtml(groupLabel)}</h3><span>${players.length}</span></header>
@@ -1098,7 +1091,7 @@ function leagueTeamSquadHtml(teamId) {
       <span>${squad.players?.length || 0} zawodników · sezon ${escapeHtml(state.leagueData?.season?.name || "2026/27")}</span>
     </div>
     <div class="squad-groups">${groups.map((group) => leagueSquadGroupHtml(group, teamId)).join("")}</div>
-    <footer class="squad-source-note"><strong>Źródło:</strong> oficjalne Centrum Meczowe i serwis Ekstraklasy. Zdjęcie pojawia się tylko wtedy, gdy publikuje je oficjalny serwis. „Ocena Typera” jest autorską notą z maksymalnie trzech ostatnich meczów drużyny, w których zawodnik zagrał co najmniej 15 minut; liczba w nawiasie wskazuje liczbę ocenionych meczów, a przed pierwszym takim występem widnieje „—”.</footer>
+    <footer class="squad-source-note"><strong>Źródło:</strong> oficjalne Centrum Meczowe i serwis Ekstraklasy. Statystyki pochodzą bezpośrednio z danych Ekstraklasy, a zdjęcie pojawia się tylko wtedy, gdy publikuje je oficjalny serwis.</footer>
   </article>`;
 }
 

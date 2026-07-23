@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 import {
   extractOfficialPlayerPhotos,
-  formatPlayerRating,
-  normalizeOfficialTeamSquad,
-  officialMatchPlayerRating
+  normalizeOfficialTeamSquad
 } from "../league-provider.js";
 
 const personId = "00000000-0000-4000-8000-000000000000";
@@ -54,24 +52,7 @@ const squad = normalizeOfficialTeamSquad({ data: rows }, {
 assert.equal(squad.players.length, 12);
 assert.deepEqual(squad.groups.map((group) => group.players.length), [3, 3, 3, 3]);
 assert.equal(squad.players.find((player) => player.lastName === "Player 3")?.stats.goals, 2);
+assert.equal(Object.hasOwn(squad.players[0].stats, "recentRating"), false);
+assert.equal(Object.hasOwn(squad, "ratingSource"), false);
 
-const rating = officialMatchPlayerRating({
-  stat: {
-    mins_played: { total: "90" },
-    goals: { total: "1" },
-    goal_assist: { total: "1" },
-    total_pass: { total: "40" },
-    accurate_pass: { total: "35" },
-    duel_won: { total: "7" },
-    duel_lost: { total: "3" },
-    won_tackle: { total: "2" },
-    ball_recovery: { total: "6" }
-  }
-}, "midfielder");
-assert.ok(rating >= 7 && rating <= 10);
-assert.equal(formatPlayerRating(null), "—");
-assert.equal(formatPlayerRating(undefined), "—");
-assert.equal(formatPlayerRating(""), "—");
-assert.equal(formatPlayerRating(6.4), "6,4");
-
-console.log("OK: kadry, zdjęcia i Ocena Typera.");
+console.log("OK: kadry i zdjęcia zawodników bez autorskich ocen.");

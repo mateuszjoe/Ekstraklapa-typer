@@ -592,9 +592,7 @@ function normalizedSquadPlayer(row, photoByPersonId = new Map()) {
       assists: nonNegativeIntegerStat(rawStats, PLAYER_STAT_ALIASES.assists),
       cleanSheets: nonNegativeIntegerStat(rawStats, PLAYER_STAT_ALIASES.cleanSheets),
       yellowCards: nonNegativeIntegerStat(rawStats, PLAYER_STAT_ALIASES.yellowCards),
-      redCards: nonNegativeIntegerStat(rawStats, PLAYER_STAT_ALIASES.redCards),
-      recentRating: null,
-      ratedAppearances: 0
+      redCards: nonNegativeIntegerStat(rawStats, PLAYER_STAT_ALIASES.redCards)
     }
   };
 }
@@ -606,7 +604,6 @@ export function normalizeOfficialTeamSquad(
     providerTeamId,
     seasonId,
     photoByPersonId = new Map(),
-    ratingByPersonId = new Map(),
     updatedAt = new Date().toISOString(),
     photoSourcePage = ""
   } = {}
@@ -630,13 +627,6 @@ export function normalizeOfficialTeamSquad(
   if (uniquePlayers.size < 10 || uniquePlayers.size > 70) {
     throw new Error(`Official league API returned ${uniquePlayers.size}/${eligibleRows.length} valid squad players`);
   }
-  for (const player of uniquePlayers.values()) {
-    const rating = ratingByPersonId.get(player.id);
-    if (rating && Number.isFinite(rating.average)) {
-      player.stats.recentRating = Math.round(rating.average * 10) / 10;
-      player.stats.ratedAppearances = Math.max(1, Math.min(3, Number(rating.appearances) || 1));
-    }
-  }
   const groups = Object.values(PLAYER_POSITION_GROUPS)
     .filter((group, index, values) => values.findIndex((candidate) => candidate.id === group.id) === index)
     .sort((left, right) => left.order - right.order)
@@ -659,120 +649,8 @@ export function normalizeOfficialTeamSquad(
     updatedAt,
     source: OFFICIAL_LEAGUE_SOURCE,
     photoSource: photoByPersonId.size ? "official-ekstraklasa-cdn" : "",
-    photoSourcePage,
-    ratingSource: "ekstraklapa-typer-model-v1"
+    photoSourcePage
   };
-}
-
-export function officialMatchPlayerRating(row, position) {
-  const stats = normalizedStatsRecord(row?.stat);
-  const minutes = statValue(stats, ["mins_played", "minutes_played", "minutes"], 0);
-  if (minutes < 15) return null;
-  const goals = statValue(stats, ["goals"], 0);
-  const assists = statValue(stats, ["goal_assists", "goal_assist", "assists"], 0);
-  const yellowCards = statValue(stats, ["yellow_cards", "yellow_card"], 0);
-  const redCards = statValue(stats, ["total_red_cards", "red_cards", "red_card"], 0);
-  const ownGoals = statValue(stats, ["own_goals", "own_goal"], 0);
-  const missedPenalties = statValue(stats, ["penalties_missed", "penalty_missed"], 0);
-  const errorsLeadingToGoal = statValue(stats, ["errors_leading_to_goal", "error_lead_to_goal"], 0);
-  const isGoalkeeper = position === "goalkeeper";
-  const clamp = (value, minimum, maximum) => Math.max(minimum, Math.min(maximum, value));
-  let rating = 6;
-  rating += goals * (position === "goalkeeper" || position === "defender" ? 1.3 : position === "midfielder" ? 1.1 : 1);
-  rating += assists * 0.7;
-  rating -= yellowCards * 0.2;
-  rating -= redCards * 1.2;
-  rating -= ownGoals;
-  rating -= missedPenalties * 0.8;
-  rating -= errorsLeadingToGoal * 0.7;
-  if (isGoalkeeper) {
-    const saves = statValue(stats, ["saves", "saves_made"], 0);
-    const goalsConceded = statValue(stats, ["goals_conceded"], 0);
-    const expectedGoalsConceded = statValue(stats, ["expected_goals_conceded"], 0);
-    const highClaims = statValue(stats, ["good_high_claim", "total_high_claim"], 0);
-    rating += minutes >= 60 && goalsConceded === 0 ? 0.45 : 0;
-    rating += Math.min(0.56, saves * 0.08);
-    rating += Math.min(0.18, highClaims * 0.05);
-    rating += expectedGoalsConceded > 0 ? clamp((expectedGoalsConceded - goalsConceded) * 0.32, -0.45, 0.55) : 0;
-    rating -= Math.min(0.45, goalsConceded * 0.12);
-  } else {
-    const shotsOnTarget = statValue(stats, ["ontarget_scoring_att", "shots_on_target"], 0);
-    const chancesCreated = statValue(stats, ["big_chance_created"], 0);
-    const keyPasses = statValue(stats, ["total_att_assist", "key_passes"], 0);
-    const tacklesWon = statValue(stats, ["won_tackle", "tackles_won"], 0);
-    const interceptions = statValue(stats, ["interception", "interceptions"], 0);
-    const clearances = statValue(stats, ["total_clearance", "clearances"], 0);
-    const blocks = statValue(stats, ["outfielder_block", "blocked_shots"], 0);
-    const recoveries = statValue(stats, ["ball_recovery", "recoveries"], 0);
-    const duelsWon = statValue(stats, ["duel_won"], 0);
-    const duelsLost = statValue(stats, ["duel_lost"], 0);
-    const totalPasses = statValue(stats, ["total_pass"], 0);
-    const accuratePasses = statValue(stats, ["accurate_pass"], 0);
-    const fouls = statValue(stats, ["fouls"], 0);
-    const possessionLost = statValue(stats, ["poss_lost_all"], 0);
-    const dispossessed = statValue(stats, ["dispossessed"], 0);
-    const errorsLeadingToShot = statValue(stats, ["error_lead_to_shot"], 0);
-    rating += Math.min(0.24, Math.max(0, shotsOnTarget - goals) * 0.08);
-    rating += Math.min(0.5, chancesCreated * 0.25);
-    rating += Math.min(0.32, keyPasses * 0.08);
-    rating += Math.min(0.32, tacklesWon * 0.08);
-    rating += Math.min(0.24, interceptions * 0.08);
-    rating += Math.min(0.2, clearances * 0.025);
-    rating += Math.min(0.2, blocks * 0.08);
-    rating += Math.min(0.2, recoveries * 0.02);
-    if (duelsWon + duelsLost >= 5) rating += clamp((duelsWon / (duelsWon + duelsLost) - 0.5) * 0.7, -0.22, 0.22);
-    if (totalPasses >= 10) rating += clamp((accuratePasses / totalPasses - 0.78) * 1.2, -0.25, 0.25);
-    rating -= Math.min(0.2, fouls * 0.04);
-    rating -= Math.min(0.2, Math.max(0, possessionLost - 12) * 0.015);
-    rating -= Math.min(0.2, dispossessed * 0.05);
-    rating -= errorsLeadingToShot * 0.35;
-  }
-  return clamp(Math.round(rating * 10) / 10, 3, 10);
-}
-
-export function formatPlayerRating(value) {
-  if (value === null || value === undefined || value === "") return "—";
-  const number = Number(value);
-  return Number.isFinite(number) ? number.toFixed(1).replace(".", ",") : "—";
-}
-
-async function recentTeamPlayerRatings(league, teamId, providerTeamId, positionByPersonId, fetchImpl) {
-  const recentMatches = (league?.matches || [])
-    .filter((match) => FINAL_STATUSES.has(match.status) && (match.home === teamId || match.away === teamId))
-    .sort((left, right) => new Date(right.kickoffAt || 0).getTime() - new Date(left.kickoffAt || 0).getTime())
-    .slice(0, 3);
-  if (!recentMatches.length) return new Map();
-  const payloadResults = await Promise.allSettled(recentMatches.map((match) => (
-    fetchOfficialJson(`/v1/match_details/team_players/${encodeURIComponent(match.providerId)}`, fetchImpl)
-  )));
-  const payloads = payloadResults
-    .filter((result) => result.status === "fulfilled")
-    .map((result) => result.value);
-  for (const result of payloadResults) {
-    if (result.status === "rejected") {
-      console.warn("One recent match payload is unavailable; calculating ratings from the remaining matches", result.reason);
-    }
-  }
-  const ratings = new Map();
-  for (const payload of payloads) {
-    for (const row of Array.isArray(payload?.data) ? payload.data : []) {
-      if (String(row?.team_id || "").trim() !== providerTeamId) continue;
-      const personId = String(row?.person_id || row?.person?.id || "").trim();
-      if (!UUID_PATTERN.test(personId)) continue;
-      const rating = officialMatchPlayerRating(row, positionByPersonId.get(personId));
-      if (rating === null) continue;
-      const values = ratings.get(personId) || [];
-      values.push(rating);
-      ratings.set(personId, values);
-    }
-  }
-  return new Map([...ratings].map(([personId, values]) => [
-    personId,
-    {
-      average: values.reduce((sum, value) => sum + value, 0) / values.length,
-      appearances: values.length
-    }
-  ]));
 }
 
 async function loadOfficialTeamSquad(teamId, fetchImpl) {
@@ -791,42 +669,20 @@ async function loadOfficialTeamSquad(teamId, fetchImpl) {
   );
   const clubSlug = OFFICIAL_CLUB_SLUGS[teamId];
   const photoSourcePage = clubSlug ? `${OFFICIAL_SITE_BASE}/kluby/${clubSlug}/?tab=squad` : "";
-  const baseSquad = normalizeOfficialTeamSquad(squadPayload, {
-    teamId,
-    providerTeamId,
-    seasonId,
-    photoSourcePage
-  });
-  const positionByPersonId = new Map(baseSquad.players.map((player) => [player.id, player.position]));
-  const [photoResult, ratingResult] = await Promise.allSettled([
+  const [photoResult] = await Promise.allSettled([
     photoSourcePage
       ? fetchOfficialText(photoSourcePage, fetchImpl).then(extractOfficialPlayerPhotos)
-      : Promise.resolve(new Map()),
-    recentTeamPlayerRatings(
-      league,
-      teamId,
-      providerTeamId,
-      positionByPersonId,
-      fetchImpl
-    )
+      : Promise.resolve(new Map())
   ]);
   const photoByPersonId = photoResult.status === "fulfilled" ? photoResult.value : new Map();
-  const ratingByPersonId = ratingResult.status === "fulfilled" ? ratingResult.value : new Map();
   if (photoResult.status === "rejected") {
     console.warn("Official player photos are temporarily unavailable", { teamId, error: photoResult.reason });
-  }
-  if (ratingResult.status === "rejected") {
-    console.warn("Official match statistics for recent player ratings are temporarily unavailable", {
-      teamId,
-      error: ratingResult.reason
-    });
   }
   return normalizeOfficialTeamSquad(squadPayload, {
     teamId,
     providerTeamId,
     seasonId,
     photoByPersonId,
-    ratingByPersonId,
     photoSourcePage
   });
 }
