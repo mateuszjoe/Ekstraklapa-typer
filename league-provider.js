@@ -5,7 +5,12 @@ export const OFFICIAL_LEAGUE_SOURCE = "ekstraklasa-match-center";
 export const LEAGUE_CACHE_TTL_MS = 5 * 60 * 1000;
 
 const REQUEST_TIMEOUT_MS = 12_000;
+const OFFICIAL_PAGE_TIMEOUT_MS = 7_000;
 const LINEUP_CACHE_TTL_MS = 45_000;
+const TEAM_SQUAD_CACHE_TTL_MS = 15 * 60 * 1000;
+const OFFICIAL_SITE_BASE = "https://ekstraklasa.org";
+const OFFICIAL_MEDIA_HOST = "media.cms.ekstraklasa.org";
+const MAX_OFFICIAL_TEAM_PAGE_BYTES = 4 * 1024 * 1024;
 const EXPECTED_MATCH_COUNT = 306;
 const EXPECTED_TEAM_COUNT = 18;
 const EXPECTED_MATCHDAY_COUNT = 34;
@@ -24,6 +29,44 @@ const STATUS_MAP = Object.freeze({
 
 const NO_SCORE_STATUSES = new Set(["NS", "PST", "SUSP", "CANC"]);
 const FINAL_STATUSES = new Set(["FT", "AWD"]);
+
+const OFFICIAL_CLUB_SLUGS = Object.freeze({
+  cracovia: "cracovia",
+  "gks-katowice": "gks-katowice",
+  "gornik-zabrze": "gornik-zabrze",
+  jagiellonia: "jagiellonia-bialystok",
+  korona: "korona-kielce",
+  lech: "lech-poznan",
+  legia: "legia-warszawa",
+  motor: "motor-lublin",
+  piast: "piast-gliwice",
+  pogon: "pogon-szczecin",
+  radomiak: "radomiak-radom",
+  rakow: "rakow-czestochowa",
+  slask: "slask-wroclaw",
+  widzew: "widzew-lodz",
+  wieczysta: "wieczysta-krakow",
+  "wisla-krakow": "wisla-krakow",
+  "wisla-plock": "wisla-plock",
+  zaglebie: "zagebie-lubin"
+});
+
+const PLAYER_POSITION_GROUPS = Object.freeze({
+  goalkeeper: { id: "goalkeepers", label: "Bramkarze", singular: "Bramkarz", order: 0 },
+  defender: { id: "defenders", label: "Obrońcy", singular: "Obrońca", order: 1 },
+  midfielder: { id: "midfielders", label: "Pomocnicy", singular: "Pomocnik", order: 2 },
+  attacker: { id: "forwards", label: "Napastnicy", singular: "Napastnik", order: 3 },
+  forward: { id: "forwards", label: "Napastnicy", singular: "Napastnik", order: 3 }
+});
+
+const PLAYER_STAT_ALIASES = Object.freeze({
+  appearances: ["appearances", "games_played", "matches_played", "matches"],
+  goals: ["goals"],
+  assists: ["goal_assists", "goal_assist", "assists"],
+  cleanSheets: ["clean_sheets", "clean_sheet"],
+  yellowCards: ["yellow_cards", "yellow_card", "yellow_cards_count"],
+  redCards: ["total_red_cards", "straight_red_cards", "red_card", "red_cards", "red_cards_count"]
+});
 
 function comparable(value) {
   return String(value || "")
@@ -65,6 +108,8 @@ let cachedLeaguePayload = null;
 let cachedLeagueUntil = 0;
 let leagueRequestInFlight = null;
 const cachedLineups = new Map();
+const cachedTeamSquads = new Map();
+const teamSquadRequestsInFlight = new Map();
 
 export function isOfficialMatchId(value) {
   return UUID_PATTERN.test(String(value || "").trim());
@@ -324,6 +369,25 @@ async function fetchOfficialJson(path, fetchImpl = fetch) {
   }
 }
 
+async function fetchOfficialText(url, fetchImpl = fetch) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), OFFICIAL_PAGE_TIMEOUT_MS);
+  try {
+    const response = await fetchImpl(url, {
+      headers: { Accept: "text/html,application/xhtml+xml" },
+      signal: controller.signal
+    });
+    if (!response.ok) throw new Error(`Official Ekstraklasa site returned HTTP ${response.status}`);
+    const declaredLength = Number(response.headers?.get?.("content-length")) || 0;
+    if (declaredLength > MAX_OFFICIAL_TEAM_PAGE_BYTES) throw new Error("Official team page is unexpectedly large");
+    const text = await response.text();
+    if (text.length > MAX_OFFICIAL_TEAM_PAGE_BYTES) throw new Error("Official team page is unexpectedly large");
+    return text;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function loadOfficialLeaguePayload(fetchImpl) {
   const seasonPayload = await fetchOfficialJson("/v1/seasons/current", fetchImpl);
   const seasonId = seasonPayload?.data?.season_id;
@@ -358,6 +422,441 @@ export async function getOfficialLeaguePayload({ fetchImpl = fetch, force = fals
     if (cachedLeaguePayload) {
       console.warn("Official league refresh failed; serving the last valid payload", error);
       return cachedLeaguePayload;
+    }
+    throw error;
+  }
+}
+
+function finiteStatNumber(value) {
+  if (value && typeof value === "object") {
+    for (const key of ["total", "value", "count", "amount"]) {
+      const nested = Number(value[key]);
+      if (Number.isFinite(nested)) return nested;
+    }
+    return null;
+  }
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function normalizedStatsRecord(value) {
+  const record = {};
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const key = String(item?.key || item?.name || item?.stat || "").trim().toLowerCase();
+      const number = finiteStatNumber(item?.value ?? item?.total ?? item?.count);
+      if (key && number !== null) record[key] = number;
+    }
+    return record;
+  }
+  if (value && typeof value === "object") {
+    for (const [rawKey, rawValue] of Object.entries(value)) {
+      const key = String(rawKey || "").trim().toLowerCase();
+      const number = finiteStatNumber(rawValue);
+      if (key && number !== null) record[key] = number;
+    }
+  }
+  return record;
+}
+
+function statValue(record, aliases, fallback = 0) {
+  for (const alias of aliases) {
+    const value = Number(record?.[alias]);
+    if (Number.isFinite(value)) return value;
+  }
+  return fallback;
+}
+
+function nonNegativeIntegerStat(record, aliases) {
+  return Math.max(0, Math.round(statValue(record, aliases, 0)));
+}
+
+function normalizedSquadPosition(value) {
+  const key = String(value || "").trim().toLowerCase();
+  return PLAYER_POSITION_GROUPS[key] ? key === "forward" ? "attacker" : key : "";
+}
+
+function normalizedOfficialMediaUrl(value) {
+  const raw = String(value || "")
+    .replace(/\\u0026/gi, "&")
+    .replace(/\\u003d/gi, "=")
+    .replace(/&amp;/gi, "&")
+    .trim();
+  if (!raw || raw === "$undefined") return "";
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "https:"
+      || url.hostname !== OFFICIAL_MEDIA_HOST
+      || url.username
+      || url.password) return "";
+    url.searchParams.set("width", "360");
+    url.searchParams.set("format", "webp");
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
+export function extractOfficialPlayerPhotos(html) {
+  const text = String(html || "");
+  const chunks = [];
+  const chunkPattern = /<script[^>]*>\s*self\.__next_f\.push\((\[[\s\S]*?\])\)\s*<\/script>/gi;
+  for (const match of text.matchAll(chunkPattern)) {
+    try {
+      const payload = JSON.parse(match[1]);
+      if (payload?.[0] === 1 && typeof payload[1] === "string") chunks.push(payload[1]);
+    } catch {
+      // An unrelated or partial RSC chunk must not invalidate the whole page.
+    }
+  }
+  const rsc = chunks.join("");
+  const marker = '"initialPlayerStats":';
+  const markerIndex = rsc.indexOf(marker);
+  const startIndex = markerIndex >= 0 ? rsc.indexOf("[", markerIndex + marker.length) : -1;
+  if (startIndex < 0) return new Map();
+  let depth = 0;
+  let quoted = false;
+  let escaped = false;
+  let serialized = "";
+  for (let index = startIndex; index < rsc.length; index += 1) {
+    const character = rsc[index];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') quoted = false;
+    } else if (character === '"') {
+      quoted = true;
+    } else if (character === "[") {
+      depth += 1;
+    } else if (character === "]") {
+      depth -= 1;
+      if (depth === 0) {
+        serialized = rsc.slice(startIndex, index + 1);
+        break;
+      }
+    }
+  }
+  if (!serialized) return new Map();
+  let players;
+  try {
+    players = JSON.parse(serialized);
+  } catch {
+    return new Map();
+  }
+  const photosBySlug = new Map();
+  const playerLinkPattern = /<a\b[^>]*href="\/kluby\/([^/"?#]+)\/zawodnik\/([^/"?#]+)\/"[^>]*>([\s\S]*?)<\/a>/gi;
+  for (const linkMatch of text.matchAll(playerLinkPattern)) {
+    const slug = String(linkMatch[2] || "").trim();
+    if (!slug) continue;
+    let visiblePhoto = "";
+    const imagePattern = /<img\b[^>]*\bsrc="([^"]+)"[^>]*>/gi;
+    for (const imageMatch of linkMatch[3].matchAll(imagePattern)) {
+      const tag = imageMatch[0];
+      const alt = tag.match(/\balt="([^"]*)"/i)?.[1]?.trim() || "";
+      const candidate = normalizedOfficialMediaUrl(imageMatch[1]);
+      if (alt && candidate) visiblePhoto = candidate;
+    }
+    if (visiblePhoto) photosBySlug.set(slug, visiblePhoto);
+  }
+  const photos = new Map();
+  for (const player of Array.isArray(players) ? players : []) {
+    const id = String(player?.person_id || "").trim();
+    const photoUrl = normalizedOfficialMediaUrl(player?.photo_url)
+      || photosBySlug.get(String(player?.slug || "").trim())
+      || "";
+    if (UUID_PATTERN.test(id) && photoUrl) photos.set(id, photoUrl);
+  }
+  return photos;
+}
+
+function normalizedSquadPlayer(row, photoByPersonId = new Map()) {
+  const person = row?.person && typeof row.person === "object" ? row.person : row;
+  const id = String(row?.person_id || person?.id || "").trim();
+  const position = normalizedSquadPosition(person?.formation || row?.position);
+  const firstName = String(person?.first_name || "").trim();
+  const lastName = String(person?.last_name || "").trim();
+  const name = String(person?.known_name || `${firstName} ${lastName}`.trim() || person?.match_name || "").trim();
+  if (!UUID_PATTERN.test(id) || !position || !name) return null;
+  const rawStats = normalizedStatsRecord(row?.stat);
+  return {
+    id,
+    name,
+    firstName,
+    lastName,
+    position,
+    positionLabel: PLAYER_POSITION_GROUPS[position].singular,
+    photoUrl: photoByPersonId.get(id) || "",
+    stats: {
+      appearances: nonNegativeIntegerStat(rawStats, PLAYER_STAT_ALIASES.appearances),
+      goals: nonNegativeIntegerStat(rawStats, PLAYER_STAT_ALIASES.goals),
+      assists: nonNegativeIntegerStat(rawStats, PLAYER_STAT_ALIASES.assists),
+      cleanSheets: nonNegativeIntegerStat(rawStats, PLAYER_STAT_ALIASES.cleanSheets),
+      yellowCards: nonNegativeIntegerStat(rawStats, PLAYER_STAT_ALIASES.yellowCards),
+      redCards: nonNegativeIntegerStat(rawStats, PLAYER_STAT_ALIASES.redCards),
+      recentRating: null,
+      ratedAppearances: 0
+    }
+  };
+}
+
+export function normalizeOfficialTeamSquad(
+  payload,
+  {
+    teamId,
+    providerTeamId,
+    seasonId,
+    photoByPersonId = new Map(),
+    ratingByPersonId = new Map(),
+    updatedAt = new Date().toISOString(),
+    photoSourcePage = ""
+  } = {}
+) {
+  if (!localTeamById.has(teamId)
+    || !isOfficialMatchId(providerTeamId)
+    || !isOfficialMatchId(seasonId)
+    || !Array.isArray(payload?.data)) {
+    throw new Error("Official league API returned an invalid team squad");
+  }
+  const eligibleRows = payload.data
+    .filter((row) => {
+      const rowTeamId = String(row?.team_id || row?.team?.id || "").trim();
+      const rowSeasonId = String(row?.season_id || "").trim();
+      return (!rowTeamId || rowTeamId === providerTeamId) && (!rowSeasonId || rowSeasonId === seasonId);
+    });
+  const players = eligibleRows
+    .map((row) => normalizedSquadPlayer(row, photoByPersonId))
+    .filter(Boolean);
+  const uniquePlayers = new Map(players.map((player) => [player.id, player]));
+  if (uniquePlayers.size < 10 || uniquePlayers.size > 70) {
+    throw new Error(`Official league API returned ${uniquePlayers.size}/${eligibleRows.length} valid squad players`);
+  }
+  for (const player of uniquePlayers.values()) {
+    const rating = ratingByPersonId.get(player.id);
+    if (rating && Number.isFinite(rating.average)) {
+      player.stats.recentRating = Math.round(rating.average * 10) / 10;
+      player.stats.ratedAppearances = Math.max(1, Math.min(3, Number(rating.appearances) || 1));
+    }
+  }
+  const groups = Object.values(PLAYER_POSITION_GROUPS)
+    .filter((group, index, values) => values.findIndex((candidate) => candidate.id === group.id) === index)
+    .sort((left, right) => left.order - right.order)
+    .map((group) => ({
+      id: group.id,
+      label: group.label,
+      players: [...uniquePlayers.values()]
+        .filter((player) => PLAYER_POSITION_GROUPS[player.position].id === group.id)
+        .sort((left, right) => (
+          left.lastName.localeCompare(right.lastName, "pl")
+          || left.name.localeCompare(right.name, "pl")
+        ))
+    }));
+  return {
+    teamId,
+    providerTeamId,
+    seasonId,
+    players: groups.flatMap((group) => group.players),
+    groups,
+    updatedAt,
+    source: OFFICIAL_LEAGUE_SOURCE,
+    photoSource: photoByPersonId.size ? "official-ekstraklasa-cdn" : "",
+    photoSourcePage,
+    ratingSource: "ekstraklapa-typer-model-v1"
+  };
+}
+
+export function officialMatchPlayerRating(row, position) {
+  const stats = normalizedStatsRecord(row?.stat);
+  const minutes = statValue(stats, ["mins_played", "minutes_played", "minutes"], 0);
+  if (minutes < 15) return null;
+  const goals = statValue(stats, ["goals"], 0);
+  const assists = statValue(stats, ["goal_assists", "goal_assist", "assists"], 0);
+  const yellowCards = statValue(stats, ["yellow_cards", "yellow_card"], 0);
+  const redCards = statValue(stats, ["total_red_cards", "red_cards", "red_card"], 0);
+  const ownGoals = statValue(stats, ["own_goals", "own_goal"], 0);
+  const missedPenalties = statValue(stats, ["penalties_missed", "penalty_missed"], 0);
+  const errorsLeadingToGoal = statValue(stats, ["errors_leading_to_goal", "error_lead_to_goal"], 0);
+  const isGoalkeeper = position === "goalkeeper";
+  const clamp = (value, minimum, maximum) => Math.max(minimum, Math.min(maximum, value));
+  let rating = 6;
+  rating += goals * (position === "goalkeeper" || position === "defender" ? 1.3 : position === "midfielder" ? 1.1 : 1);
+  rating += assists * 0.7;
+  rating -= yellowCards * 0.2;
+  rating -= redCards * 1.2;
+  rating -= ownGoals;
+  rating -= missedPenalties * 0.8;
+  rating -= errorsLeadingToGoal * 0.7;
+  if (isGoalkeeper) {
+    const saves = statValue(stats, ["saves", "saves_made"], 0);
+    const goalsConceded = statValue(stats, ["goals_conceded"], 0);
+    const expectedGoalsConceded = statValue(stats, ["expected_goals_conceded"], 0);
+    const highClaims = statValue(stats, ["good_high_claim", "total_high_claim"], 0);
+    rating += minutes >= 60 && goalsConceded === 0 ? 0.45 : 0;
+    rating += Math.min(0.56, saves * 0.08);
+    rating += Math.min(0.18, highClaims * 0.05);
+    rating += expectedGoalsConceded > 0 ? clamp((expectedGoalsConceded - goalsConceded) * 0.32, -0.45, 0.55) : 0;
+    rating -= Math.min(0.45, goalsConceded * 0.12);
+  } else {
+    const shotsOnTarget = statValue(stats, ["ontarget_scoring_att", "shots_on_target"], 0);
+    const chancesCreated = statValue(stats, ["big_chance_created"], 0);
+    const keyPasses = statValue(stats, ["total_att_assist", "key_passes"], 0);
+    const tacklesWon = statValue(stats, ["won_tackle", "tackles_won"], 0);
+    const interceptions = statValue(stats, ["interception", "interceptions"], 0);
+    const clearances = statValue(stats, ["total_clearance", "clearances"], 0);
+    const blocks = statValue(stats, ["outfielder_block", "blocked_shots"], 0);
+    const recoveries = statValue(stats, ["ball_recovery", "recoveries"], 0);
+    const duelsWon = statValue(stats, ["duel_won"], 0);
+    const duelsLost = statValue(stats, ["duel_lost"], 0);
+    const totalPasses = statValue(stats, ["total_pass"], 0);
+    const accuratePasses = statValue(stats, ["accurate_pass"], 0);
+    const fouls = statValue(stats, ["fouls"], 0);
+    const possessionLost = statValue(stats, ["poss_lost_all"], 0);
+    const dispossessed = statValue(stats, ["dispossessed"], 0);
+    const errorsLeadingToShot = statValue(stats, ["error_lead_to_shot"], 0);
+    rating += Math.min(0.24, Math.max(0, shotsOnTarget - goals) * 0.08);
+    rating += Math.min(0.5, chancesCreated * 0.25);
+    rating += Math.min(0.32, keyPasses * 0.08);
+    rating += Math.min(0.32, tacklesWon * 0.08);
+    rating += Math.min(0.24, interceptions * 0.08);
+    rating += Math.min(0.2, clearances * 0.025);
+    rating += Math.min(0.2, blocks * 0.08);
+    rating += Math.min(0.2, recoveries * 0.02);
+    if (duelsWon + duelsLost >= 5) rating += clamp((duelsWon / (duelsWon + duelsLost) - 0.5) * 0.7, -0.22, 0.22);
+    if (totalPasses >= 10) rating += clamp((accuratePasses / totalPasses - 0.78) * 1.2, -0.25, 0.25);
+    rating -= Math.min(0.2, fouls * 0.04);
+    rating -= Math.min(0.2, Math.max(0, possessionLost - 12) * 0.015);
+    rating -= Math.min(0.2, dispossessed * 0.05);
+    rating -= errorsLeadingToShot * 0.35;
+  }
+  return clamp(Math.round(rating * 10) / 10, 3, 10);
+}
+
+export function formatPlayerRating(value) {
+  if (value === null || value === undefined || value === "") return "—";
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toFixed(1).replace(".", ",") : "—";
+}
+
+async function recentTeamPlayerRatings(league, teamId, providerTeamId, positionByPersonId, fetchImpl) {
+  const recentMatches = (league?.matches || [])
+    .filter((match) => FINAL_STATUSES.has(match.status) && (match.home === teamId || match.away === teamId))
+    .sort((left, right) => new Date(right.kickoffAt || 0).getTime() - new Date(left.kickoffAt || 0).getTime())
+    .slice(0, 3);
+  if (!recentMatches.length) return new Map();
+  const payloadResults = await Promise.allSettled(recentMatches.map((match) => (
+    fetchOfficialJson(`/v1/match_details/team_players/${encodeURIComponent(match.providerId)}`, fetchImpl)
+  )));
+  const payloads = payloadResults
+    .filter((result) => result.status === "fulfilled")
+    .map((result) => result.value);
+  for (const result of payloadResults) {
+    if (result.status === "rejected") {
+      console.warn("One recent match payload is unavailable; calculating ratings from the remaining matches", result.reason);
+    }
+  }
+  const ratings = new Map();
+  for (const payload of payloads) {
+    for (const row of Array.isArray(payload?.data) ? payload.data : []) {
+      if (String(row?.team_id || "").trim() !== providerTeamId) continue;
+      const personId = String(row?.person_id || row?.person?.id || "").trim();
+      if (!UUID_PATTERN.test(personId)) continue;
+      const rating = officialMatchPlayerRating(row, positionByPersonId.get(personId));
+      if (rating === null) continue;
+      const values = ratings.get(personId) || [];
+      values.push(rating);
+      ratings.set(personId, values);
+    }
+  }
+  return new Map([...ratings].map(([personId, values]) => [
+    personId,
+    {
+      average: values.reduce((sum, value) => sum + value, 0) / values.length,
+      appearances: values.length
+    }
+  ]));
+}
+
+async function loadOfficialTeamSquad(teamId, fetchImpl) {
+  const league = await getOfficialLeaguePayload({ fetchImpl });
+  const standing = league.standings.find((row) => row.teamId === teamId);
+  if (!standing || !isOfficialMatchId(standing.providerTeamId)) {
+    throw new Error("Official league API did not return the selected team");
+  }
+  const seasonId = league.season.id;
+  const providerTeamId = standing.providerTeamId;
+  const encodedSeasonId = encodeURIComponent(seasonId);
+  const encodedTeamId = encodeURIComponent(providerTeamId);
+  const squadPayload = await fetchOfficialJson(
+    `/v1/team_season_squad?season_id=${encodedSeasonId}&team_id=${encodedTeamId}`,
+    fetchImpl
+  );
+  const clubSlug = OFFICIAL_CLUB_SLUGS[teamId];
+  const photoSourcePage = clubSlug ? `${OFFICIAL_SITE_BASE}/kluby/${clubSlug}/?tab=squad` : "";
+  const baseSquad = normalizeOfficialTeamSquad(squadPayload, {
+    teamId,
+    providerTeamId,
+    seasonId,
+    photoSourcePage
+  });
+  const positionByPersonId = new Map(baseSquad.players.map((player) => [player.id, player.position]));
+  const [photoResult, ratingResult] = await Promise.allSettled([
+    photoSourcePage
+      ? fetchOfficialText(photoSourcePage, fetchImpl).then(extractOfficialPlayerPhotos)
+      : Promise.resolve(new Map()),
+    recentTeamPlayerRatings(
+      league,
+      teamId,
+      providerTeamId,
+      positionByPersonId,
+      fetchImpl
+    )
+  ]);
+  const photoByPersonId = photoResult.status === "fulfilled" ? photoResult.value : new Map();
+  const ratingByPersonId = ratingResult.status === "fulfilled" ? ratingResult.value : new Map();
+  if (photoResult.status === "rejected") {
+    console.warn("Official player photos are temporarily unavailable", { teamId, error: photoResult.reason });
+  }
+  if (ratingResult.status === "rejected") {
+    console.warn("Official match statistics for recent player ratings are temporarily unavailable", {
+      teamId,
+      error: ratingResult.reason
+    });
+  }
+  return normalizeOfficialTeamSquad(squadPayload, {
+    teamId,
+    providerTeamId,
+    seasonId,
+    photoByPersonId,
+    ratingByPersonId,
+    photoSourcePage
+  });
+}
+
+export async function getOfficialTeamSquad(teamId, { fetchImpl = fetch, force = false } = {}) {
+  const normalizedTeamId = String(teamId || "").trim();
+  if (!localTeamById.has(normalizedTeamId)) throw new Error("Invalid local team id");
+  const now = Date.now();
+  const cached = cachedTeamSquads.get(normalizedTeamId);
+  if (!force && cached && cached.expiresAt > now) return cached.payload;
+  if (!teamSquadRequestsInFlight.has(normalizedTeamId)) {
+    const request = loadOfficialTeamSquad(normalizedTeamId, fetchImpl)
+      .then((payload) => {
+        cachedTeamSquads.set(normalizedTeamId, {
+          payload,
+          expiresAt: Date.now() + TEAM_SQUAD_CACHE_TTL_MS
+        });
+        return payload;
+      })
+      .finally(() => {
+        teamSquadRequestsInFlight.delete(normalizedTeamId);
+      });
+    teamSquadRequestsInFlight.set(normalizedTeamId, request);
+  }
+  try {
+    return await teamSquadRequestsInFlight.get(normalizedTeamId);
+  } catch (error) {
+    if (cached?.payload) {
+      console.warn("Official team squad refresh failed; serving the last valid payload", { teamId: normalizedTeamId, error });
+      return cached.payload;
     }
     throw error;
   }

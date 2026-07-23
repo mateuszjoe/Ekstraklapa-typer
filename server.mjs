@@ -3,7 +3,12 @@ import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { matches as baseMatches, teamById } from "./data.js";
-import { getOfficialLeaguePayload, getOfficialMatchLineup, isOfficialMatchId } from "./league-provider.js";
+import {
+  getOfficialLeaguePayload,
+  getOfficialMatchLineup,
+  getOfficialTeamSquad,
+  isOfficialMatchId
+} from "./league-provider.js";
 
 const root = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const localEnv = await loadLocalEnv(join(root, ".env"));
@@ -538,6 +543,26 @@ const server = createServer(async (req, res) => {
         const lineup = await getOfficialMatchLineup(providerMatchId);
         res.writeHead(200, { "content-type": mime[".json"], "cache-control": "no-store" });
         res.end(JSON.stringify(lineup));
+      } catch (error) {
+        error.status = 502;
+        throw error;
+      }
+      return;
+    }
+    if (url.pathname === "/api/league/team-squad" && req.method === "GET") {
+      const teamId = String(url.searchParams.get("team") || "").trim();
+      if (!teamById[teamId]) {
+        const error = new Error("Nieprawidłowy identyfikator drużyny.");
+        error.status = 400;
+        throw error;
+      }
+      try {
+        const squad = await getOfficialTeamSquad(teamId);
+        res.writeHead(200, {
+          "content-type": mime[".json"],
+          "cache-control": "public, max-age=300, stale-while-revalidate=1800"
+        });
+        res.end(JSON.stringify(squad));
       } catch (error) {
         error.status = 502;
         throw error;

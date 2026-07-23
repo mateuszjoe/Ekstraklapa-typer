@@ -4,6 +4,7 @@ import { getOfficialLivePayload } from "../live-provider.js";
 import {
   getOfficialLeaguePayload,
   getOfficialMatchLineup,
+  getOfficialTeamSquad,
   isOfficialMatchId,
   isPublishedLineup
 } from "../league-provider.js";
@@ -1911,6 +1912,15 @@ async function handleRequest(request, env) {
     }
     return jsonResponse(request, env, await publicMatchLineup(env, providerMatchId), 200, {
       "Cache-Control": "public, max-age=15, s-maxage=30, stale-while-revalidate=30"
+    });
+  }
+  if (request.method === "GET" && url.pathname === "/api/league/team-squad") {
+    const teamId = String(url.searchParams.get("team") || "").trim();
+    if (!TEAM_BY_ID.has(teamId)) {
+      throw new HttpError(400, "invalid-team-id", "Nieprawidłowy identyfikator drużyny.");
+    }
+    return jsonResponse(request, env, await getOfficialTeamSquad(teamId), 200, {
+      "Cache-Control": "public, max-age=300, s-maxage=1800, stale-while-revalidate=86400"
     });
   }
   if (request.method === "GET" && url.pathname === "/api/admin/players") {

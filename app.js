@@ -1,7 +1,12 @@
 import { matches as baseMatches, teamById, teams, roundDatesByNumber } from "./data.js";
 import { firebaseConfig, notificationApiBase, webPushPublicKey } from "./firebase-config.js";
 import { getOfficialLivePayload } from "./live-provider.js";
-import { getOfficialLeaguePayload, getOfficialMatchLineup } from "./league-provider.js";
+import {
+  formatPlayerRating,
+  getOfficialLeaguePayload,
+  getOfficialMatchLineup,
+  getOfficialTeamSquad
+} from "./league-provider.js";
 
 const bootStartedAt = performance.now();
 const app = document.querySelector("#app");
@@ -23,7 +28,7 @@ const NOTIFICATION_OUTBOX_CHAT_TTL_MS = 9 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PLAYER_TTL_MS = 14 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PICK_TTL_MS = 45 * 24 * 60 * 60 * 1000;
 const NOTIFICATION_OUTBOX_NAME_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const APP_SERVICE_WORKER_VERSION = "30";
+const APP_SERVICE_WORKER_VERSION = "31";
 const FINAL = new Set(["FT", "AET", "PEN", "AWD", "WO", "FINISHED", "AWARDED"]);
 const LIVE = new Set(["1H", "HT", "2H", "ET", "BT", "P", "LIVE", "IN_PLAY", "PAUSED"]);
 const VIEWS = new Set(["matches", "ekstraklasa", "ranking", "rules", "settings", "admin"]);
@@ -43,6 +48,7 @@ const CHAT_PAGE_LIMIT = 20;
 const CHAT_REACTION_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🔥"];
 const LEAGUE_CACHE_MAX_AGE_MS = 5 * 60 * 1000;
 const LINEUP_PENDING_CACHE_MS = 60 * 1000;
+const TEAM_SQUAD_CACHE_MAX_AGE_MS = 15 * 60 * 1000;
 
 function routeSegment(value) {
   try {
@@ -151,6 +157,10 @@ const state = {
   lineupStatusByMatch: {},
   lineupErrorByMatch: {},
   lineupLoadedAtByMatch: {},
+  teamSquadsById: {},
+  teamSquadStatusById: {},
+  teamSquadErrorById: {},
+  teamSquadLoadedAtById: {},
   predictions: {},
   confirmedPredictions: {},
   avatar: { ...DEFAULT_AVATAR },
@@ -884,6 +894,89 @@ function leagueOverviewView() {
     </section>`;
 }
 
+function playerInitials(name) {
+  return String(name || "")
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part[0] || "")
+    .join("")
+    .toLocaleUpperCase("pl-PL")
+    .slice(0, 2) || "ET";
+}
+
+function playerStatHtml(label, value, title = "") {
+  const normalizedValue = value === null || value === undefined || value === "" ? "—" : value;
+  return `<span${title ? ` title="${escapeHtml(title)}"` : ""}><b>${escapeHtml(String(normalizedValue))}</b><small>${escapeHtml(label)}</small></span>`;
+}
+
+function leaguePlayerCardHtml(player) {
+  const stats = player?.stats || {};
+  const isGoalkeeper = player?.position === "goalkeeper";
+  const rating = formatPlayerRating(stats.recentRating);
+  const ratedAppearances = Number(stats.ratedAppearances) || 0;
+  const ratingLabel = ratedAppearances ? `Ocena (${ratedAppearances})` : "Ocena";
+  const ratingTitle = ratedAppearances
+    ? `Ocena Typera z ${ratedAppearances} z maksymalnie 3 ostatnich meczów drużyny`
+    : "Ocena pojawi się po występie trwającym co najmniej 15 minut";
+  const photo = player?.photoUrl
+    ? `<img src="${escapeHtml(player.photoUrl)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" data-player-photo>`
+    : "";
+  const performanceStats = isGoalkeeper
+    ? [
+        ["Wyst.", Number(stats.appearances) || 0],
+        ["Czyste", Number(stats.cleanSheets) || 0, "Czyste konta"],
+        ["ŻK", Number(stats.yellowCards) || 0, "Żółte kartki"],
+        ["CzK", Number(stats.redCards) || 0, "Czerwone kartki"],
+        [ratingLabel, rating, ratingTitle]
+      ]
+    : [
+        ["Wyst.", Number(stats.appearances) || 0],
+        ["Gole", Number(stats.goals) || 0],
+        ["Asysty", Number(stats.assists) || 0],
+        ["ŻK", Number(stats.yellowCards) || 0, "Żółte kartki"],
+        ["CzK", Number(stats.redCards) || 0, "Czerwone kartki"],
+        [ratingLabel, rating, ratingTitle]
+      ];
+  return `<article class="squad-player-card">
+    <div class="squad-player-head">
+      <span class="squad-player-photo" data-player-photo-frame>${photo}<i aria-hidden="true">${escapeHtml(playerInitials(player?.name))}</i></span>
+      <div><h4>${escapeHtml(player?.name || "Zawodnik")}</h4><p>${escapeHtml(player?.positionLabel || "")}</p></div>
+    </div>
+    <div class="squad-player-stats">${performanceStats.map(([label, value, title]) => playerStatHtml(label, value, title)).join("")}</div>
+  </article>`;
+}
+
+function leagueTeamSquadHtml(teamId) {
+  const squad = state.teamSquadsById[teamId];
+  const status = state.teamSquadStatusById[teamId] || "idle";
+  const error = state.teamSquadErrorById[teamId] || "";
+  if (status === "loading" || (status === "idle" && !squad)) {
+    return `<article class="league-panel squad-panel">
+      <div class="league-panel-head"><div><p class="eyebrow">KADRA ZGŁOSZONA</p><h2>Zawodnicy</h2></div></div>
+      <div class="squad-loading"><span class="league-loading-mark"></span><h3>Pobieramy aktualną kadrę…</h3><p>Łączymy skład i statystyki z oficjalnego Centrum Meczowego.</p></div>
+    </article>`;
+  }
+  if (!squad || status === "error") {
+    return `<article class="league-panel squad-panel">
+      <div class="league-panel-head"><div><p class="eyebrow">KADRA ZGŁOSZONA</p><h2>Zawodnicy</h2></div></div>
+      <div class="squad-loading"><span class="lineup-clock">XI</span><h3>Nie udało się pobrać kadry</h3><p>${escapeHtml(error || "Oficjalne dane są chwilowo niedostępne.")}</p><button type="button" class="primary-button" data-team-squad-retry="${escapeHtml(teamId)}">SPRÓBUJ PONOWNIE</button></div>
+    </article>`;
+  }
+  const groups = Array.isArray(squad.groups) ? squad.groups : [];
+  return `<article class="league-panel squad-panel">
+    <div class="league-panel-head squad-panel-head">
+      <div><p class="eyebrow">KADRA ZGŁOSZONA</p><h2>Zawodnicy</h2></div>
+      <span>${squad.players?.length || 0} zawodników · sezon ${escapeHtml(state.leagueData?.season?.name || "2026/27")}</span>
+    </div>
+    <div class="squad-groups">${groups.map((group) => `<section class="squad-group" aria-labelledby="squad-${escapeHtml(teamId)}-${escapeHtml(group.id)}">
+      <header><h3 id="squad-${escapeHtml(teamId)}-${escapeHtml(group.id)}">${escapeHtml(group.label)}</h3><span>${group.players?.length || 0}</span></header>
+      <div class="squad-player-grid">${(group.players || []).map(leaguePlayerCardHtml).join("") || `<p class="league-empty">Brak zgłoszonych zawodników w tej formacji.</p>`}</div>
+    </section>`).join("")}</div>
+    <footer class="squad-source-note"><strong>Źródło:</strong> oficjalne Centrum Meczowe i serwis Ekstraklasy. Zdjęcie pojawia się tylko wtedy, gdy publikuje je oficjalny serwis. „Ocena Typera” jest autorską notą z maksymalnie trzech ostatnich meczów drużyny, w których zawodnik zagrał co najmniej 15 minut; liczba w nawiasie wskazuje liczbę ocenionych meczów, a przed pierwszym takim występem widnieje „—”.</footer>
+  </article>`;
+}
+
 function leagueTeamView(teamId) {
   const team = teamById[teamId];
   if (!team) return leagueOverviewView();
@@ -901,6 +994,7 @@ function leagueTeamView(teamId) {
         <article class="league-panel"><div class="league-panel-head"><div><p class="eyebrow">FORMA</p><h2>Ostatnie wyniki</h2></div></div><div class="league-fixtures">${recent.length ? recent.map((match) => leagueFixtureHtml(match, teamId)).join("") : `<p class="league-empty">Brak rozegranych meczów ${escapeHtml(team.name)} w sezonie 2026/27.</p>`}</div></article>
         <article class="league-panel"><div class="league-panel-head"><div><p class="eyebrow">TERMINARZ</p><h2>Najbliższe mecze</h2></div></div><div class="league-fixtures">${upcoming.length ? upcoming.map((match) => leagueFixtureHtml(match, teamId)).join("") : `<p class="league-empty">Brak kolejnych spotkań w terminarzu.</p>`}</div></article>
       </div>
+      ${leagueTeamSquadHtml(teamId)}
     </section>`;
 }
 
@@ -975,6 +1069,7 @@ async function loadLeagueData({ force = false } = {}) {
   if (!force && fresh) {
     const selected = leagueMatchByRoute();
     if (selected) void loadLeagueLineup(selected);
+    if (state.leagueTeamId) void loadLeagueTeamSquad(state.leagueTeamId);
     return;
   }
   state.leagueStatus = "loading";
@@ -1003,6 +1098,42 @@ async function loadLeagueData({ force = false } = {}) {
   if (state.view === "ekstraklasa") render();
   const selected = leagueMatchByRoute();
   if (selected) void loadLeagueLineup(selected, { force });
+  if (state.leagueTeamId) void loadLeagueTeamSquad(state.leagueTeamId, { force });
+}
+
+async function loadLeagueTeamSquad(teamId, { force = false } = {}) {
+  if (!teamById[teamId] || state.teamSquadStatusById[teamId] === "loading") return;
+  const cached = state.teamSquadsById[teamId];
+  const loadedAt = Number(state.teamSquadLoadedAtById[teamId]) || 0;
+  if (!force && cached && Date.now() - loadedAt < TEAM_SQUAD_CACHE_MAX_AGE_MS) return;
+  state.teamSquadStatusById[teamId] = "loading";
+  state.teamSquadErrorById[teamId] = "";
+  if (state.view === "ekstraklasa" && state.leagueTeamId === teamId) render();
+  try {
+    let payload;
+    try {
+      payload = await fetchLeagueBackend(`/api/league/team-squad?team=${encodeURIComponent(teamId)}`);
+    } catch (backendError) {
+      console.warn("Backend kadry jest niedostępny, używam oficjalnego źródła bezpośrednio:", backendError);
+      payload = await getOfficialTeamSquad(teamId, { force });
+    }
+    if (payload?.teamId !== teamId
+      || !Array.isArray(payload?.players)
+      || !Array.isArray(payload?.groups)
+      || payload.players.length < 10) {
+      throw new Error("Nieprawidłowa odpowiedź kadry");
+    }
+    state.teamSquadsById[teamId] = payload;
+    state.teamSquadStatusById[teamId] = "ready";
+    state.teamSquadErrorById[teamId] = "";
+    state.teamSquadLoadedAtById[teamId] = Date.now();
+  } catch (error) {
+    console.error("Nie udało się pobrać kadry drużyny:", error);
+    state.teamSquadStatusById[teamId] = cached ? "ready" : "error";
+    state.teamSquadErrorById[teamId] = "Aktualna kadra jest teraz chwilowo niedostępna.";
+    state.teamSquadLoadedAtById[teamId] = Date.now();
+  }
+  if (state.view === "ekstraklasa" && state.leagueTeamId === teamId) render();
 }
 
 async function loadLeagueLineup(match, { force = false } = {}) {
@@ -1461,6 +1592,14 @@ function bindRendered() {
     const match = leagueMatchByRoute();
     if (match) void loadLeagueLineup(match, { force: true });
   });
+  app.querySelector("[data-team-squad-retry]")?.addEventListener("click", (event) => {
+    const teamId = event.currentTarget.dataset.teamSquadRetry;
+    if (teamById[teamId]) void loadLeagueTeamSquad(teamId, { force: true });
+  });
+  app.querySelectorAll("[data-player-photo]").forEach((image) => image.addEventListener("error", () => {
+    image.closest("[data-player-photo-frame]")?.classList.add("is-fallback");
+    image.remove();
+  }, { once: true }));
   app.querySelectorAll("[data-avatar-image]").forEach((image) => image.addEventListener("error", () => image.remove(), { once: true }));
 }
 
