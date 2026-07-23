@@ -28,7 +28,7 @@ const NOTIFICATION_OUTBOX_CHAT_TTL_MS = 9 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PLAYER_TTL_MS = 14 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PICK_TTL_MS = 45 * 24 * 60 * 60 * 1000;
 const NOTIFICATION_OUTBOX_NAME_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const APP_SERVICE_WORKER_VERSION = "31";
+const APP_SERVICE_WORKER_VERSION = "32";
 const FINAL = new Set(["FT", "AET", "PEN", "AWD", "WO", "FINISHED", "AWARDED"]);
 const LIVE = new Set(["1H", "HT", "2H", "ET", "BT", "P", "LIVE", "IN_PLAY", "PAUSED"]);
 const VIEWS = new Set(["matches", "ekstraklasa", "ranking", "rules", "settings", "admin"]);
@@ -905,46 +905,54 @@ function playerInitials(name) {
     .slice(0, 2) || "ET";
 }
 
-function playerStatHtml(label, value, title = "") {
-  const normalizedValue = value === null || value === undefined || value === "" ? "—" : value;
-  return `<span${title ? ` title="${escapeHtml(title)}"` : ""}><b>${escapeHtml(String(normalizedValue))}</b><small>${escapeHtml(label)}</small></span>`;
-}
-
-function leaguePlayerCardHtml(player) {
+function leaguePlayerRowHtml(player) {
   const stats = player?.stats || {};
   const isGoalkeeper = player?.position === "goalkeeper";
   const rating = formatPlayerRating(stats.recentRating);
   const ratedAppearances = Number(stats.ratedAppearances) || 0;
-  const ratingLabel = ratedAppearances ? `Ocena (${ratedAppearances})` : "Ocena";
   const ratingTitle = ratedAppearances
     ? `Ocena Typera z ${ratedAppearances} z maksymalnie 3 ostatnich meczów drużyny`
     : "Ocena pojawi się po występie trwającym co najmniej 15 minut";
   const photo = player?.photoUrl
     ? `<img src="${escapeHtml(player.photoUrl)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" data-player-photo>`
     : "";
-  const performanceStats = isGoalkeeper
+  const numericCells = isGoalkeeper
     ? [
-        ["Wyst.", Number(stats.appearances) || 0],
-        ["Czyste", Number(stats.cleanSheets) || 0, "Czyste konta"],
-        ["ŻK", Number(stats.yellowCards) || 0, "Żółte kartki"],
-        ["CzK", Number(stats.redCards) || 0, "Czerwone kartki"],
-        [ratingLabel, rating, ratingTitle]
+        Number(stats.appearances) || 0,
+        Number(stats.cleanSheets) || 0,
+        Number(stats.yellowCards) || 0,
+        Number(stats.redCards) || 0
       ]
     : [
-        ["Wyst.", Number(stats.appearances) || 0],
-        ["Gole", Number(stats.goals) || 0],
-        ["Asysty", Number(stats.assists) || 0],
-        ["ŻK", Number(stats.yellowCards) || 0, "Żółte kartki"],
-        ["CzK", Number(stats.redCards) || 0, "Czerwone kartki"],
-        [ratingLabel, rating, ratingTitle]
+        Number(stats.appearances) || 0,
+        Number(stats.goals) || 0,
+        Number(stats.assists) || 0,
+        Number(stats.yellowCards) || 0,
+        Number(stats.redCards) || 0
       ];
-  return `<article class="squad-player-card">
-    <div class="squad-player-head">
-      <span class="squad-player-photo" data-player-photo-frame>${photo}<i aria-hidden="true">${escapeHtml(playerInitials(player?.name))}</i></span>
-      <div><h4>${escapeHtml(player?.name || "Zawodnik")}</h4><p>${escapeHtml(player?.positionLabel || "")}</p></div>
-    </div>
-    <div class="squad-player-stats">${performanceStats.map(([label, value, title]) => playerStatHtml(label, value, title)).join("")}</div>
-  </article>`;
+  return `<tr>
+    <th scope="row"><span class="squad-table-player"><span class="squad-player-photo" data-player-photo-frame>${photo}<i aria-hidden="true">${escapeHtml(playerInitials(player?.name))}</i></span><strong>${escapeHtml(player?.name || "Zawodnik")}</strong></span></th>
+    ${numericCells.map((value) => `<td>${value}</td>`).join("")}
+    <td class="squad-rating" title="${escapeHtml(ratingTitle)}"><strong>${escapeHtml(rating)}</strong>${ratedAppearances ? `<small>${ratedAppearances} ${ratedAppearances === 1 ? "mecz" : "mecze"}</small>` : ""}</td>
+  </tr>`;
+}
+
+function leagueSquadGroupHtml(group, teamId) {
+  const players = Array.isArray(group?.players) ? group.players : [];
+  const isGoalkeeperGroup = group?.id === "goalkeepers";
+  const headers = isGoalkeeperGroup
+    ? ["Zawodnik", "Wyst.", "Czyste konta", "ŻK", "CzK", "Ocena"]
+    : ["Zawodnik", "Wyst.", "Gole", "Asysty", "ŻK", "CzK", "Ocena"];
+  const groupLabel = String(group?.label || "Zawodnicy");
+  return `<section class="squad-group" aria-labelledby="squad-${escapeHtml(teamId)}-${escapeHtml(group?.id || "")}">
+    <header><h3 id="squad-${escapeHtml(teamId)}-${escapeHtml(group?.id || "")}">${escapeHtml(groupLabel)}</h3><span>${players.length}</span></header>
+    ${players.length ? `<div class="squad-table-scroll" tabindex="0" role="region" aria-label="${escapeHtml(`${groupLabel} – tabela statystyk`)}">
+      <table class="squad-table${isGoalkeeperGroup ? " is-goalkeeper" : ""}">
+        <thead><tr>${headers.map((header) => `<th scope="col">${escapeHtml(header)}</th>`).join("")}</tr></thead>
+        <tbody>${players.map(leaguePlayerRowHtml).join("")}</tbody>
+      </table>
+    </div>` : `<p class="league-empty">Brak zgłoszonych zawodników w tej formacji.</p>`}
+  </section>`;
 }
 
 function leagueTeamSquadHtml(teamId) {
@@ -969,10 +977,7 @@ function leagueTeamSquadHtml(teamId) {
       <div><p class="eyebrow">KADRA ZGŁOSZONA</p><h2>Zawodnicy</h2></div>
       <span>${squad.players?.length || 0} zawodników · sezon ${escapeHtml(state.leagueData?.season?.name || "2026/27")}</span>
     </div>
-    <div class="squad-groups">${groups.map((group) => `<section class="squad-group" aria-labelledby="squad-${escapeHtml(teamId)}-${escapeHtml(group.id)}">
-      <header><h3 id="squad-${escapeHtml(teamId)}-${escapeHtml(group.id)}">${escapeHtml(group.label)}</h3><span>${group.players?.length || 0}</span></header>
-      <div class="squad-player-grid">${(group.players || []).map(leaguePlayerCardHtml).join("") || `<p class="league-empty">Brak zgłoszonych zawodników w tej formacji.</p>`}</div>
-    </section>`).join("")}</div>
+    <div class="squad-groups">${groups.map((group) => leagueSquadGroupHtml(group, teamId)).join("")}</div>
     <footer class="squad-source-note"><strong>Źródło:</strong> oficjalne Centrum Meczowe i serwis Ekstraklasy. Zdjęcie pojawia się tylko wtedy, gdy publikuje je oficjalny serwis. „Ocena Typera” jest autorską notą z maksymalnie trzech ostatnich meczów drużyny, w których zawodnik zagrał co najmniej 15 minut; liczba w nawiasie wskazuje liczbę ocenionych meczów, a przed pierwszym takim występem widnieje „—”.</footer>
   </article>`;
 }
