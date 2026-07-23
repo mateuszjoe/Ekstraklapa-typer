@@ -9,6 +9,7 @@ import {
   getOfficialTeamSquad,
   isOfficialMatchId
 } from "./league-provider.js";
+import { createLocalPlayerRatingsProvider } from "./local-player-ratings.js";
 
 const root = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const localEnv = await loadLocalEnv(join(root, ".env"));
@@ -24,8 +25,20 @@ const staleLiveMaxAgeMs = 5 * 60_000;
 const requestTimeoutMs = 12_000;
 const runtimeDir = join(root, ".cache");
 const stateFile = join(runtimeDir, "ekstraklasa-match-center-state.json");
+const playerRatingsCacheFile = join(runtimeDir, "api-football-player-ratings.json");
 const manualResultsFile = join(root, "manual-results.json");
 const typerMatchIds = new Set(baseMatches.map((match) => match.id));
+const playerRatingsProvider = createLocalPlayerRatingsProvider({
+  apiKey: process.env.API_FOOTBALL_KEY || localEnv.API_FOOTBALL_KEY || "",
+  leagueId: Number(process.env.API_FOOTBALL_LEAGUE_ID || localEnv.API_FOOTBALL_LEAGUE_ID || 106),
+  season: Number(process.env.API_FOOTBALL_SEASON || localEnv.API_FOOTBALL_SEASON || 2026),
+  dailyRequestLimit: Number(
+    process.env.API_FOOTBALL_LOCAL_DAILY_LIMIT
+      || localEnv.API_FOOTBALL_LOCAL_DAILY_LIMIT
+      || 60
+  ),
+  cacheFile: playerRatingsCacheFile
+});
 
 const NO_LONGER_LIVE = new Set(["FT", "AWD", "CANC", "PST"]);
 const mime = {
@@ -557,7 +570,11 @@ const server = createServer(async (req, res) => {
         throw error;
       }
       try {
-        const squad = await getOfficialTeamSquad(teamId);
+        const officialSquad = await getOfficialTeamSquad(teamId);
+        const squad = await playerRatingsProvider.enrichTeamSquad(
+          officialSquad,
+          teamById[teamId].name
+        );
         res.writeHead(200, {
           "content-type": mime[".json"],
           "cache-control": "public, max-age=300, stale-while-revalidate=1800"
@@ -598,6 +615,7 @@ await loadProviderState();
 server.listen(port, () => {
   console.log(`Ekstraklapa Typer: http://localhost:${port}`);
   console.log(`Centrum Meczowe Ekstraklasy: aktywne, cache LIVE ${pollIntervalMs / 1000} s, bez klucza API`);
+  console.log(`Oceny API-Football: ${playerRatingsProvider.configured ? "aktywne" : "brak API_FOOTBALL_KEY (pokazuję brak ocen)"}`);
   runPollingCycle();
 });
 

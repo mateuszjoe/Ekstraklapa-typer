@@ -91,6 +91,20 @@ Zakładka `Ekstraklasa` korzysta z wydzielonego adaptera `league-provider.js`. P
 
 Worker od 120 minut przed pierwszym gwizdkiem sprawdza oficjalny kanał składów. Skład zostaje uznany za opublikowany dopiero po potwierdzeniu dwóch różnych drużyn i 11 unikalnych zawodników podstawowych po każdej stronie. Pierwsza poprawna publikacja jest zapisywana w D1 i uruchamia jedno powiadomienie Web Push na gracza; późniejsze korekty aktualizują widok bez ponownego alarmu.
 
+### Oceny zawodników
+
+Gotowa ocena każdego występu pochodzi z udokumentowanego endpointu API-Football `/fixtures/players`. Typer nie tworzy własnej oceny. Worker pobiera dane dopiero po zakończeniu meczu, zapisuje je w D1 i dla zawodnika oblicza zwykłą średnią z maksymalnie pięciu ostatnich ocenionych występów. Przy mniejszej próbie interfejs pokazuje jej wielkość, np. `7,2 (3 w.)`; po pięciu występach pokazuje samo `7,2`.
+
+Ruch użytkowników nie wywołuje zapytań do API-Football. Jedna kolejka wymaga zwykle jednego pobrania szczegółów na zakończony mecz, a trwały licznik D1 zatrzymuje Workera przed przekroczeniem bezpłatnego limitu. Produkcyjny klucz musi być zapisany wyłącznie jako sekret Cloudflare:
+
+```powershell
+npx wrangler d1 execute DB --remote --file notifications-worker/migrations/0002_api_football_ratings.sql --config notifications-wrangler.jsonc
+npx wrangler secret put API_FOOTBALL_KEY --config notifications-wrangler.jsonc
+npx wrangler deploy --config notifications-wrangler.jsonc
+```
+
+Lokalnie klucz można umieścić w ignorowanym pliku `.env` zgodnie z `.env.example`. API-Football jest zewnętrznym dostawcą, a nie oficjalnym partnerem Ekstraklasy; dostępność ocen zależy od pokrycia danego meczu i planu dostawcy.
+
 ### Ręczna korekta wyniku
 
 W lokalnym serwerze Node awaryjny wynik można wpisać do `manual-results.json` pod identyfikatorem meczu z `data.js`. Można też ustawić `ADMIN_RESULT_TOKEN` i użyć chronionego endpointu:

@@ -1,4 +1,4 @@
-const CACHE_NAME = "ekstraklasa-typer-v36";
+const CACHE_NAME = "ekstraklasa-typer-v37";
 const PUSH_STATE_CACHE = "ekstraklasa-typer-push-state-v1";
 const PUSH_STATE_URL = new URL("./__chat-push-state__", self.registration.scope).href;
 const VAPID_PUBLIC_KEY = "BHxWAMhHw3KJBpTqgJZK38Kr-fPA_dvKIYurfBjxTfuw9ie4D9I0cpYR8S9-5FEmzDYoLoBwdutcR_kLW7cADd0";
@@ -8,12 +8,13 @@ const MAX_ROTATION_RETRIES = 4;
 const OFFLINE_ASSETS = [
   "./",
   "./?app=typer-v2",
-  "./styles.css?v=30",
-  "./app.js?v=35",
+  "./styles.css?v=31",
+  "./app.js?v=36",
   "./data.js",
   "./firebase-config.js",
   "./live-provider.js",
   "./league-provider.js",
+  "./player-rating.js",
   "./manifest.webmanifest?v=18",
   "./assets/fonts/manrope-latin.woff2",
   "./assets/fonts/manrope-latin-ext.woff2",

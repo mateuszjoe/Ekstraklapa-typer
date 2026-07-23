@@ -6,6 +6,7 @@ import {
   getOfficialMatchLineup,
   getOfficialTeamSquad
 } from "./league-provider.js";
+import { formatRecentPlayerRating } from "./player-rating.js";
 
 const bootStartedAt = performance.now();
 const app = document.querySelector("#app");
@@ -27,7 +28,7 @@ const NOTIFICATION_OUTBOX_CHAT_TTL_MS = 9 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PLAYER_TTL_MS = 14 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PICK_TTL_MS = 45 * 24 * 60 * 60 * 1000;
 const NOTIFICATION_OUTBOX_NAME_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const APP_SERVICE_WORKER_VERSION = "32";
+const APP_SERVICE_WORKER_VERSION = "33";
 const FINAL = new Set(["FT", "AET", "PEN", "AWD", "WO", "FINISHED", "AWARDED"]);
 const LIVE = new Set(["1H", "HT", "2H", "ET", "BT", "P", "LIVE", "IN_PLAY", "PAUSED"]);
 const VIEWS = new Set(["matches", "ekstraklasa", "ranking", "rules", "settings", "admin"]);
@@ -1027,6 +1028,7 @@ function playerInitials(name) {
 function leaguePlayerRowHtml(player) {
   const stats = player?.stats || {};
   const isGoalkeeper = player?.position === "goalkeeper";
+  const recentRating = formatRecentPlayerRating(player?.rating);
   const photo = player?.photoUrl
     ? `<img src="${escapeHtml(player.photoUrl)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" data-player-photo>`
     : "";
@@ -1035,18 +1037,20 @@ function leaguePlayerRowHtml(player) {
         ["Wyst.", Number(stats.appearances) || 0],
         ["Czyste", Number(stats.cleanSheets) || 0],
         ["ŻK", Number(stats.yellowCards) || 0],
-        ["CzK", Number(stats.redCards) || 0]
+        ["CzK", Number(stats.redCards) || 0],
+        ["Ocena", recentRating]
       ]
     : [
         ["Wyst.", Number(stats.appearances) || 0],
         ["Gole", Number(stats.goals) || 0],
         ["Asysty", Number(stats.assists) || 0],
         ["ŻK", Number(stats.yellowCards) || 0],
-        ["CzK", Number(stats.redCards) || 0]
+        ["CzK", Number(stats.redCards) || 0],
+        ["Ocena", recentRating]
       ];
   return `<tr role="row">
     <th scope="row" role="rowheader"><span class="squad-table-player"><span class="squad-player-photo" data-player-photo-frame>${photo}<i aria-hidden="true">${escapeHtml(playerInitials(player?.name))}</i></span><strong>${escapeHtml(player?.name || "Zawodnik")}</strong></span></th>
-    ${statisticCells.map(([label, value]) => `<td role="cell" data-label="${escapeHtml(label)}">${value}</td>`).join("")}
+    ${statisticCells.map(([label, value]) => `<td role="cell" data-label="${escapeHtml(label)}"${label === "Ocena" ? ` class="squad-player-rating"` : ""}>${value}</td>`).join("")}
   </tr>`;
 }
 
@@ -1054,8 +1058,8 @@ function leagueSquadGroupHtml(group, teamId) {
   const players = Array.isArray(group?.players) ? group.players : [];
   const isGoalkeeperGroup = group?.id === "goalkeepers";
   const headers = isGoalkeeperGroup
-    ? ["Zawodnik", "Wyst.", "Czyste konta", "ŻK", "CzK"]
-    : ["Zawodnik", "Wyst.", "Gole", "Asysty", "ŻK", "CzK"];
+    ? ["Zawodnik", "Wyst.", "Czyste konta", "ŻK", "CzK", "Ocena"]
+    : ["Zawodnik", "Wyst.", "Gole", "Asysty", "ŻK", "CzK", "Ocena"];
   const groupLabel = String(group?.label || "Zawodnicy");
   return `<section class="squad-group" aria-labelledby="squad-${escapeHtml(teamId)}-${escapeHtml(group?.id || "")}">
     <header><h3 id="squad-${escapeHtml(teamId)}-${escapeHtml(group?.id || "")}">${escapeHtml(groupLabel)}</h3><span>${players.length}</span></header>
@@ -1085,13 +1089,16 @@ function leagueTeamSquadHtml(teamId) {
     </article>`;
   }
   const groups = Array.isArray(squad.groups) ? squad.groups : [];
+  const ratingSourceNote = squad.ratingsConfigured === true && squad.ratingSource === "api-football"
+    ? " Ocena jest średnią z maksymalnie 5 ostatnich ocenionych występów według API-Football."
+    : "";
   return `<article class="league-panel squad-panel">
     <div class="league-panel-head squad-panel-head">
       <div><p class="eyebrow">KADRA ZGŁOSZONA</p><h2>Zawodnicy</h2></div>
       <span>${squad.players?.length || 0} zawodników · sezon ${escapeHtml(state.leagueData?.season?.name || "2026/27")}</span>
     </div>
     <div class="squad-groups">${groups.map((group) => leagueSquadGroupHtml(group, teamId)).join("")}</div>
-    <footer class="squad-source-note"><strong>Źródło:</strong> oficjalne Centrum Meczowe i serwis Ekstraklasy. Statystyki pochodzą bezpośrednio z danych Ekstraklasy, a zdjęcie pojawia się tylko wtedy, gdy publikuje je oficjalny serwis.</footer>
+    <footer class="squad-source-note"><strong>Źródło:</strong> oficjalne Centrum Meczowe i serwis Ekstraklasy. Statystyki podstawowe pochodzą bezpośrednio z danych Ekstraklasy, a zdjęcie pojawia się tylko wtedy, gdy publikuje je oficjalny serwis.${ratingSourceNote}</footer>
   </article>`;
 }
 

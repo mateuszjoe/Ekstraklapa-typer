@@ -8,6 +8,16 @@ import {
   isOfficialMatchId,
   isPublishedLineup
 } from "../league-provider.js";
+import {
+  API_FOOTBALL_RATING_SOURCE,
+  ApiFootballError,
+  MAX_RECENT_PLAYER_RATINGS,
+  apiFootballConfigured,
+  discoverApiFootballFixture,
+  fetchApiFootballFixtureRatings,
+  normalizedRatingPlayerFallbackKey,
+  normalizedRatingPlayerKey
+} from "./api-football-ratings.js";
 
 const webpush = webpushPackage?.default || webpushPackage;
 const SEASON_ID = "2026-27";
@@ -36,6 +46,9 @@ const NEXT_LEAGUE_REFRESH_STATE_KEY = "next_official_league_refresh_at";
 const LEAGUE_REFRESH_MS = 5 * 60 * 1000;
 const LINEUP_POLL_WINDOW_MS = 120 * 60 * 1000;
 const FRESH_STORED_LINEUP_MS = 45 * 1000;
+const API_FOOTBALL_SYNC_LEASE_MS = 5 * 60 * 1000;
+const MAX_API_FOOTBALL_SYNC_ATTEMPTS = 12;
+const DEFAULT_API_FOOTBALL_DAILY_LIMIT = 80;
 const ADMIN_NOTIFICATION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const FINAL_STATUSES = new Set(["FT", "AWD"]);
 const VALID_PICKS = new Set(["1", "X", "2"]);
@@ -1445,6 +1458,410 @@ function parsedStoredFixtures(value) {
   }
 }
 
+function completedFixtureForRatings(fixture) {
+  const kickoffAt = new Date(fixture?.kickoffAt || 0).getTime();
+  return fixture
+    && fixture.status === "FT"
+    && MATCH_BY_ID.has(fixture.localMatchId)
+    && isOfficialMatchId(fixture.providerId)
+    && Number(fixture.matchday) >= 1
+    && Number(fixture.matchday) <= 17
+    && TEAM_BY_ID.has(fixture.home)
+    && TEAM_BY_ID.has(fixture.away)
+    && Number.isFinite(kickoffAt)
+    && kickoffAt > 0;
+}
+
+async function ensureApiFootballRatingSyncRows(env, fixtures) {
+  if (!apiFootballConfigured(env.API_FOOTBALL_KEY)) return 0;
+  const completed = (fixtures || []).filter(completedFixtureForRatings);
+  if (!completed.length) return 0;
+  const existingResult = await env.DB.prepare(
+    "SELECT match_id FROM api_football_rating_sync"
+  ).all();
+  const existing = new Set((existingResult.results || []).map((row) => row.match_id));
+  const now = Date.now();
+  const statements = completed
+    .filter((fixture) => !existing.has(fixture.localMatchId))
+    .map((fixture) => env.DB.prepare(`
+      INSERT OR IGNORE INTO api_football_rating_sync
+        (match_id, provider_match_id, matchday, kickoff_at, home_team_id,
+         away_team_id, status, attempts, next_attempt_at, lease_until,
+         ratings_count, last_error_code, updated_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', 0, ?7, 0, 0, '', ?8)
+    `).bind(
+      fixture.localMatchId,
+      fixture.providerId,
+      Number(fixture.matchday),
+      new Date(fixture.kickoffAt).getTime(),
+      fixture.home,
+      fixture.away,
+      now + 15 * 60 * 1000,
+      now
+    ));
+  for (let index = 0; index < statements.length; index += 40) {
+    await env.DB.batch(statements.slice(index, index + 40));
+  }
+  return statements.length;
+}
+
+function apiFootballRetryDelayMs(code, attempt) {
+  if (["daily-budget", "rate-limited", "unauthorized"].includes(code)) return 24 * 60 * 60 * 1000;
+  const minutes = [15, 30, 60, 120, 240, 480, 720, 1_440];
+  return minutes[Math.min(minutes.length - 1, Math.max(0, attempt - 1))] * 60 * 1000;
+}
+
+function apiFootballDailyLimit(env) {
+  const configured = Number(env.API_FOOTBALL_DAILY_LIMIT);
+  return Number.isInteger(configured)
+    ? Math.max(1, Math.min(90, configured))
+    : DEFAULT_API_FOOTBALL_DAILY_LIMIT;
+}
+
+async function reserveApiFootballRequests(env, count) {
+  const requested = Math.max(1, Math.min(2, Number(count) || 1));
+  const today = new Date().toISOString().slice(0, 10);
+  const now = Date.now();
+  const result = await env.DB.prepare(`
+    INSERT INTO api_football_daily_budget (budget_date, request_count, updated_at)
+    VALUES (?1, ?2, ?3)
+    ON CONFLICT(budget_date) DO UPDATE SET
+      request_count = api_football_daily_budget.request_count + excluded.request_count,
+      updated_at = excluded.updated_at
+    WHERE api_football_daily_budget.request_count + excluded.request_count <= ?4
+  `).bind(today, requested, now, apiFootballDailyLimit(env)).run();
+  return result.meta?.changes === 1;
+}
+
+function safeApiFootballErrorCode(error) {
+  const code = error instanceof ApiFootballError ? error.code : "unexpected";
+  return /^[a-z0-9-]{1,64}$/.test(code) ? code : "unexpected";
+}
+
+async function scheduleApiFootballRatingSync(env) {
+  if (!apiFootballConfigured(env.API_FOOTBALL_KEY)) return 0;
+  const now = Date.now();
+  await env.DB.prepare(`
+    UPDATE api_football_rating_sync
+    SET status = 'retry', next_attempt_at = ?1, lease_until = 0, updated_at = ?1
+    WHERE status IN ('queued', 'syncing') AND lease_until > 0 AND lease_until <= ?1
+  `).bind(now).run();
+  const candidate = await env.DB.prepare(`
+    SELECT match_id
+    FROM api_football_rating_sync
+    WHERE status IN ('pending', 'retry')
+      AND attempts < ?1
+      AND next_attempt_at <= ?2
+    ORDER BY kickoff_at, match_id
+    LIMIT 1
+  `).bind(MAX_API_FOOTBALL_SYNC_ATTEMPTS, now).first();
+  if (!candidate?.match_id) return 0;
+  const leaseUntil = now + API_FOOTBALL_SYNC_LEASE_MS;
+  const claimed = await env.DB.prepare(`
+    UPDATE api_football_rating_sync
+    SET status = 'queued', lease_until = ?2, updated_at = ?3
+    WHERE match_id = ?1
+      AND status IN ('pending', 'retry')
+      AND attempts < ?4
+      AND next_attempt_at <= ?3
+  `).bind(
+    candidate.match_id,
+    leaseUntil,
+    now,
+    MAX_API_FOOTBALL_SYNC_ATTEMPTS
+  ).run();
+  if (claimed.meta?.changes !== 1) return 0;
+  try {
+    await requireNotificationQueue(env).send({
+      type: "api-football-rating-sync",
+      matchId: candidate.match_id
+    });
+  } catch (error) {
+    await env.DB.prepare(`
+      UPDATE api_football_rating_sync
+      SET status = 'retry', next_attempt_at = ?2, lease_until = 0,
+          last_error_code = 'queue-unavailable', updated_at = ?3
+      WHERE match_id = ?1 AND status = 'queued'
+    `).bind(candidate.match_id, now + 5 * 60 * 1000, Date.now()).run();
+    throw error;
+  }
+  return 1;
+}
+
+async function persistApiFootballRatings(env, syncRow, resolvedFixture, ratings) {
+  const now = Date.now();
+  const kickoffAt = Number(syncRow.kickoff_at);
+  const statements = [
+    env.DB.prepare(
+      "DELETE FROM api_football_player_ratings WHERE match_id = ?1"
+    ).bind(syncRow.match_id),
+    ...ratings.map((row) => env.DB.prepare(`
+      INSERT INTO api_football_player_ratings
+        (match_id, api_fixture_id, api_player_id, team_id, player_key,
+         player_fallback_key, player_name, photo_url, rating, minutes,
+         position, kickoff_at, updated_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+    `).bind(
+      syncRow.match_id,
+      resolvedFixture.apiFixtureId,
+      row.apiPlayerId,
+      row.teamId,
+      row.playerKey,
+      row.fallbackKey,
+      row.playerName,
+      row.photoUrl,
+      row.rating,
+      row.minutes,
+      row.position,
+      kickoffAt,
+      now
+    )),
+    env.DB.prepare(`
+      UPDATE api_football_rating_sync
+      SET api_fixture_id = ?2, api_home_team_id = ?3, api_away_team_id = ?4,
+          status = 'ready', next_attempt_at = 0, lease_until = 0,
+          ratings_count = ?5, last_error_code = '', synced_at = ?6, updated_at = ?6
+      WHERE match_id = ?1 AND status = 'syncing'
+    `).bind(
+      syncRow.match_id,
+      resolvedFixture.apiFixtureId,
+      resolvedFixture.homeApiTeamId,
+      resolvedFixture.awayApiTeamId,
+      ratings.length,
+      now
+    )
+  ];
+  await env.DB.batch(statements);
+}
+
+async function syncApiFootballRatingsForMatch(env, matchId) {
+  if (!apiFootballConfigured(env.API_FOOTBALL_KEY)) return { status: "not-configured" };
+  const claimedAt = Date.now();
+  const claimed = await env.DB.prepare(`
+    UPDATE api_football_rating_sync
+    SET status = 'syncing', attempts = attempts + 1,
+        lease_until = ?2, updated_at = ?1
+    WHERE match_id = ?3
+      AND status = 'queued'
+      AND attempts < ?4
+  `).bind(
+    claimedAt,
+    claimedAt + API_FOOTBALL_SYNC_LEASE_MS,
+    matchId,
+    MAX_API_FOOTBALL_SYNC_ATTEMPTS
+  ).run();
+  if (claimed.meta?.changes !== 1) return { status: "not-claimed" };
+  const syncRow = await env.DB.prepare(`
+    SELECT match_id, provider_match_id, api_fixture_id, api_home_team_id,
+           api_away_team_id, matchday, kickoff_at, home_team_id, away_team_id,
+           attempts
+    FROM api_football_rating_sync
+    WHERE match_id = ?1
+  `).bind(matchId).first();
+  if (!syncRow) return { status: "missing" };
+  const fixture = {
+    providerId: syncRow.provider_match_id,
+    localMatchId: syncRow.match_id,
+    matchday: Number(syncRow.matchday),
+    kickoffAt: new Date(Number(syncRow.kickoff_at)).toISOString(),
+    home: syncRow.home_team_id,
+    away: syncRow.away_team_id
+  };
+  try {
+    let resolvedFixture = {
+      apiFixtureId: Number(syncRow.api_fixture_id),
+      homeApiTeamId: Number(syncRow.api_home_team_id),
+      awayApiTeamId: Number(syncRow.api_away_team_id),
+      home: fixture.home,
+      away: fixture.away
+    };
+    const fixtureIsResolved = Number.isInteger(resolvedFixture.apiFixtureId)
+      && resolvedFixture.apiFixtureId > 0
+      && Number.isInteger(resolvedFixture.homeApiTeamId)
+      && resolvedFixture.homeApiTeamId > 0
+      && Number.isInteger(resolvedFixture.awayApiTeamId)
+      && resolvedFixture.awayApiTeamId > 0;
+    if (!await reserveApiFootballRequests(env, fixtureIsResolved ? 1 : 2)) {
+      throw new ApiFootballError("daily-budget");
+    }
+    if (!fixtureIsResolved) {
+      resolvedFixture = await discoverApiFootballFixture(fixture, {
+        apiKey: env.API_FOOTBALL_KEY
+      });
+      await env.DB.prepare(`
+        UPDATE api_football_rating_sync
+        SET api_fixture_id = ?2, api_home_team_id = ?3, api_away_team_id = ?4,
+            updated_at = ?5
+        WHERE match_id = ?1 AND status = 'syncing'
+      `).bind(
+        syncRow.match_id,
+        resolvedFixture.apiFixtureId,
+        resolvedFixture.homeApiTeamId,
+        resolvedFixture.awayApiTeamId,
+        Date.now()
+      ).run();
+    }
+    const ratings = await fetchApiFootballFixtureRatings({
+      ...resolvedFixture,
+      home: fixture.home,
+      away: fixture.away
+    }, {
+      apiKey: env.API_FOOTBALL_KEY
+    });
+    await persistApiFootballRatings(env, syncRow, resolvedFixture, ratings);
+    return { status: "ready", ratings: ratings.length };
+  } catch (error) {
+    const attempt = Number(syncRow.attempts) || 1;
+    const code = safeApiFootballErrorCode(error);
+    const retryable = !(error instanceof ApiFootballError) || error.retryable;
+    const exhausted = attempt >= MAX_API_FOOTBALL_SYNC_ATTEMPTS || !retryable;
+    const now = Date.now();
+    await env.DB.prepare(`
+      UPDATE api_football_rating_sync
+      SET status = ?2, next_attempt_at = ?3, lease_until = 0,
+          last_error_code = ?4, updated_at = ?5
+      WHERE match_id = ?1 AND status = 'syncing'
+    `).bind(
+      syncRow.match_id,
+      exhausted ? "unavailable" : "retry",
+      exhausted ? 0 : now + apiFootballRetryDelayMs(code, attempt),
+      code,
+      now
+    ).run();
+    console.warn("API-Football rating sync deferred", {
+      matchId: syncRow.match_id,
+      code,
+      attempt,
+      exhausted
+    });
+    return { status: exhausted ? "unavailable" : "retry", code };
+  }
+}
+
+async function queueCompletedApiFootballRatings(env, fixtures) {
+  if (!apiFootballConfigured(env.API_FOOTBALL_KEY)) return 0;
+  await ensureApiFootballRatingSyncRows(env, fixtures);
+  return scheduleApiFootballRatingSync(env);
+}
+
+async function recentApiFootballRatingsByTeam(env, teamId) {
+  const result = await env.DB.prepare(`
+    WITH ranked AS (
+      SELECT api_player_id, player_key, player_fallback_key, player_name,
+             photo_url, rating, kickoff_at,
+             ROW_NUMBER() OVER (
+               PARTITION BY api_player_id
+               ORDER BY kickoff_at DESC, match_id DESC
+             ) AS recent_rank
+      FROM api_football_player_ratings
+      WHERE team_id = ?1
+    )
+    SELECT api_player_id,
+           MAX(CASE WHEN recent_rank = 1 THEN player_key END) AS player_key,
+           MAX(CASE WHEN recent_rank = 1 THEN player_fallback_key END) AS player_fallback_key,
+           MAX(CASE WHEN recent_rank = 1 THEN player_name END) AS player_name,
+           MAX(CASE WHEN recent_rank = 1 THEN photo_url END) AS photo_url,
+           ROUND(AVG(rating), 2) AS average_rating,
+           COUNT(*) AS rated_appearances,
+           MAX(kickoff_at) AS last_rating_at
+    FROM ranked
+    WHERE recent_rank <= ?2
+    GROUP BY api_player_id
+    ORDER BY last_rating_at DESC, api_player_id
+  `).bind(teamId, MAX_RECENT_PLAYER_RATINGS).all();
+  const byPlayerKey = new Map();
+  const ambiguousPlayerKeys = new Set();
+  const byFallbackKey = new Map();
+  const ambiguousFallbackKeys = new Set();
+  for (const row of result.results || []) {
+    const playerKey = normalizedRatingPlayerKey(row.player_key || row.player_name);
+    const fallbackKey = normalizedRatingPlayerKey(row.player_fallback_key)
+      || normalizedRatingPlayerFallbackKey(row.player_name);
+    const average = Number(row.average_rating);
+    const appearances = Number(row.rated_appearances);
+    if (!playerKey
+      || !Number.isFinite(average)
+      || average <= 0
+      || average > 10
+      || !Number.isInteger(appearances)
+      || appearances < 1
+      || appearances > MAX_RECENT_PLAYER_RATINGS) continue;
+    const rating = {
+      average: Math.round(average * 100) / 100,
+      appearances
+    };
+    if (byPlayerKey.has(playerKey)) {
+      byPlayerKey.delete(playerKey);
+      ambiguousPlayerKeys.add(playerKey);
+    } else if (!ambiguousPlayerKeys.has(playerKey)) {
+      byPlayerKey.set(playerKey, rating);
+    }
+    if (fallbackKey) {
+      if (byFallbackKey.has(fallbackKey)) {
+        byFallbackKey.delete(fallbackKey);
+        ambiguousFallbackKeys.add(fallbackKey);
+      } else if (!ambiguousFallbackKeys.has(fallbackKey)) {
+        byFallbackKey.set(fallbackKey, rating);
+      }
+    }
+  }
+  return { byPlayerKey, byFallbackKey };
+}
+
+function ratingForOfficialSquadPlayer(player, ratings) {
+  const candidateNames = [
+    `${player?.firstName || ""} ${player?.lastName || ""}`.trim(),
+    String(player?.name || "").trim()
+  ].filter(Boolean);
+  const exactKeys = [...new Set(candidateNames.map(normalizedRatingPlayerKey).filter(Boolean))];
+  for (const key of exactKeys) {
+    const rating = ratings.byPlayerKey.get(key);
+    if (rating) return rating;
+  }
+  const fallbackKeys = [...new Set(candidateNames
+    .map(normalizedRatingPlayerFallbackKey)
+    .filter(Boolean))];
+  for (const key of fallbackKeys) {
+    const rating = ratings.byFallbackKey.get(key);
+    if (rating) return rating;
+  }
+  return { average: null, appearances: 0 };
+}
+
+async function officialTeamSquadWithApiFootballRatings(env, teamId) {
+  const squad = await getOfficialTeamSquad(teamId);
+  const configured = apiFootballConfigured(env.API_FOOTBALL_KEY);
+  let ratings = { byPlayerKey: new Map(), byFallbackKey: new Map() };
+  if (configured) {
+    try {
+      ratings = await recentApiFootballRatingsByTeam(env, teamId);
+    } catch (error) {
+      // A rolling deployment may briefly run before the D1 migration. The
+      // official squad must remain available and simply expose empty ratings.
+      console.warn("API-Football rating cache is unavailable", { teamId });
+    }
+  }
+  const players = (squad.players || []).map((player) => ({
+    ...player,
+    rating: ratingForOfficialSquadPlayer(player, ratings)
+  }));
+  const playerById = new Map(players.map((player) => [player.id, player]));
+  const groups = (squad.groups || []).map((group) => ({
+    ...group,
+    players: (group.players || []).map((player) => playerById.get(player.id) || {
+      ...player,
+      rating: { average: null, appearances: 0 }
+    })
+  }));
+  return {
+    ...squad,
+    players,
+    groups,
+    ratingSource: API_FOOTBALL_RATING_SOURCE,
+    ratingsConfigured: configured
+  };
+}
+
 async function refreshOfficialLeagueFixtures(env) {
   let fixtures = parsedStoredFixtures(await stateValue(env, LEAGUE_FIXTURES_STATE_KEY));
   const nextRefreshAt = Number(await stateValue(env, NEXT_LEAGUE_REFRESH_STATE_KEY)) || 0;
@@ -1787,6 +2204,15 @@ async function runQueueTick(env) {
   } catch (error) {
     console.error("Lineup notification cycle failed", error);
   }
+  if (leagueFixtures.length && apiFootballConfigured(env.API_FOOTBALL_KEY)) {
+    try {
+      await queueCompletedApiFootballRatings(env, leagueFixtures);
+    } catch (error) {
+      console.error("API-Football rating queue cycle failed", {
+        code: safeApiFootballErrorCode(error)
+      });
+    }
+  }
   let baselineAt = Number(await stateValue(env, RESULT_BASELINE_STATE_KEY)) || 0;
   const nextPollAt = Number(await stateValue(env, "next_live_poll_at")) || 0;
   if (Date.now() >= nextPollAt) {
@@ -1837,6 +2263,7 @@ function health(env) {
     databaseConfigured: Boolean(env.DB),
     vapidConfigured: Boolean(env.VAPID_PRIVATE_KEY),
     queueConfigured: Boolean(env.NOTIFICATION_QUEUE),
+    ratingsConfigured: apiFootballConfigured(env.API_FOOTBALL_KEY),
     officialProvider: "ekstraklasa-match-center",
     now: new Date().toISOString()
   };
@@ -1919,7 +2346,7 @@ async function handleRequest(request, env) {
     if (!TEAM_BY_ID.has(teamId)) {
       throw new HttpError(400, "invalid-team-id", "Nieprawidłowy identyfikator drużyny.");
     }
-    return jsonResponse(request, env, await getOfficialTeamSquad(teamId), 200, {
+    return jsonResponse(request, env, await officialTeamSquadWithApiFootballRatings(env, teamId), 200, {
       "Cache-Control": "public, max-age=300, s-maxage=1800, stale-while-revalidate=86400"
     });
   }
@@ -1956,6 +2383,11 @@ async function consumeQueueMessage(message, env) {
   if (body.type === "tick") {
     await runQueueTick(env);
     return { status: "tick-completed" };
+  }
+  if (body.type === "api-football-rating-sync") {
+    const matchId = String(body.matchId || "");
+    if (!MATCH_BY_ID.has(matchId)) return { status: "invalid-rating-match" };
+    return syncApiFootballRatingsForMatch(env, matchId);
   }
   if (body.type === "dispatch") return dispatchStoredEvent(env, body.eventKey);
   console.error("Dropping unknown notification Queue message", { type: body.type });
