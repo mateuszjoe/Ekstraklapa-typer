@@ -5,6 +5,7 @@ const API_BASE = "https://api.centrum-meczowe.ekstraklasa.org";
 const LIVE_TTL_SECONDS = 45;
 const BACKGROUND_TTL_SECONDS = 300;
 const STALE_TTL_SECONDS = 300;
+const MINIMUM_FINAL_MATCH_AGE_MS = 95 * 60 * 1000;
 
 const STATUS_MAP = Object.freeze({
   fixture: "NS",
@@ -33,6 +34,23 @@ function numberOrNull(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+export function normalizedOfficialMatchStatus(item, nowMs = Date.now()) {
+  const providerStatus = String(item?.status || "").toLowerCase();
+  const mappedStatus = STATUS_MAP[providerStatus] || String(item?.status || "NS").toUpperCase();
+  if (mappedStatus !== "FT") return mappedStatus;
+
+  const kickoffMs = new Date(item?.postponed_datetime || item?.match_datetime || 0).getTime();
+  const hasScore = numberOrNull(item?.home_score) !== null && numberOrNull(item?.away_score) !== null;
+  if (hasScore
+    && Number.isFinite(kickoffMs)
+    && Number.isFinite(nowMs)
+    && nowMs >= kickoffMs
+    && nowMs - kickoffMs < MINIMUM_FINAL_MATCH_AGE_MS) {
+    return "LIVE";
+  }
+  return mappedStatus;
+}
+
 async function fetchOfficialJson(path) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 12_000);
@@ -57,7 +75,7 @@ function normalizeFixture(item) {
   const localMatch = localMatchByTeamsAndWeek.get(`${week}:${home.id}:${away.id}`);
   if (!localMatch) return null;
   const kickoffAt = item.postponed_datetime || item.match_datetime || null;
-  const status = STATUS_MAP[item.status] || String(item.status || "NS").toUpperCase();
+  const status = normalizedOfficialMatchStatus(item);
 
   return {
     providerId: String(item.match_id),

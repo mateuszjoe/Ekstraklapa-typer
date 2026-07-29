@@ -1347,17 +1347,44 @@ async function loadRankingData() {
   const operation = (async () => {
     const { collection, getDocs } = state.firebaseModules;
     await syncOwnLeaderboardIdentity(uid);
-    await reconcileOwnLeaderboard(uid);
-    const leaderboardSnapshot = await getDocs(collection(state.db, "seasons", SEASON_ID, "leaderboard"));
+    void reconcileOwnLeaderboard(uid).catch((error) => {
+      console.warn("Nie udało się odświeżyć pomocniczej historii gracza:", error);
+    });
+    const [leaderboardSnapshot, authoritativeResult] = await Promise.all([
+      getDocs(collection(state.db, "seasons", SEASON_ID, "leaderboard")),
+      notificationApiRequest("/api/leaderboard", {}, { method: "GET" })
+        .then((payload) => ({ payload }))
+        .catch((error) => ({ error }))
+    ]);
+    const hasAuthoritativeRanking = authoritativeResult.payload?.seasonId === SEASON_ID
+      && Array.isArray(authoritativeResult.payload.scores);
+    const authoritativeScores = new Map();
+    if (hasAuthoritativeRanking) {
+      authoritativeResult.payload.scores.forEach((score) => {
+        const points = Number(score?.points);
+        const typed = Number(score?.typed);
+        if (typeof score?.uid === "string"
+          && Number.isInteger(points)
+          && Number.isInteger(typed)
+          && points >= 0
+          && typed >= points) {
+          authoritativeScores.set(score.uid, { points, typed });
+        }
+      });
+    } else if (authoritativeResult.error) {
+      console.warn("Automatycznie rozliczony ranking jest chwilowo niedostępny, używam ostatniego zapisu:", authoritativeResult.error);
+    }
     const profiles = {};
     const players = leaderboardSnapshot.docs.map((item) => {
       const data = item.data();
+      const authoritativeScore = authoritativeScores.get(item.id)
+        || (hasAuthoritativeRanking ? { points: 0, typed: 0 } : null);
       profiles[item.id] = normalizePublicProfile(item.id, data);
       return {
         uid: item.id,
         joinedAtMs: firestoreTimeMs(data.joinedAt),
-        points: Number.isInteger(data.points) && data.points >= 0 ? data.points : 0,
-        typed: Number.isInteger(data.typed) && data.typed >= 0 ? data.typed : 0
+        points: authoritativeScore?.points ?? (Number.isInteger(data.points) && data.points >= 0 ? data.points : 0),
+        typed: authoritativeScore?.typed ?? (Number.isInteger(data.typed) && data.typed >= 0 ? data.typed : 0)
       };
     });
 
@@ -1497,11 +1524,13 @@ function adminPlayerCard(player) {
   const pending = player.pendingNameRequestId
     ? `<span class="admin-player-pending">Wniosek oczekuje</span>`
     : "";
-  return `<article class="admin-player-card" data-admin-player data-admin-uid="${escapeHtml(player.uid)}">
+  const removed = player.removed === true;
+  const busy = state.adminBusyId === player.uid;
+  return `<article class="admin-player-card${removed ? " is-removed" : ""}" data-admin-player data-admin-uid="${escapeHtml(player.uid)}">
     <header>
       <span class="admin-player-initial">${escapeHtml(String(displayName || "G").slice(0, 1).toUpperCase())}</span>
       <div><h3>${escapeHtml(displayName)}</h3><small>UID: ${escapeHtml(player.uid)}</small></div>
-      ${pending}
+      ${removed ? `<span class="admin-player-removed">Usunięty</span>` : pending}
     </header>
     <dl class="admin-player-data">
       <div><dt>Nazwa Google</dt><dd>${escapeHtml(googleName)}</dd></div>
@@ -1510,9 +1539,10 @@ function adminPlayerCard(player) {
       <div><dt>Zmiana własna</dt><dd>${escapeHtml(policy)}</dd></div>
     </dl>
     <form class="admin-player-name-form" data-admin-name-form="${escapeHtml(player.uid)}">
-      <label><span>Nick w typerze</span><input name="displayName" type="text" maxlength="${MAX_DISPLAY_NAME_LENGTH}" value="${escapeHtml(player.displayName || "")}" autocomplete="off" ${profileReady ? "" : "disabled"}></label>
-      <button type="submit" ${!profileReady || state.adminBusyId === player.uid ? "disabled" : ""}>${state.adminBusyId === player.uid ? "ZAPISYWANIE…" : "ZAPISZ NICK"}</button>
+      <label><span>Nick w typerze</span><input name="displayName" type="text" maxlength="${MAX_DISPLAY_NAME_LENGTH}" value="${escapeHtml(player.displayName || "")}" autocomplete="off" ${profileReady && !removed ? "" : "disabled"}></label>
+      <button type="submit" ${!profileReady || removed || busy ? "disabled" : ""}>${busy ? "ZAPISYWANIE…" : "ZAPISZ NICK"}</button>
     </form>
+    ${player.uid !== state.user?.uid && (player.isParticipant || removed) ? `<button type="button" class="admin-player-remove" data-admin-remove-player="${escapeHtml(player.uid)}" ${busy ? "disabled" : ""}>${busy ? "USUWANIE…" : removed ? "WYCZYŚĆ DANE POWIADOMIEŃ" : "USUŃ UŻYTKOWNIKA"}</button>` : ""}
     ${profileReady ? "" : `<p class="admin-player-note">Edycja będzie dostępna, gdy konto utworzy profil i wpis w rankingu.</p>`}
   </article>`;
 }
@@ -1556,6 +1586,7 @@ function adminView() {
   const approvedCount = state.adminRequests.filter((request) => request.status === "approved").length;
   const rejectedCount = state.adminRequests.filter((request) => request.status === "rejected").length;
   const playersByUid = new Map(state.adminPlayers.map((player) => [player.uid, player]));
+  const activePlayers = state.adminPlayers.filter((player) => player.isParticipant && !player.removed);
   const requestMarkup = state.adminRequestsStatus === "loading" || state.adminRequestsStatus === "idle"
     ? `<div class="admin-state-inline"><span class="admin-state-spinner"></span>Wczytujemy wnioski…</div>`
     : state.adminRequestsStatus === "error"
@@ -1573,7 +1604,7 @@ function adminView() {
 
   return `${heroMarkup}<section class="content-section admin-section">
     <div class="admin-stats">
-      <article><strong>${state.adminPlayers.length}</strong><span>graczy</span></article>
+      <article><strong>${activePlayers.length}</strong><span>graczy</span></article>
       <article><strong>${pendingCount}</strong><span>oczekujących</span></article>
       <article><strong>${approvedCount}</strong><span>zatwierdzonych</span></article>
       <article><strong>${rejectedCount}</strong><span>odrzuconych</span></article>
@@ -1759,6 +1790,7 @@ function bindRendered() {
   adminPlayerSearch?.addEventListener("input", filterAdminPlayers);
   if (adminPlayerSearch && state.adminSearch) filterAdminPlayers({ currentTarget: adminPlayerSearch });
   app.querySelectorAll("[data-admin-name-form]").forEach((form) => form.addEventListener("submit", saveAdminDisplayName));
+  app.querySelectorAll("[data-admin-remove-player]").forEach((button) => button.addEventListener("click", removeAdminPlayer));
   app.querySelectorAll("[data-admin-request-action]").forEach((button) => button.addEventListener("click", decideAdminNameRequest));
   app.querySelectorAll("[data-admin-retry]").forEach((button) => button.addEventListener("click", () => {
     startAdminNameRequestsRealtime({ restart: true });
@@ -4387,6 +4419,12 @@ async function ensureSeasonParticipant(uid) {
       transaction.get(participantReference),
       transaction.get(leaderboardReference)
     ]);
+    const participant = participantSnapshot.exists() ? participantSnapshot.data() : null;
+    if (participant?.disabled === true || participant?.status === "removed") {
+      const error = new Error("To konto zostało usunięte z typera.");
+      error.code = "participant/removed";
+      throw error;
+    }
     if (participantSnapshot.exists() && leaderboardSnapshot.exists()) return;
 
     const joinedAt = participantSnapshot.exists() ? participantSnapshot.data().joinedAt : serverTimestamp();
@@ -4497,7 +4535,9 @@ async function activateSeasonParticipant(uid, options = {}) {
     if (state.auth?.currentUser?.uid !== uid || state.user?.uid !== uid) return false;
     state.participantActivationError = true;
     console.error("Nie udało się zarejestrować gracza w sezonie:", error);
-    if (notifyOnError) notify("Nie udało się aktywować konta gracza. Sprawdź internet i spróbuj ponownie.");
+    if (notifyOnError) notify(error?.code === "participant/removed"
+      ? "To konto zostało usunięte z typera."
+      : "Nie udało się aktywować konta gracza. Sprawdź internet i spróbuj ponownie.");
     return false;
   } finally {
     if (state.auth?.currentUser?.uid === uid && state.user?.uid === uid) {
@@ -5222,12 +5262,15 @@ async function loadAdminPlayers({ force = false } = {}) {
   state.adminPlayersError = "";
   if (state.view === "admin") render();
   const { collection, getDocs } = state.firebaseModules;
-  const [privateResult, profilesResult] = await Promise.allSettled([
+  const [privateResult, profilesResult, participantsResult] = await Promise.allSettled([
     notificationApiRequest("/api/admin/players", {}, { method: "GET" }),
-    getDocs(collection(state.db, "profiles"))
+    getDocs(collection(state.db, "profiles")),
+    getDocs(collection(state.db, "seasons", SEASON_ID, "participants"))
   ]);
   if (!isCurrentUserAdmin()) return;
-  if (privateResult.status === "rejected" && profilesResult.status === "rejected") {
+  if (privateResult.status === "rejected"
+    && profilesResult.status === "rejected"
+    && participantsResult.status === "rejected") {
     state.adminPlayers = [];
     state.adminPlayersStatus = "error";
     state.adminPlayersError = "Nie udało się pobrać ani danych kont, ani publicznych profili.";
@@ -5258,6 +5301,23 @@ async function loadAdminPlayers({ force = false } = {}) {
       });
     });
   }
+  if (participantsResult.status === "fulfilled") {
+    participantsResult.value.forEach((snapshot) => {
+      const data = snapshot.data({ serverTimestamps: "estimate" });
+      const previous = byUid.get(snapshot.id) || {
+        uid: snapshot.id,
+        email: "",
+        googleName: "",
+        lastSeenAt: null,
+        hasProfile: false
+      };
+      byUid.set(snapshot.id, {
+        ...previous,
+        isParticipant: data?.uid === snapshot.id && data?.seasonId === SEASON_ID,
+        removed: data?.disabled === true || data?.status === "removed"
+      });
+    });
+  }
   state.adminRequests.forEach((request) => {
     if (!byUid.has(request.uid)) {
       byUid.set(request.uid, {
@@ -5281,6 +5341,7 @@ async function loadAdminPlayers({ force = false } = {}) {
   const partialErrors = [];
   if (privateResult.status === "rejected") partialErrors.push("Prywatne dane kont są chwilowo niedostępne.");
   if (profilesResult.status === "rejected") partialErrors.push("Publiczne profile są chwilowo niedostępne.");
+  if (participantsResult.status === "rejected") partialErrors.push("Status uczestnictwa jest chwilowo niedostępny.");
   state.adminPlayersError = partialErrors.join(" ");
   if (state.view === "admin") render();
 }
@@ -5475,6 +5536,70 @@ async function saveAdminDisplayName(event) {
   } catch (error) {
     console.error("Nie udało się zmienić nicku gracza:", error);
     notify(error?.message || "Nie udało się zmienić nicku gracza.");
+  } finally {
+    if (isCurrentUserAdmin()) {
+      state.adminBusyId = "";
+      if (state.view === "admin") render();
+    }
+  }
+}
+
+async function markPlayerRemoved(uid) {
+  if (!isCurrentUserAdmin() || uid === state.user?.uid) {
+    throw new Error("Nie można usunąć tego konta.");
+  }
+  const { doc, runTransaction, serverTimestamp } = state.firebaseModules;
+  const participantReference = doc(state.db, "seasons", SEASON_ID, "participants", uid);
+  const leaderboardReference = doc(state.db, "seasons", SEASON_ID, "leaderboard", uid);
+  const statsReference = doc(state.db, "seasonStats", SEASON_ID);
+  return runTransaction(state.db, async (transaction) => {
+    const [participantSnapshot, leaderboardSnapshot, statsSnapshot] = await Promise.all([
+      transaction.get(participantReference),
+      transaction.get(leaderboardReference),
+      transaction.get(statsReference)
+    ]);
+    if (!participantSnapshot.exists()) throw new Error("Gracz nie jest uczestnikiem tego sezonu.");
+    const participant = participantSnapshot.data();
+    if (participant.disabled === true || participant.status === "removed") return false;
+    const participantCount = Number(statsSnapshot.data()?.participantCount);
+    if (!statsSnapshot.exists() || !Number.isInteger(participantCount) || participantCount < 1) {
+      throw new Error("Liczba uczestników jest nieprawidłowa.");
+    }
+    transaction.update(participantReference, {
+      disabled: true,
+      status: "removed",
+      removedAt: serverTimestamp(),
+      removedBy: state.user.uid
+    });
+    if (leaderboardSnapshot.exists()) transaction.delete(leaderboardReference);
+    transaction.update(statsReference, {
+      participantCount: participantCount - 1,
+      updatedAt: serverTimestamp()
+    });
+    return true;
+  });
+}
+
+async function removeAdminPlayer(event) {
+  const uid = event.currentTarget.dataset.adminRemovePlayer || "";
+  const player = state.adminPlayers.find((item) => item.uid === uid);
+  if (!uid || !player || uid === state.user?.uid || state.adminBusyId || !isCurrentUserAdmin()) return;
+  const displayName = player.displayName || player.googleName || player.email || uid;
+  if (!player.removed && !window.confirm(
+    `Usunąć użytkownika „${displayName}” z typera?\n\nZniknie z rankingu, straci dostęp do ligi i nie będzie mógł ponownie dołączyć tym samym kontem.`
+  )) return;
+
+  state.adminBusyId = uid;
+  render();
+  try {
+    if (!player.removed) await markPlayerRemoved(uid);
+    await notificationApiRequest("/api/admin/players/remove", { uid });
+    notify(`Użytkownik ${displayName} został usunięty z typera.`);
+    await loadAdminPlayers({ force: true });
+  } catch (error) {
+    console.error("Nie udało się usunąć użytkownika:", error);
+    notify(error?.message || "Nie udało się usunąć użytkownika.");
+    await loadAdminPlayers({ force: true }).catch(() => {});
   } finally {
     if (isCurrentUserAdmin()) {
       state.adminBusyId = "";

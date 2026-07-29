@@ -17,7 +17,8 @@ service cloud.firestore {
 
     function isSeasonParticipant() {
       return googleSignedIn()
-        && exists(/databases/$(database)/documents/seasons/2026-27/participants/$(request.auth.uid));
+        && exists(/databases/$(database)/documents/seasons/2026-27/participants/$(request.auth.uid))
+        && get(/databases/$(database)/documents/seasons/2026-27/participants/$(request.auth.uid)).data.get('disabled', false) == false;
     }
 
     function matchOpen(seasonId, matchId) {
@@ -543,6 +544,7 @@ service cloud.firestore {
         && getAfter(/databases/$(database)/documents/profiles/$(uid)).data.avatarValue
           == request.resource.data.avatarValue
         && existsAfter(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(uid))
+        && getAfter(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(uid)).data.get('disabled', false) == false
         && request.resource.data.joinedAt
           == getAfter(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(uid)).data.joinedAt
         && request.resource.data.points == 0
@@ -691,7 +693,10 @@ service cloud.firestore {
       allow update: if validLeaderboardIdentityUpdate(seasonId, uid)
         || validAdminLeaderboardIdentityUpdate(seasonId, uid)
         || validLeaderboardScoreUpdate(seasonId, uid);
-      allow delete: if false;
+      allow delete: if isAdmin()
+        && uid != request.auth.uid
+        && seasonId == '2026-27'
+        && getAfter(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(uid)).data.disabled == true;
     }
 
     match /seasons/{seasonId}/matches/{matchId} {
@@ -746,8 +751,10 @@ service cloud.firestore {
     }
 
     match /seasons/{seasonId}/participants/{uid} {
-      allow get: if googleSignedIn() && seasonId == '2026-27' && uid == request.auth.uid;
-      allow list: if isSeasonParticipant() && seasonId == '2026-27';
+      allow get: if googleSignedIn()
+        && seasonId == '2026-27'
+        && (uid == request.auth.uid || isAdmin());
+      allow list: if seasonId == '2026-27' && (isSeasonParticipant() || isAdmin());
       allow create: if googleSignedIn()
         && seasonId == '2026-27'
         && uid == request.auth.uid
@@ -762,7 +769,26 @@ service cloud.firestore {
             && getAfter(/databases/$(database)/documents/seasonStats/$(seasonId)).data.participantCount
               == get(/databases/$(database)/documents/seasonStats/$(seasonId)).data.participantCount + 1)
         );
-      allow update, delete: if false;
+      allow update: if isAdmin()
+        && seasonId == '2026-27'
+        && uid != request.auth.uid
+        && resource.data.uid == uid
+        && resource.data.seasonId == seasonId
+        && resource.data.get('disabled', false) == false
+        && request.resource.data.uid == uid
+        && request.resource.data.seasonId == seasonId
+        && request.resource.data.joinedAt == resource.data.joinedAt
+        && request.resource.data.disabled == true
+        && request.resource.data.status == 'removed'
+        && request.resource.data.removedAt == request.time
+        && request.resource.data.removedBy == request.auth.uid
+        && request.resource.data.keys().hasOnly([
+          'uid', 'seasonId', 'joinedAt', 'disabled', 'status', 'removedAt', 'removedBy'
+        ])
+        && !existsAfter(/databases/$(database)/documents/seasons/$(seasonId)/leaderboard/$(uid))
+        && getAfter(/databases/$(database)/documents/seasonStats/$(seasonId)).data.participantCount
+          == get(/databases/$(database)/documents/seasonStats/$(seasonId)).data.participantCount - 1;
+      allow delete: if false;
     }
 
     match /seasonStats/{seasonId} {
@@ -776,14 +802,26 @@ service cloud.firestore {
         && request.resource.data.keys().hasOnly(['seasonId', 'participantCount', 'updatedAt'])
         && !exists(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(request.auth.uid))
         && existsAfter(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(request.auth.uid));
-      allow update: if googleSignedIn()
-        && seasonId == '2026-27'
-        && request.resource.data.seasonId == resource.data.seasonId
-        && request.resource.data.participantCount == resource.data.participantCount + 1
-        && request.resource.data.updatedAt == request.time
-        && request.resource.data.keys().hasOnly(['seasonId', 'participantCount', 'updatedAt'])
-        && !exists(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(request.auth.uid))
-        && existsAfter(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(request.auth.uid));
+      allow update: if (
+          googleSignedIn()
+          && seasonId == '2026-27'
+          && request.resource.data.seasonId == resource.data.seasonId
+          && request.resource.data.participantCount == resource.data.participantCount + 1
+          && request.resource.data.updatedAt == request.time
+          && request.resource.data.keys().hasOnly(['seasonId', 'participantCount', 'updatedAt'])
+          && !exists(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(request.auth.uid))
+          && existsAfter(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(request.auth.uid))
+        )
+        || (
+          isAdmin()
+          && seasonId == '2026-27'
+          && resource.data.seasonId == seasonId
+          && request.resource.data.seasonId == seasonId
+          && resource.data.participantCount > 0
+          && request.resource.data.participantCount == resource.data.participantCount - 1
+          && request.resource.data.updatedAt == request.time
+          && request.resource.data.keys().hasOnly(['seasonId', 'participantCount', 'updatedAt'])
+        );
       allow delete: if false;
     }
 

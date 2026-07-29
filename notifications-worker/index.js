@@ -1458,6 +1458,66 @@ function parsedStoredFixtures(value) {
   }
 }
 
+async function leaderboard(request, env) {
+  await authenticatedParticipant(request, env);
+  const result = await env.DB.prepare(`
+    SELECT p.uid,
+      COUNT(*) AS typed,
+      COALESCE(SUM(CASE WHEN p.pick = r.result THEN 1 ELSE 0 END), 0) AS points
+    FROM picks p
+    INNER JOIN match_results r ON r.match_id = p.match_id
+    GROUP BY p.uid
+    ORDER BY points DESC, typed DESC, p.uid
+  `).all();
+  const completed = await env.DB.prepare(`
+    SELECT COUNT(*) AS match_count, MAX(updated_at) AS updated_at
+    FROM match_results
+  `).first();
+  return {
+    seasonId: SEASON_ID,
+    completedMatches: Number(completed?.match_count || 0),
+    updatedAt: Number(completed?.updated_at || 0),
+    scores: (result.results || []).map((row) => ({
+      uid: String(row.uid || ""),
+      points: Number(row.points || 0),
+      typed: Number(row.typed || 0)
+    })).filter((row) => row.uid
+      && Number.isInteger(row.points)
+      && Number.isInteger(row.typed)
+      && row.points >= 0
+      && row.typed >= row.points)
+  };
+}
+
+async function removeAdminPlayer(request, env) {
+  const user = await authenticatedAdmin(request, env);
+  await consumeRateLimit(env, user.uid, "admin-remove-player", 12);
+  const body = await jsonBody(request);
+  exactBodyFields(body, ["uid"]);
+  const targetUid = safeDocumentSegment(body.uid, "uid gracza");
+  if (targetUid === user.uid) {
+    throw new HttpError(409, "cannot-remove-admin", "Nie można usunąć własnego konta administratora.");
+  }
+  const participant = await firestoreDocument(env, user.token, [
+    "seasons", SEASON_ID, "participants", targetUid
+  ], 404);
+  if (participant.data.uid !== targetUid
+    || participant.data.seasonId !== SEASON_ID
+    || participant.data.disabled !== true
+    || participant.data.status !== "removed") {
+    throw new HttpError(409, "player-not-removed", "Najpierw usuń gracza z sezonu w panelu administratora.");
+  }
+
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM subscriptions WHERE uid = ?1").bind(targetUid),
+    env.DB.prepare("DELETE FROM picks WHERE uid = ?1").bind(targetUid),
+    env.DB.prepare("DELETE FROM request_limits WHERE uid = ?1").bind(targetUid),
+    env.DB.prepare("DELETE FROM notification_events WHERE target_uid = ?1").bind(targetUid),
+    env.DB.prepare("DELETE FROM player_identities WHERE uid = ?1").bind(targetUid)
+  ]);
+  return { status: "removed", uid: targetUid };
+}
+
 function completedFixtureForRatings(fixture) {
   const kickoffAt = new Date(fixture?.kickoffAt || 0).getTime();
   return fixture
@@ -2353,6 +2413,9 @@ async function handleRequest(request, env) {
   if (request.method === "GET" && url.pathname === "/api/admin/players") {
     return jsonResponse(request, env, await adminPlayers(request, env));
   }
+  if (request.method === "GET" && url.pathname === "/api/leaderboard") {
+    return jsonResponse(request, env, await leaderboard(request, env));
+  }
   if (request.method !== "POST") throw new HttpError(404, "not-found", "Nie znaleziono endpointu.");
 
   const routes = {
@@ -2367,6 +2430,7 @@ async function handleRequest(request, env) {
     "/api/events/player-name-changed": playerNameChanged,
     "/api/events/name-change-decision": nameChangeDecision,
     "/api/events/admin-name-edited": adminNameEdited,
+    "/api/admin/players/remove": removeAdminPlayer,
     "/api/picks/sync": syncPicks
   };
   const handler = routes[url.pathname];
