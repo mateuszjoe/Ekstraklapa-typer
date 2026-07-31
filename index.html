@@ -40,7 +40,8 @@
       @keyframes loader-dot { 0%, 70%, 100% { opacity: .25; transform: translateY(0); } 35% { opacity: 1; transform: translateY(-3px); } }
       @media (prefers-reduced-motion: reduce) { .loader-emblem::before, .loader-emblem img, .loader-track i, .loader-status i { animation: none; } }
     </style>
-    <link rel="stylesheet" href="./styles.css?v=32" />
+    <link rel="stylesheet" href="./styles.css?v=33" />
+    <link rel="stylesheet" href="./payment-banner.css?v=1" />
   </head>
   <body>
     <div id="appLoader" role="status" aria-live="polite" aria-label="Wczytywanie Ekstraklapa Typer">
@@ -71,6 +72,36 @@
       <button type="button" id="authButton" class="auth-button" aria-haspopup="dialog" aria-controls="authDialog" aria-expanded="false"><span class="user-icon">G</span><span class="auth-button-label"><span class="auth-label-full">Zaloguj przez Google</span><span class="auth-label-short">Zaloguj</span></span><span class="auth-button-chevron" aria-hidden="true">→</span></button>
       <button type="button" id="menuButton" class="menu-button" aria-label="Otwórz menu" aria-controls="mainNav" aria-expanded="false">☰</button>
     </header>
+
+    <aside class="blik-payment-banner" aria-labelledby="blikPaymentTitle">
+      <div class="blik-payment-banner__inner">
+        <span class="blik-payment-banner__mark" aria-hidden="true">BLIK</span>
+        <div class="blik-payment-banner__copy">
+          <strong id="blikPaymentTitle">Pozostań w grze</strong>
+          <span>Wpłać <b>100 zł</b> BLIK na telefon</span>
+        </div>
+        <button
+          type="button"
+          class="blik-payment-banner__phone"
+          data-blik-copy
+          data-blik-phone=""
+          aria-label="Skopiuj numer telefonu do przelewu BLIK"
+          aria-describedby="blikCopyStatus"
+          disabled
+        >
+          <span class="blik-payment-banner__phone-label">Numer telefonu</span>
+          <strong data-blik-phone-label>—</strong>
+          <span class="blik-payment-banner__copy-action">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="8" y="8" width="11" height="11" rx="2"></rect>
+              <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"></path>
+            </svg>
+            Kopiuj
+          </span>
+        </button>
+        <span id="blikCopyStatus" class="blik-payment-banner__status" role="status" aria-live="polite"></span>
+      </div>
+    </aside>
 
     <main id="app" tabindex="-1"></main>
 
@@ -126,6 +157,7 @@
 
     <dialog id="matchDialog" class="modal match-modal"></dialog>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="./app.js?v=38"></script>
+    <script type="module" src="./payment-banner.js?v=1"></script>
+    <script type="module" src="./app.js?v=39"></script>
   </body>
 </html>

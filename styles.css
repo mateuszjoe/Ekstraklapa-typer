@@ -247,6 +247,17 @@ svg { width: 1.1em; height: 1.1em; fill: none; stroke: currentColor; stroke-widt
 .ranking-head + .ranking-row > b { color: var(--ink); text-decoration: underline 5px var(--yellow); }
 .ranking-row > span:nth-child(2) { min-width: 0; display: flex; align-items: center; gap: 11px; }
 .ranking-row > span:nth-child(2) strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.entry-fee-badge { min-width: 23px; height: 23px; display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; color: var(--ink); background: var(--paper-strong); border: 2px solid var(--ink); border-radius: 999px; font-size: 10px; font-weight: 950; line-height: 1; box-shadow: 2px 2px 0 rgba(13,13,13,.14); }
+.entry-fee-badge.is-paid { color: white; background: var(--green-dark); }
+.entry-fee-badge.is-unpaid { color: var(--ink); background: var(--yellow); }
+.entry-fee-badge.is-unknown { color: white; background: var(--muted); }
+.entry-fee-badge.has-label { width: auto; max-width: 100%; min-height: 29px; height: auto; justify-content: flex-start; gap: 7px; padding: 4px 9px 4px 5px; box-shadow: none; font-size: 8px; }
+.entry-fee-badge.has-label .entry-fee-badge-mark { width: 17px; height: 17px; display: grid; flex: 0 0 auto; place-items: center; color: var(--ink); background: white; border: 1px solid currentColor; border-radius: 50%; font-size: 8px; }
+.entry-fee-badge-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: uppercase; }
+.ranking-row .entry-fee-badge { margin-left: -4px; }
+.ranking-fee-legend { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin: 0 0 10px; }
+.ranking-fee-legend > span:first-child { color: var(--muted); font-size: 8px; font-weight: 900; letter-spacing: .05em; text-transform: uppercase; }
+.ranking-fee-legend .entry-fee-badge { min-height: 25px; border-width: 1px; }
 .avatar-visual { position: relative; overflow: hidden; display: grid; place-items: center; flex: 0 0 auto; border: 2px solid var(--ink); border-radius: 50%; background: var(--yellow); color: var(--ink); font-weight: 900; }
 .avatar-visual > span { grid-area: 1 / 1; }
 .avatar-visual img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: var(--white); }
@@ -328,6 +339,8 @@ svg { width: 1.1em; height: 1.1em; fill: none; stroke: currentColor; stroke-widt
 .admin-player-initial { width: 42px; height: 42px; display: grid; place-items: center; color: var(--ink); background: var(--yellow); border: 2px solid var(--ink); border-radius: 50%; box-shadow: 3px 3px 0 var(--green); font-weight: 950; }
 .admin-player-pending { padding: 5px 7px; color: var(--ink); background: #fff1aa; border: 1px solid var(--ink); border-radius: 999px; font-size: 7px; font-weight: 900; text-transform: uppercase; }
 .admin-player-removed { padding: 5px 7px; color: white; background: var(--live); border: 1px solid var(--ink); border-radius: 999px; font-size: 7px; font-weight: 900; text-transform: uppercase; }
+.admin-player-removed.is-complete { background: var(--green-dark); }
+.admin-player-removed.is-pending { color: var(--ink); background: var(--yellow); }
 .admin-player-data { min-width: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 0; }
 .admin-player-data div { min-width: 0; padding: 9px 10px; background: var(--white); border: 1px solid var(--paper-strong); border-radius: 7px; }
 .admin-player-data dt { margin-bottom: 3px; color: var(--muted); font-size: 7px; font-weight: 900; letter-spacing: .05em; text-transform: uppercase; }
@@ -338,10 +351,20 @@ svg { width: 1.1em; height: 1.1em; fill: none; stroke: currentColor; stroke-widt
 .admin-player-name-form input:focus { box-shadow: 3px 3px 0 var(--yellow); }
 .admin-player-name-form button, .admin-request-actions button, .admin-error button { min-height: 42px; padding: 9px 13px; color: var(--ink); background: var(--yellow); border: 2px solid var(--ink); border-radius: 7px; box-shadow: 3px 3px 0 var(--green); font-size: 8px; font-weight: 950; }
 .admin-player-name-form button:disabled, .admin-request-actions button:disabled { cursor: wait; opacity: .55; box-shadow: none; }
+.admin-entry-fee { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 10px; background: var(--white); border: 2px solid var(--ink); border-radius: 8px; }
+.admin-entry-fee > div { min-width: 0; display: grid; justify-items: start; gap: 5px; }
+.admin-entry-fee > div > small { color: var(--muted); font-size: 7px; line-height: 1.35; }
+.admin-entry-fee-toggle { min-height: 40px; padding: 8px 11px; color: white; background: var(--green-dark); border: 2px solid var(--ink); border-radius: 7px; box-shadow: 3px 3px 0 var(--yellow); font-size: 7px; font-weight: 950; }
+.admin-entry-fee-toggle.is-revoke { color: var(--ink); background: var(--yellow); box-shadow: 3px 3px 0 var(--paper-strong); }
+.admin-entry-fee-toggle:hover { transform: translateY(-1px); }
+.admin-entry-fee-toggle:disabled { cursor: wait; opacity: .55; transform: none; box-shadow: none; }
 .admin-player-remove { min-height: 40px; padding: 9px 13px; color: white; background: var(--live); border: 2px solid var(--ink); border-radius: 7px; box-shadow: 3px 3px 0 var(--ink); font-size: 8px; font-weight: 950; }
+.admin-player-remove.is-cleanup { color: var(--ink); background: var(--yellow); box-shadow: 3px 3px 0 var(--green); }
 .admin-player-remove:hover { transform: translateY(-1px); }
 .admin-player-remove:disabled { cursor: wait; opacity: .55; box-shadow: none; }
 .admin-player-note { margin: -3px 0 0; color: var(--muted); font-size: 8px; line-height: 1.45; }
+.admin-player-note.is-removal-complete { color: #28560f; }
+.admin-player-note.is-removal-pending { color: #735800; }
 .admin-request-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 15px; }
 .admin-request-card { min-width: 0; display: grid; gap: 13px; padding: 18px; background: var(--paper); border: 2px solid var(--ink); border-radius: 11px; }
 .admin-request-card.is-pending { box-shadow: inset 5px 0 0 var(--yellow); }
@@ -1231,6 +1254,17 @@ footer { min-height: 96px; padding: 20px clamp(25px, 7vw, 110px); color: #b7b0a3
   .admin-panel-heading > span { text-align: left; }
   .admin-search { width: 100%; }
   .admin-player-card, .admin-request-card { padding: 15px 13px; }
+  .admin-search input,
+  .admin-player-name-form input,
+  .admin-player-name-form button,
+  .admin-entry-fee-toggle,
+  .admin-player-remove,
+  .admin-request-note input,
+  .admin-request-actions button,
+  .admin-error button { min-height: 44px; }
+  .ranking-row > span:nth-child(2) { gap: 6px; }
+  .ranking-row .entry-fee-badge { margin-left: 0; }
+  .ranking-fee-legend { justify-content: flex-start; overflow-x: auto; padding-bottom: 2px; }
   .admin-state-card { min-height: 260px; padding: 28px 18px; box-shadow: 5px 5px 0 var(--yellow); }
   .admin-error { align-items: stretch; flex-direction: column; }
 }
@@ -1241,6 +1275,8 @@ footer { min-height: 96px; padding: 20px clamp(25px, 7vw, 110px); color: #b7b0a3
   .admin-player-data { grid-template-columns: 1fr; }
   .admin-player-name-form { grid-template-columns: 1fr; }
   .admin-player-name-form button { width: 100%; }
+  .admin-entry-fee { grid-template-columns: 1fr; }
+  .admin-entry-fee-toggle { width: 100%; }
   .admin-player-remove { width: 100%; }
   .admin-request-change { grid-template-columns: 1fr; }
   .admin-request-change b { transform: rotate(90deg); justify-self: center; }

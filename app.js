@@ -28,7 +28,7 @@ const NOTIFICATION_OUTBOX_CHAT_TTL_MS = 9 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PLAYER_TTL_MS = 14 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PICK_TTL_MS = 45 * 24 * 60 * 60 * 1000;
 const NOTIFICATION_OUTBOX_NAME_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const APP_SERVICE_WORKER_VERSION = "33";
+const APP_SERVICE_WORKER_VERSION = "34";
 const FINAL = new Set(["FT", "AET", "PEN", "AWD", "WO", "FINISHED", "AWARDED"]);
 const LIVE = new Set(["1H", "HT", "2H", "ET", "BT", "P", "LIVE", "IN_PLAY", "PAUSED"]);
 const VIEWS = new Set(["matches", "ekstraklasa", "ranking", "rules", "settings", "admin"]);
@@ -261,6 +261,7 @@ let playerPicksLoadId = 0;
 let rankingLoadPromise = null;
 let rankingLoadRevision = 0;
 let rankingReloadPending = false;
+let rankingResumeRefreshAt = 0;
 let playerFormLoadPromise = null;
 let playerFormLoadRevision = 0;
 let trustedMatchesSyncPromise = null;
@@ -1309,12 +1310,27 @@ function rankingRows() {
     || profileForUid(a.uid).name.localeCompare(profileForUid(b.uid).name, "pl"));
 }
 
+function entryFeeBadgeHtml(entryFeePaid, statusKnown = true, { withLabel = false } = {}) {
+  const status = !statusKnown ? "unknown" : entryFeePaid === true ? "paid" : "unpaid";
+  const label = status === "paid"
+    ? "Składka opłacona"
+    : status === "unpaid"
+      ? "Składka nieopłacona"
+      : "Status składki niedostępny";
+  const mark = status === "paid" ? "✓" : status === "unpaid" ? "!" : "?";
+  return `<span class="entry-fee-badge is-${status}${withLabel ? " has-label" : ""}" role="img" aria-label="${label}" title="${label}">
+    <span class="entry-fee-badge-mark" aria-hidden="true">${mark}</span>
+    ${withLabel ? `<span class="entry-fee-badge-label">${label}</span>` : ""}
+  </span>`;
+}
+
 function rankingView() {
   const players = rankingRows();
   return `<section class="subpage-hero"><p class="eyebrow">KLASYFIKACJA</p><h1>Ranking typerów</h1><p>Ranking obejmuje rundę jesienną. Każdy trafiony rezultat to dokładnie jeden punkt.</p></section>
     <section class="content-section narrow">
       ${!state.user ? `<div class="notice">Zaloguj się przez Google, żeby pojawić się w rankingu i zapisywać typy między urządzeniami.</div>` : ""}
       ${state.rankingError ? `<div class="notice ranking-notice"><span>${escapeHtml(state.rankingError)}</span><button type="button" data-ranking-retry>SPRÓBUJ PONOWNIE</button></div>` : ""}
+      ${players.length ? `<div class="ranking-fee-legend"><span>Status składki:</span>${entryFeeBadgeHtml(true, true, { withLabel: true })}${entryFeeBadgeHtml(false, true, { withLabel: true })}</div>` : ""}
       <div class="ranking-card" aria-live="polite" aria-busy="${state.rankingStatus === "loading"}">
         <div class="ranking-head"><span>#</span><span>Gracz</span><span>Punkty</span><span>Typy</span><span>Skuteczność</span></div>
         ${state.user && (state.rankingStatus === "idle" || state.rankingStatus === "loading") && !players.length
@@ -1324,7 +1340,7 @@ function rankingView() {
               const profile = profileForUid(player.uid);
               const mine = player.uid === state.user?.uid;
               const rank = index + 1;
-              return `<div class="ranking-row${mine ? " me" : ""}"><b>${rank}</b><span>${playerAvatarButton(player.uid, "ranking-avatar")}<strong>${escapeHtml(profile.name)}</strong>${mine ? "<small>TY</small>" : ""}</span><strong>${player.points}</strong><span>${player.typed}</span><span>${player.accuracy}%</span></div>`;
+              return `<div class="ranking-row${mine ? " me" : ""}"><b>${rank}</b><span>${playerAvatarButton(player.uid, "ranking-avatar")}<strong>${escapeHtml(profile.name)}</strong>${entryFeeBadgeHtml(player.entryFeePaid, player.entryFeeStatusKnown)}${mine ? "<small>TY</small>" : ""}</span><strong>${player.points}</strong><span>${player.typed}</span><span>${player.accuracy}%</span></div>`;
             }).join("")
             : `<div class="ranking-empty"><strong>Brak graczy do wyświetlenia</strong><span>Ranking pokazuje wyłącznie prawdziwe konta Google — bez fikcyjnych wpisów.</span></div>`}
       </div>
@@ -1340,6 +1356,7 @@ async function loadRankingData() {
 
   const uid = state.user.uid;
   const revision = ++rankingLoadRevision;
+  rankingResumeRefreshAt = Date.now();
   state.rankingStatus = "loading";
   state.rankingError = "";
   if (["matches", "ranking"].includes(state.view)) render();
@@ -1350,9 +1367,12 @@ async function loadRankingData() {
     void reconcileOwnLeaderboard(uid).catch((error) => {
       console.warn("Nie udało się odświeżyć pomocniczej historii gracza:", error);
     });
-    const [leaderboardSnapshot, authoritativeResult] = await Promise.all([
+    const [leaderboardSnapshot, authoritativeResult, playerStatusesResult] = await Promise.all([
       getDocs(collection(state.db, "seasons", SEASON_ID, "leaderboard")),
       notificationApiRequest("/api/leaderboard", {}, { method: "GET" })
+        .then((payload) => ({ payload }))
+        .catch((error) => ({ error })),
+      notificationApiRequest("/api/players/statuses", {}, { method: "GET" })
         .then((payload) => ({ payload }))
         .catch((error) => ({ error }))
     ]);
@@ -1374,15 +1394,36 @@ async function loadRankingData() {
     } else if (authoritativeResult.error) {
       console.warn("Automatycznie rozliczony ranking jest chwilowo niedostępny, używam ostatniego zapisu:", authoritativeResult.error);
     }
+    const hasPlayerStatuses = playerStatusesResult.payload?.seasonId === SEASON_ID
+      && Array.isArray(playerStatusesResult.payload.players);
+    const playerStatuses = new Map();
+    if (hasPlayerStatuses) {
+      playerStatusesResult.payload.players.forEach((player) => {
+        if (typeof player?.uid !== "string" || !player.uid) return;
+        playerStatuses.set(player.uid, {
+          entryFeePaid: player.entryFeePaid === true,
+          excluded: player.excluded === true
+        });
+      });
+    } else if (playerStatusesResult.error) {
+      console.warn("Statusy składek są chwilowo niedostępne:", playerStatusesResult.error);
+    }
     const profiles = {};
-    const players = leaderboardSnapshot.docs.map((item) => {
+    const players = leaderboardSnapshot.docs.filter((item) => {
+      if (!hasPlayerStatuses) return true;
+      const status = playerStatuses.get(item.id);
+      return Boolean(status) && status.excluded !== true;
+    }).map((item) => {
       const data = item.data();
+      const playerStatus = playerStatuses.get(item.id);
       const authoritativeScore = authoritativeScores.get(item.id)
         || (hasAuthoritativeRanking ? { points: 0, typed: 0 } : null);
       profiles[item.id] = normalizePublicProfile(item.id, data);
       return {
         uid: item.id,
         joinedAtMs: firestoreTimeMs(data.joinedAt),
+        entryFeePaid: playerStatus?.entryFeePaid === true,
+        entryFeeStatusKnown: Boolean(playerStatus),
         points: authoritativeScore?.points ?? (Number.isInteger(data.points) && data.points >= 0 ? data.points : 0),
         typed: authoritativeScore?.typed ?? (Number.isInteger(data.typed) && data.typed >= 0 ? data.typed : 0)
       };
@@ -1409,6 +1450,20 @@ async function loadRankingData() {
 
   rankingLoadPromise = operation;
   return operation;
+}
+
+function refreshOpenRankingOnResume() {
+  if (document.visibilityState !== "visible"
+    || !navigator.onLine
+    || state.view !== "ranking"
+    || !state.user
+    || !state.participantReady
+    || !state.db
+    || !state.firebaseModules) return;
+  const now = Date.now();
+  if (now - rankingResumeRefreshAt < 10_000) return;
+  rankingResumeRefreshAt = now;
+  void loadRankingData();
 }
 
 async function loadOwnPlayerForm() {
@@ -1525,12 +1580,19 @@ function adminPlayerCard(player) {
     ? `<span class="admin-player-pending">Wniosek oczekuje</span>`
     : "";
   const removed = player.removed === true;
+  const removalCleanupComplete = removed && player.removalCleanupComplete === true;
+  const removalCleanupPending = removed && !removalCleanupComplete;
+  const isActiveParticipant = player.isParticipant && !removed;
+  const entryFeePaid = player.entryFeePaid === true;
+  const entryFeeStatusKnown = player.isParticipant === true;
   const busy = state.adminBusyId === player.uid;
   return `<article class="admin-player-card${removed ? " is-removed" : ""}" data-admin-player data-admin-uid="${escapeHtml(player.uid)}">
     <header>
       <span class="admin-player-initial">${escapeHtml(String(displayName || "G").slice(0, 1).toUpperCase())}</span>
       <div><h3>${escapeHtml(displayName)}</h3><small>UID: ${escapeHtml(player.uid)}</small></div>
-      ${removed ? `<span class="admin-player-removed">Usunięty</span>` : pending}
+      ${removed
+        ? `<span class="admin-player-removed${removalCleanupComplete ? " is-complete" : " is-pending"}">${removalCleanupComplete ? "Usunięty z typera" : "Usuwanie niedokończone"}</span>`
+        : pending}
     </header>
     <dl class="admin-player-data">
       <div><dt>Nazwa Google</dt><dd>${escapeHtml(googleName)}</dd></div>
@@ -1538,11 +1600,20 @@ function adminPlayerCard(player) {
       <div><dt>Ostatnie logowanie</dt><dd>${escapeHtml(formatAdminDate(player.lastSeenAt))}</dd></div>
       <div><dt>Zmiana własna</dt><dd>${escapeHtml(policy)}</dd></div>
     </dl>
+    ${entryFeeStatusKnown ? `<div class="admin-entry-fee">
+      <div>
+        ${entryFeeBadgeHtml(entryFeePaid, true, { withLabel: true })}
+        <small>${player.entryFeeUpdatedAt ? `Zmieniono ${escapeHtml(formatAdminDate(player.entryFeeUpdatedAt))}` : "Brak wcześniejszej zmiany statusu"}</small>
+      </div>
+      ${isActiveParticipant ? `<button type="button" class="admin-entry-fee-toggle${entryFeePaid ? " is-revoke" : ""}" data-admin-entry-fee="${escapeHtml(player.uid)}" data-next-paid="${entryFeePaid ? "false" : "true"}" ${busy ? "disabled" : ""}>${busy ? "ZAPISYWANIE…" : entryFeePaid ? "OZNACZ JAKO NIEOPŁACONE" : "OZNACZ JAKO OPŁACONE"}</button>` : ""}
+    </div>` : ""}
     <form class="admin-player-name-form" data-admin-name-form="${escapeHtml(player.uid)}">
       <label><span>Nick w typerze</span><input name="displayName" type="text" maxlength="${MAX_DISPLAY_NAME_LENGTH}" value="${escapeHtml(player.displayName || "")}" autocomplete="off" ${profileReady && !removed ? "" : "disabled"}></label>
       <button type="submit" ${!profileReady || removed || busy ? "disabled" : ""}>${busy ? "ZAPISYWANIE…" : "ZAPISZ NICK"}</button>
     </form>
-    ${player.uid !== state.user?.uid && (player.isParticipant || removed) ? `<button type="button" class="admin-player-remove" data-admin-remove-player="${escapeHtml(player.uid)}" ${busy ? "disabled" : ""}>${busy ? "USUWANIE…" : removed ? "WYCZYŚĆ DANE POWIADOMIEŃ" : "USUŃ UŻYTKOWNIKA"}</button>` : ""}
+    ${player.uid !== state.user?.uid && (isActiveParticipant || removalCleanupPending) ? `<button type="button" class="admin-player-remove${removalCleanupPending ? " is-cleanup" : ""}" data-admin-remove-player="${escapeHtml(player.uid)}" ${busy ? "disabled" : ""}>${busy ? (removalCleanupPending ? "KOŃCZENIE…" : "USUWANIE…") : removalCleanupPending ? "DOKOŃCZ USUWANIE" : "USUŃ Z TYPERA"}</button>` : ""}
+    ${removalCleanupComplete ? `<p class="admin-player-note is-removal-complete">Usunięcie zakończone${player.removalCleanupCompletedAt ? ` ${escapeHtml(formatAdminDate(player.removalCleanupCompletedAt))}` : ""}. Gracz nie jest liczony w puli i nie może wrócić do tej edycji.</p>` : ""}
+    ${removalCleanupPending ? `<p class="admin-player-note is-removal-pending">Gracz jest już poza rankingiem i pulą. Dokończ czyszczenie danych powiadomień, żeby zamknąć operację.</p>` : ""}
     ${profileReady ? "" : `<p class="admin-player-note">Edycja będzie dostępna, gdy konto utworzy profil i wpis w rankingu.</p>`}
   </article>`;
 }
@@ -1574,7 +1645,7 @@ function adminRequestCard(request, playersByUid) {
 }
 
 function adminView() {
-  const heroMarkup = `<section class="subpage-hero admin-hero"><p class="eyebrow">ZARZĄDZANIE LIGĄ</p><h1>Panel admina</h1><p>Gracze, nicki i wnioski o kolejną zmianę nazwy.</p></section>`;
+  const heroMarkup = `<section class="subpage-hero admin-hero"><p class="eyebrow">ZARZĄDZANIE LIGĄ</p><h1>Panel admina</h1><p>Gracze, składki, nicki i wnioski o kolejną zmianę nazwy.</p></section>`;
   if (state.authStatus === "loading") {
     return `${heroMarkup}<section class="content-section admin-section"><div class="admin-state-card"><span class="admin-state-spinner"></span><h2>Sprawdzamy uprawnienia</h2><p>Panel otworzy się po potwierdzeniu sesji Google.</p></div></section>`;
   }
@@ -1583,10 +1654,10 @@ function adminView() {
   }
 
   const pendingCount = state.adminRequests.filter((request) => request.status === "pending").length;
-  const approvedCount = state.adminRequests.filter((request) => request.status === "approved").length;
-  const rejectedCount = state.adminRequests.filter((request) => request.status === "rejected").length;
   const playersByUid = new Map(state.adminPlayers.map((player) => [player.uid, player]));
   const activePlayers = state.adminPlayers.filter((player) => player.isParticipant && !player.removed);
+  const paidPlayers = activePlayers.filter((player) => player.entryFeePaid === true);
+  const unpaidPlayers = activePlayers.filter((player) => player.entryFeePaid !== true);
   const requestMarkup = state.adminRequestsStatus === "loading" || state.adminRequestsStatus === "idle"
     ? `<div class="admin-state-inline"><span class="admin-state-spinner"></span>Wczytujemy wnioski…</div>`
     : state.adminRequestsStatus === "error"
@@ -1605,9 +1676,9 @@ function adminView() {
   return `${heroMarkup}<section class="content-section admin-section">
     <div class="admin-stats">
       <article><strong>${activePlayers.length}</strong><span>graczy</span></article>
-      <article><strong>${pendingCount}</strong><span>oczekujących</span></article>
-      <article><strong>${approvedCount}</strong><span>zatwierdzonych</span></article>
-      <article><strong>${rejectedCount}</strong><span>odrzuconych</span></article>
+      <article><strong>${paidPlayers.length}</strong><span>opłaconych</span></article>
+      <article><strong>${unpaidPlayers.length}</strong><span>nieopłaconych</span></article>
+      <article><strong>${pendingCount}</strong><span>wniosków o nick</span></article>
     </div>
     <article class="admin-panel">
       <div class="admin-panel-heading"><div><p class="eyebrow">WNIOSKI O NICK</p><h2>Wszystkie zgłoszenia</h2></div><span>Najpierw oczekujące, potem najnowsze.</span></div>
@@ -1790,6 +1861,7 @@ function bindRendered() {
   adminPlayerSearch?.addEventListener("input", filterAdminPlayers);
   if (adminPlayerSearch && state.adminSearch) filterAdminPlayers({ currentTarget: adminPlayerSearch });
   app.querySelectorAll("[data-admin-name-form]").forEach((form) => form.addEventListener("submit", saveAdminDisplayName));
+  app.querySelectorAll("[data-admin-entry-fee]").forEach((button) => button.addEventListener("click", toggleAdminEntryFee));
   app.querySelectorAll("[data-admin-remove-player]").forEach((button) => button.addEventListener("click", removeAdminPlayer));
   app.querySelectorAll("[data-admin-request-action]").forEach((button) => button.addEventListener("click", decideAdminNameRequest));
   app.querySelectorAll("[data-admin-retry]").forEach((button) => button.addEventListener("click", () => {
@@ -5255,6 +5327,15 @@ function normalizeAdminPrivatePlayer(value = {}) {
   };
 }
 
+function normalizeAdminRemoval(value = {}) {
+  const uid = typeof value?.uid === "string" ? value.uid.trim() : "";
+  if (!uid) return null;
+  return {
+    uid,
+    completedAt: value?.completedAt || value?.cleanedAt || value?.removedAt || null
+  };
+}
+
 async function loadAdminPlayers({ force = false } = {}) {
   if (!isCurrentUserAdmin() || !state.db || !state.firebaseModules) return;
   if (!force && state.adminPlayersStatus === "loading") return;
@@ -5301,6 +5382,25 @@ async function loadAdminPlayers({ force = false } = {}) {
       });
     });
   }
+  if (privateResult.status === "fulfilled") {
+    const completedRemovals = Array.isArray(privateResult.value?.removals) ? privateResult.value.removals : [];
+    completedRemovals.forEach((value) => {
+      const removal = normalizeAdminRemoval(value);
+      if (!removal) return;
+      const previous = byUid.get(removal.uid) || {
+        uid: removal.uid,
+        email: "",
+        googleName: "",
+        lastSeenAt: null,
+        hasProfile: false
+      };
+      byUid.set(removal.uid, {
+        ...previous,
+        removalCleanupComplete: true,
+        removalCleanupCompletedAt: removal.completedAt
+      });
+    });
+  }
   if (participantsResult.status === "fulfilled") {
     participantsResult.value.forEach((snapshot) => {
       const data = snapshot.data({ serverTimestamps: "estimate" });
@@ -5314,7 +5414,10 @@ async function loadAdminPlayers({ force = false } = {}) {
       byUid.set(snapshot.id, {
         ...previous,
         isParticipant: data?.uid === snapshot.id && data?.seasonId === SEASON_ID,
-        removed: data?.disabled === true || data?.status === "removed"
+        removed: data?.disabled === true || data?.status === "removed",
+        entryFeePaid: data?.entryFeePaid === true,
+        entryFeeUpdatedAt: data?.entryFeeUpdatedAt || null,
+        entryFeeUpdatedBy: typeof data?.entryFeeUpdatedBy === "string" ? data.entryFeeUpdatedBy : ""
       });
     });
   }
@@ -5334,7 +5437,9 @@ async function loadAdminPlayers({ force = false } = {}) {
     }
   });
   state.adminPlayers = [...byUid.values()].sort((a, b) => (
-    String(a.displayName || a.googleName || a.email || a.uid)
+    Number(a.removed === true) - Number(b.removed === true)
+    || Number(a.entryFeePaid === true) - Number(b.entryFeePaid === true)
+    || String(a.displayName || a.googleName || a.email || a.uid)
       .localeCompare(String(b.displayName || b.googleName || b.email || b.uid), "pl", { sensitivity: "base" })
   ));
   state.adminPlayersStatus = "ready";
@@ -5544,6 +5649,40 @@ async function saveAdminDisplayName(event) {
   }
 }
 
+async function toggleAdminEntryFee(event) {
+  const button = event.currentTarget;
+  const uid = button.dataset.adminEntryFee || "";
+  const nextPaid = button.dataset.nextPaid === "true";
+  const player = state.adminPlayers.find((item) => item.uid === uid);
+  if (!uid || !player || !player.isParticipant || player.removed || state.adminBusyId || !isCurrentUserAdmin()) return;
+  const displayName = player.displayName || player.googleName || player.email || uid;
+  const confirmation = nextPaid
+    ? `Potwierdzić wpłatę ${formatMoney(ENTRY_FEE)} od gracza „${displayName}”?`
+    : `Cofnąć oznaczenie wpłaty gracza „${displayName}” i ustawić status „nieopłacone”?`;
+  if (!window.confirm(confirmation)) return;
+
+  state.adminBusyId = uid;
+  render();
+  try {
+    const result = await notificationApiRequest("/api/admin/players/payment", { uid, paid: nextPaid });
+    if (result?.uid !== uid || result?.entryFeePaid !== nextPaid) {
+      throw new Error("Backend nie potwierdził zmiany statusu składki.");
+    }
+    notify(nextPaid
+      ? `Wpłata gracza ${displayName} została potwierdzona.`
+      : `Gracz ${displayName} ma teraz status „nieopłacone”.`);
+    await loadAdminPlayers({ force: true });
+  } catch (error) {
+    console.error("Nie udało się zmienić statusu składki:", error);
+    notify(error?.message || "Nie udało się zmienić statusu składki.");
+  } finally {
+    if (isCurrentUserAdmin()) {
+      state.adminBusyId = "";
+      if (state.view === "admin") render();
+    }
+  }
+}
+
 async function markPlayerRemoved(uid) {
   if (!isCurrentUserAdmin() || uid === state.user?.uid) {
     throw new Error("Nie można usunąć tego konta.");
@@ -5584,9 +5723,14 @@ async function removeAdminPlayer(event) {
   const uid = event.currentTarget.dataset.adminRemovePlayer || "";
   const player = state.adminPlayers.find((item) => item.uid === uid);
   if (!uid || !player || uid === state.user?.uid || state.adminBusyId || !isCurrentUserAdmin()) return;
+  if (player.removed && player.removalCleanupComplete) return;
   const displayName = player.displayName || player.googleName || player.email || uid;
-  if (!player.removed && !window.confirm(
-    `Usunąć użytkownika „${displayName}” z typera?\n\nZniknie z rankingu, straci dostęp do ligi i nie będzie mógł ponownie dołączyć tym samym kontem.`
+  if (player.removed) {
+    if (!window.confirm(
+      `Dokończyć usuwanie gracza „${displayName}”?\n\nGracz jest już poza typerem. Ta operacja wyczyści pozostałe dane powiadomień i zapisze zakończenie usuwania.`
+    )) return;
+  } else if (!window.confirm(
+    `Usunąć gracza „${displayName}” z typera?\n\nZniknie z rankingu i puli nagród, straci możliwość typowania oraz dostęp do chatu. Nie będzie mógł ponownie dołączyć do tej edycji tym samym kontem Google.\n\nJego konto Google nie zostanie usunięte.`
   )) return;
 
   state.adminBusyId = uid;
@@ -5594,7 +5738,9 @@ async function removeAdminPlayer(event) {
   try {
     if (!player.removed) await markPlayerRemoved(uid);
     await notificationApiRequest("/api/admin/players/remove", { uid });
-    notify(`Użytkownik ${displayName} został usunięty z typera.`);
+    notify(player.removed
+      ? `Usuwanie gracza ${displayName} zostało dokończone.`
+      : `Gracz ${displayName} został usunięty z typera.`);
     await loadAdminPlayers({ force: true });
   } catch (error) {
     console.error("Nie udało się usunąć użytkownika:", error);
@@ -5901,6 +6047,7 @@ document.addEventListener("keydown", (event) => {
 });
 window.addEventListener("popstate", applyRouteFromLocation);
 window.addEventListener("hashchange", applyRouteFromLocation);
+window.addEventListener("focus", refreshOpenRankingOnResume);
 window.addEventListener("online", () => {
   state.chatReadRetryAt = 0;
   markChatRead();
@@ -5912,6 +6059,7 @@ window.addEventListener("online", () => {
 });
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState !== "visible" || !navigator.onLine) return;
+  refreshOpenRankingOnResume();
   state.chatReadRetryAt = 0;
   markChatRead();
   retryChatPushIfNeeded().catch(() => {});

@@ -105,6 +105,19 @@ npx wrangler deploy --config notifications-wrangler.jsonc
 
 Lokalnie klucz można umieścić w ignorowanym pliku `.env` zgodnie z `.env.example`. API-Football jest zewnętrznym dostawcą, a nie oficjalnym partnerem Ekstraklasy; dostępność ocen zależy od pokrycia danego meczu i planu dostawcy.
 
+### Składki i wykluczanie graczy
+
+Status wpisowego jest przechowywany w dokumencie uczestnika w Firestore i może go zmienić wyłącznie administrator `mateuszjoe@gmail.com`. Ranking pobiera tylko minimalny publiczny dla uczestników zestaw: UID, informację opłacone/nieopłacone oraz status wykluczenia — bez maila i nazwy konta Google. Każda zmiana składki oraz wykluczenie są zapisywane w audycie D1.
+
+Usunięcie z typera jest kontrolowanym wykluczeniem z bieżącej edycji: gracz znika z rankingu i puli, traci możliwość typowania oraz dostęp do chatu i nie może sam ponownie dołączyć tym samym kontem. Konto Google nie jest kasowane. Przed wdrożeniem Workera należy jednorazowo zastosować migrację:
+
+```powershell
+npx wrangler d1 execute DB --remote --file notifications-worker/migrations/0003_admin_player_audit.sql --config notifications-wrangler.jsonc
+npx wrangler d1 execute DB --remote --file notifications-worker/migrations/0004_admin_player_audit_uniqueness.sql --config notifications-wrangler.jsonc
+firebase deploy --only firestore:rules --project ekstraklasa-typer-2026-27
+npx wrangler deploy --config notifications-wrangler.jsonc
+```
+
 ### Ręczna korekta wyniku
 
 W lokalnym serwerze Node awaryjny wynik można wpisać do `manual-results.json` pod identyfikatorem meczu z `data.js`. Można też ustawić `ADMIN_RESULT_TOKEN` i użyć chronionego endpointu:

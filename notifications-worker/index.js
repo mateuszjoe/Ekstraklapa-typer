@@ -240,18 +240,56 @@ async function firestoreDocument(env, token, segments, missingStatus = 403) {
   };
 }
 
+async function firestoreCollection(env, token, segments) {
+  const path = segments.map((segment) => encodeURIComponent(safeDocumentSegment(segment, "identyfikatora"))).join("/");
+  const baseUrl = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents/${path}`;
+  const documents = [];
+  let pageToken = "";
+  for (let page = 0; page < 5; page += 1) {
+    const url = new URL(baseUrl);
+    url.searchParams.set("pageSize", "500");
+    if (pageToken) url.searchParams.set("pageToken", pageToken);
+    const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (!response.ok) {
+      if (response.status === 429 || response.status >= 500) {
+        throw new HttpError(503, "firestore-unavailable", "Baza typera jest chwilowo niedostępna.");
+      }
+      throw new HttpError(response.status === 401 ? 401 : 403, "firestore-denied", "Nie udało się odczytać danych z bazy typera.");
+    }
+    const payload = await response.json();
+    for (const document of payload.documents || []) {
+      documents.push({
+        id: decodeURIComponent(String(document.name || "").split("/").pop() || ""),
+        data: decodeFirestoreFields(document.fields || {}),
+        createTime: document.createTime || "",
+        updateTime: document.updateTime || ""
+      });
+    }
+    pageToken = typeof payload.nextPageToken === "string" ? payload.nextPageToken : "";
+    if (!pageToken) break;
+  }
+  if (pageToken) {
+    throw new HttpError(503, "firestore-result-too-large", "Lista uczestników jest chwilowo zbyt duża do bezpiecznego odczytu.");
+  }
+  return documents;
+}
+
+function participantIsDisabled(data) {
+  const status = String(data?.status || "").trim().toLowerCase();
+  return data?.disabled === true
+    || data?.blocked === true
+    || data?.enabled === false
+    || data?.active === false
+    || ["disabled", "blocked", "banned", "suspended", "removed"].includes(status);
+}
+
 async function authenticatedParticipant(request, env) {
   const user = await firebaseUser(request, env);
   const participant = await firestoreDocument(env, user.token, ["seasons", SEASON_ID, "participants", user.uid]);
   if (participant.data.uid !== user.uid || participant.data.seasonId !== SEASON_ID) {
     throw new HttpError(403, "not-participant", "Konto nie jest uczestnikiem typera.");
   }
-  const participantStatus = String(participant.data.status || "").trim().toLowerCase();
-  if (participant.data.disabled === true
-    || participant.data.blocked === true
-    || participant.data.enabled === false
-    || participant.data.active === false
-    || ["disabled", "blocked", "banned", "suspended"].includes(participantStatus)) {
+  if (participantIsDisabled(participant.data)) {
     throw new HttpError(403, "participant-disabled", "To konto zostało wyłączone z typera.");
   }
   return { ...user, participant };
@@ -366,19 +404,190 @@ async function adminPlayers(request, env) {
   const user = await authenticatedAdmin(request, env);
   await consumeRateLimit(env, user.uid, "admin-players", 30);
   await upsertPlayerIdentity(env, user);
-  const result = await env.DB.prepare(`
-    SELECT uid, google_email, google_full_name, last_seen_at
-    FROM player_identities
-    ORDER BY google_full_name COLLATE NOCASE, google_email COLLATE NOCASE, uid
-    LIMIT 500
-  `).all();
+  const [playersResult, removalsResult] = await env.DB.batch([
+    env.DB.prepare(`
+      SELECT uid, google_email, google_full_name, last_seen_at
+      FROM player_identities
+      ORDER BY google_full_name COLLATE NOCASE, google_email COLLATE NOCASE, uid
+      LIMIT 500
+    `),
+    env.DB.prepare(`
+      SELECT target_uid, created_at
+      FROM admin_player_audit
+      WHERE season_id = ?1 AND action = 'player-removed'
+      ORDER BY created_at DESC, id DESC
+      LIMIT 500
+    `).bind(SEASON_ID)
+  ]);
   return {
-    players: (result.results || []).map((row) => ({
+    players: (playersResult.results || []).map((row) => ({
       uid: String(row.uid || ""),
       email: String(row.google_email || ""),
       googleName: String(row.google_full_name || ""),
       lastSeenAt: new Date(Number(row.last_seen_at) || 0).toISOString()
-    }))
+    })),
+    removals: (removalsResult.results || [])
+      .map((row) => ({
+        uid: String(row.target_uid || ""),
+        completedAt: new Date(Number(row.created_at) || 0).toISOString()
+      }))
+      .filter((removal) => removal.uid && removal.completedAt !== new Date(0).toISOString())
+  };
+}
+
+async function playerStatuses(request, env) {
+  const user = await authenticatedParticipant(request, env);
+  await consumeRateLimit(env, user.uid, "player-statuses", 30);
+  const participants = await firestoreCollection(env, user.token, [
+    "seasons", SEASON_ID, "participants"
+  ]);
+  return {
+    seasonId: SEASON_ID,
+    players: participants
+      .filter((participant) => participant.id
+        && participant.data.uid === participant.id
+        && participant.data.seasonId === SEASON_ID)
+      .map((participant) => ({
+        uid: participant.id,
+        entryFeePaid: participant.data.entryFeePaid === true,
+        excluded: participantIsDisabled(participant.data)
+      }))
+  };
+}
+
+async function commitEntryFeeStatus(env, user, participant, targetUid, paid) {
+  const documentName = `projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents/seasons/${SEASON_ID}/participants/${targetUid}`;
+  const response = await fetch(
+    `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents:commit`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${user.token}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        writes: [{
+          update: {
+            name: documentName,
+            fields: {
+              entryFeePaid: { booleanValue: paid },
+              entryFeeUpdatedBy: { stringValue: user.uid }
+            }
+          },
+          updateMask: {
+            fieldPaths: ["entryFeePaid", "entryFeeUpdatedBy"]
+          },
+          updateTransforms: [{
+            fieldPath: "entryFeeUpdatedAt",
+            setToServerValue: "REQUEST_TIME"
+          }],
+          currentDocument: {
+            updateTime: participant.updateTime
+          }
+        }]
+      })
+    }
+  );
+  if (!response.ok) {
+    if (response.status === 409 || response.status === 412) {
+      throw new HttpError(409, "participant-changed", "Dane gracza zmieniły się w trakcie zapisu. Spróbuj ponownie.");
+    }
+    if (response.status === 429 || response.status >= 500) {
+      throw new HttpError(503, "firestore-unavailable", "Baza typera jest chwilowo niedostępna.");
+    }
+    throw new HttpError(response.status === 401 ? 401 : 403, "firestore-denied", "Nie udało się zapisać statusu wpłaty.");
+  }
+  const payload = await response.json();
+  return String(payload.commitTime || payload.writeResults?.[0]?.updateTime || "");
+}
+
+async function recordPaymentAuditBestEffort(env, {
+  actorUid,
+  targetUid,
+  paid,
+  entryFeeUpdatedAt
+}) {
+  const timestamp = typeof entryFeeUpdatedAt === "string" ? entryFeeUpdatedAt.trim() : "";
+  const timestampMs = new Date(timestamp).getTime();
+  if (!timestamp || !Number.isFinite(timestampMs) || timestampMs <= 0) return false;
+  const action = paid ? "entry-fee-paid" : "entry-fee-unpaid";
+  const eventKey = `${SEASON_ID}:${targetUid}:${action}:${timestamp}`;
+  try {
+    await env.DB.prepare(`
+      INSERT OR IGNORE INTO admin_player_audit
+        (season_id, target_uid, actor_uid, action, detail_json, created_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+    `).bind(
+      SEASON_ID,
+      targetUid,
+      actorUid,
+      action,
+      JSON.stringify({
+        eventKey,
+        entryFeePaid: paid,
+        entryFeeUpdatedAt: timestamp
+      }),
+      timestampMs
+    ).run();
+    return true;
+  } catch (error) {
+    console.error("Entry-fee audit write failed after canonical Firestore update", {
+      targetUid,
+      action,
+      message: compactText(error?.message || "unknown", 120)
+    });
+    return false;
+  }
+}
+
+async function adminPlayerPayment(request, env) {
+  const user = await authenticatedAdmin(request, env);
+  await consumeRateLimit(env, user.uid, "admin-player-payment", 20);
+  const body = await jsonBody(request);
+  exactBodyFields(body, ["uid", "paid"]);
+  const targetUid = safeDocumentSegment(body.uid, "uid gracza");
+  if (typeof body.paid !== "boolean") {
+    throw new HttpError(400, "invalid-payment-status", "Status wpłaty musi mieć wartość prawda albo fałsz.");
+  }
+  const participant = await firestoreDocument(env, user.token, [
+    "seasons", SEASON_ID, "participants", targetUid
+  ], 404);
+  if (participant.data.uid !== targetUid || participant.data.seasonId !== SEASON_ID) {
+    throw new HttpError(409, "invalid-participant", "Konto nie jest uczestnikiem bieżącej edycji typera.");
+  }
+  if (participantIsDisabled(participant.data)) {
+    throw new HttpError(409, "participant-disabled", "Nie można zmienić wpłaty usuniętego gracza.");
+  }
+  const paid = body.paid;
+  if (participant.data.entryFeePaid === paid) {
+    await recordPaymentAuditBestEffort(env, {
+      actorUid: participant.data.entryFeeUpdatedBy || user.uid,
+      targetUid,
+      paid,
+      entryFeeUpdatedAt: participant.data.entryFeeUpdatedAt
+    });
+    return {
+      status: "unchanged",
+      uid: targetUid,
+      entryFeePaid: paid,
+      entryFeeUpdatedAt: participant.data.entryFeeUpdatedAt || null
+    };
+  }
+
+  const entryFeeUpdatedAt = await commitEntryFeeStatus(env, user, participant, targetUid, paid);
+  const now = Date.now();
+  const canonicalUpdatedAt = entryFeeUpdatedAt || new Date(now).toISOString();
+  await recordPaymentAuditBestEffort(env, {
+    actorUid: user.uid,
+    targetUid,
+    paid,
+    entryFeeUpdatedAt: canonicalUpdatedAt
+  });
+  return {
+    status: "updated",
+    uid: targetUid,
+    entryFeePaid: paid,
+    entryFeeUpdatedAt: canonicalUpdatedAt
   };
 }
 
@@ -1508,14 +1717,33 @@ async function removeAdminPlayer(request, env) {
     throw new HttpError(409, "player-not-removed", "Najpierw usuń gracza z sezonu w panelu administratora.");
   }
 
+  const now = Date.now();
   await env.DB.batch([
+    env.DB.prepare(`
+      INSERT OR IGNORE INTO admin_player_audit
+        (season_id, target_uid, actor_uid, action, detail_json, created_at)
+      VALUES (?1, ?2, ?3, 'player-removed', ?4, ?5)
+    `).bind(
+      SEASON_ID,
+      targetUid,
+      user.uid,
+      JSON.stringify({
+        eventKey: `${SEASON_ID}:${targetUid}:player-removed`,
+        entryFeePaid: participant.data.entryFeePaid === true,
+        removedAt: participant.data.removedAt || null
+      }),
+      now
+    ),
     env.DB.prepare("DELETE FROM subscriptions WHERE uid = ?1").bind(targetUid),
     env.DB.prepare("DELETE FROM picks WHERE uid = ?1").bind(targetUid),
     env.DB.prepare("DELETE FROM request_limits WHERE uid = ?1").bind(targetUid),
-    env.DB.prepare("DELETE FROM notification_events WHERE target_uid = ?1").bind(targetUid),
-    env.DB.prepare("DELETE FROM player_identities WHERE uid = ?1").bind(targetUid)
+    env.DB.prepare("DELETE FROM notification_events WHERE target_uid = ?1").bind(targetUid)
   ]);
-  return { status: "removed", uid: targetUid };
+  return {
+    status: "removed",
+    uid: targetUid,
+    completedAt: new Date(now).toISOString()
+  };
 }
 
 function completedFixtureForRatings(fixture) {
@@ -2413,6 +2641,9 @@ async function handleRequest(request, env) {
   if (request.method === "GET" && url.pathname === "/api/admin/players") {
     return jsonResponse(request, env, await adminPlayers(request, env));
   }
+  if (request.method === "GET" && url.pathname === "/api/players/statuses") {
+    return jsonResponse(request, env, await playerStatuses(request, env));
+  }
   if (request.method === "GET" && url.pathname === "/api/leaderboard") {
     return jsonResponse(request, env, await leaderboard(request, env));
   }
@@ -2430,6 +2661,7 @@ async function handleRequest(request, env) {
     "/api/events/player-name-changed": playerNameChanged,
     "/api/events/name-change-decision": nameChangeDecision,
     "/api/events/admin-name-edited": adminNameEdited,
+    "/api/admin/players/payment": adminPlayerPayment,
     "/api/admin/players/remove": removeAdminPlayer,
     "/api/picks/sync": syncPicks
   };

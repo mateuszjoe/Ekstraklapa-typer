@@ -3,13 +3,20 @@ import { useEffect } from "react";
 
 export default function Home() {
   useEffect(() => {
-    if (document.querySelector("script[data-ekstraklasa-runtime]")) return;
-
-    const script = document.createElement("script");
-    script.type = "module";
-    script.src = "/legacy/app.js?v=29";
-    script.dataset.ekstraklasaRuntime = "true";
-    document.body.appendChild(script);
+    if (!document.querySelector("script[data-payment-banner-runtime]")) {
+      const paymentScript = document.createElement("script");
+      paymentScript.type = "module";
+      paymentScript.src = "/payment-banner.js?v=1";
+      paymentScript.dataset.paymentBannerRuntime = "true";
+      document.body.appendChild(paymentScript);
+    }
+    if (!document.querySelector("script[data-ekstraklasa-runtime]")) {
+      const script = document.createElement("script");
+      script.type = "module";
+      script.src = "/app.js?v=39";
+      script.dataset.ekstraklasaRuntime = "true";
+      document.body.appendChild(script);
+    }
   }, []);
 
   return (
@@ -42,6 +49,36 @@ export default function Home() {
         <button id="authButton" className="auth-button"><span className="user-icon">◉</span><span>Zaloguj się</span></button>
         <button id="menuButton" className="menu-button" aria-label="Otwórz menu">☰</button>
       </header>
+
+      <aside className="blik-payment-banner" aria-labelledby="blikPaymentTitle">
+        <div className="blik-payment-banner__inner">
+          <span className="blik-payment-banner__mark" aria-hidden="true">BLIK</span>
+          <div className="blik-payment-banner__copy">
+            <strong id="blikPaymentTitle">Pozostań w grze</strong>
+            <span>Wpłać <b>100 zł</b> BLIK na telefon</span>
+          </div>
+          <button
+            type="button"
+            className="blik-payment-banner__phone"
+            data-blik-copy
+            data-blik-phone=""
+            aria-label="Skopiuj numer telefonu do przelewu BLIK"
+            aria-describedby="blikCopyStatus"
+            disabled
+          >
+            <span className="blik-payment-banner__phone-label">Numer telefonu</span>
+            <strong data-blik-phone-label>—</strong>
+            <span className="blik-payment-banner__copy-action">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="8" y="8" width="11" height="11" rx="2" />
+                <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
+              </svg>
+              Kopiuj
+            </span>
+          </button>
+          <span id="blikCopyStatus" className="blik-payment-banner__status" role="status" aria-live="polite" />
+        </div>
+      </aside>
 
       <main id="app" tabIndex="-1" />
 

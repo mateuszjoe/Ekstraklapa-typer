@@ -21,6 +21,47 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/seasons/2026-27/participants/$(request.auth.uid)).data.get('disabled', false) == false;
     }
 
+    function validEntryFeeState(data) {
+      return (
+          !data.keys().hasAny([
+            'entryFeePaid', 'entryFeeUpdatedAt', 'entryFeeUpdatedBy'
+          ])
+        )
+        || (
+          data.keys().hasAll([
+            'entryFeePaid', 'entryFeeUpdatedAt', 'entryFeeUpdatedBy'
+          ])
+          && data.entryFeePaid is bool
+          && data.entryFeeUpdatedAt is timestamp
+          && data.entryFeeUpdatedBy is string
+          && data.entryFeeUpdatedBy.size() > 0
+          && data.entryFeeUpdatedBy.size() <= 128
+        );
+    }
+
+    function validAdminEntryFeeUpdate(seasonId, uid) {
+      return isAdmin()
+        && seasonId == '2026-27'
+        && resource.data.uid == uid
+        && resource.data.seasonId == seasonId
+        && resource.data.get('disabled', false) == false
+        && validEntryFeeState(resource.data)
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.seasonId == resource.data.seasonId
+        && request.resource.data.joinedAt == resource.data.joinedAt
+        && request.resource.data.entryFeePaid is bool
+        && request.resource.data.entryFeePaid != resource.data.get('entryFeePaid', false)
+        && request.resource.data.entryFeeUpdatedAt == request.time
+        && request.resource.data.entryFeeUpdatedBy == request.auth.uid
+        && request.resource.data.keys().hasOnly([
+          'uid', 'seasonId', 'joinedAt',
+          'entryFeePaid', 'entryFeeUpdatedAt', 'entryFeeUpdatedBy'
+        ])
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'entryFeePaid', 'entryFeeUpdatedAt', 'entryFeeUpdatedBy'
+        ]);
+    }
+
     function matchOpen(seasonId, matchId) {
       return seasonId == '2026-27'
         && exists(/databases/$(database)/documents/seasons/$(seasonId)/matches/$(matchId))
@@ -41,6 +82,7 @@ service cloud.firestore {
 
     function validOwnPrediction(predictionId) {
       return googleSignedIn()
+        && isSeasonParticipant()
         && request.resource.data.uid == request.auth.uid
         && request.resource.data.matchId is string
         && predictionId == request.auth.uid + '_' + request.resource.data.matchId
@@ -348,7 +390,7 @@ service cloud.firestore {
     }
 
     function validNameChangeRequestCreate(requestId) {
-      return googleSignedIn()
+      return isSeasonParticipant()
         && requestId.size() > 0
         && requestId.size() <= 100
         && request.resource.data.uid == request.auth.uid
@@ -720,7 +762,7 @@ service cloud.firestore {
       allow update: if request.resource.data.joinedAt == resource.data.get('joinedAt', request.time)
         && (
           (
-            googleSignedIn()
+            isSeasonParticipant()
             && uid == request.auth.uid
             && (
               validProfilePolicyBootstrap(uid)
@@ -769,25 +811,40 @@ service cloud.firestore {
             && getAfter(/databases/$(database)/documents/seasonStats/$(seasonId)).data.participantCount
               == get(/databases/$(database)/documents/seasonStats/$(seasonId)).data.participantCount + 1)
         );
-      allow update: if isAdmin()
-        && seasonId == '2026-27'
-        && uid != request.auth.uid
-        && resource.data.uid == uid
-        && resource.data.seasonId == seasonId
-        && resource.data.get('disabled', false) == false
-        && request.resource.data.uid == uid
-        && request.resource.data.seasonId == seasonId
-        && request.resource.data.joinedAt == resource.data.joinedAt
-        && request.resource.data.disabled == true
-        && request.resource.data.status == 'removed'
-        && request.resource.data.removedAt == request.time
-        && request.resource.data.removedBy == request.auth.uid
-        && request.resource.data.keys().hasOnly([
-          'uid', 'seasonId', 'joinedAt', 'disabled', 'status', 'removedAt', 'removedBy'
-        ])
-        && !existsAfter(/databases/$(database)/documents/seasons/$(seasonId)/leaderboard/$(uid))
-        && getAfter(/databases/$(database)/documents/seasonStats/$(seasonId)).data.participantCount
-          == get(/databases/$(database)/documents/seasonStats/$(seasonId)).data.participantCount - 1;
+      allow update: if validAdminEntryFeeUpdate(seasonId, uid)
+        || (
+          isAdmin()
+          && seasonId == '2026-27'
+          && uid != request.auth.uid
+          && resource.data.uid == uid
+          && resource.data.seasonId == seasonId
+          && resource.data.get('disabled', false) == false
+          && request.resource.data.uid == uid
+          && request.resource.data.seasonId == seasonId
+          && request.resource.data.joinedAt == resource.data.joinedAt
+          && request.resource.data.disabled == true
+          && request.resource.data.status == 'removed'
+          && request.resource.data.removedAt == request.time
+          && request.resource.data.removedBy == request.auth.uid
+          && request.resource.data.keys().hasOnly([
+            'uid', 'seasonId', 'joinedAt', 'disabled', 'status', 'removedAt', 'removedBy',
+            'entryFeePaid', 'entryFeeUpdatedAt', 'entryFeeUpdatedBy'
+          ])
+          && validEntryFeeState(resource.data)
+          && validEntryFeeState(request.resource.data)
+          && request.resource.data.get('entryFeePaid', false)
+            == resource.data.get('entryFeePaid', false)
+          && request.resource.data.get('entryFeeUpdatedAt', null)
+            == resource.data.get('entryFeeUpdatedAt', null)
+          && request.resource.data.get('entryFeeUpdatedBy', '')
+            == resource.data.get('entryFeeUpdatedBy', '')
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'disabled', 'status', 'removedAt', 'removedBy'
+          ])
+          && !existsAfter(/databases/$(database)/documents/seasons/$(seasonId)/leaderboard/$(uid))
+          && getAfter(/databases/$(database)/documents/seasonStats/$(seasonId)).data.participantCount
+            == get(/databases/$(database)/documents/seasonStats/$(seasonId)).data.participantCount - 1
+        );
       allow delete: if false;
     }
 

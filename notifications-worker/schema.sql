@@ -158,6 +158,60 @@ CREATE TABLE IF NOT EXISTS request_limits (
 CREATE INDEX IF NOT EXISTS request_limits_cleanup
   ON request_limits(updated_at);
 
+-- The participant document in Firestore remains the canonical source for
+-- entry-fee and membership state. This table is an append-only audit trail for
+-- sensitive administrator actions and deliberately has no foreign key to
+-- player_identities, so removing private identity data does not erase history.
+CREATE TABLE IF NOT EXISTS admin_player_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  season_id TEXT NOT NULL,
+  target_uid TEXT NOT NULL,
+  actor_uid TEXT NOT NULL,
+  action TEXT NOT NULL,
+  detail_json TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL,
+  CHECK (length(season_id) BETWEEN 1 AND 40),
+  CHECK (length(target_uid) BETWEEN 1 AND 128),
+  CHECK (length(actor_uid) BETWEEN 1 AND 128),
+  CHECK (action IN ('entry-fee-paid', 'entry-fee-unpaid', 'player-removed')),
+  CHECK (length(detail_json) BETWEEN 2 AND 1024),
+  CHECK (created_at > 0)
+);
+
+CREATE INDEX IF NOT EXISTS admin_player_audit_target
+  ON admin_player_audit(season_id, target_uid, created_at DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS admin_player_audit_one_removal
+  ON admin_player_audit(season_id, target_uid, action)
+  WHERE action = 'player-removed';
+
+DELETE FROM admin_player_audit
+WHERE CASE
+    WHEN json_valid(detail_json) THEN json_type(detail_json, '$.eventKey') = 'text'
+    ELSE 0
+  END
+  AND id NOT IN (
+    SELECT MIN(id)
+    FROM admin_player_audit
+    WHERE CASE
+        WHEN json_valid(detail_json) THEN json_type(detail_json, '$.eventKey') = 'text'
+        ELSE 0
+      END
+    GROUP BY json_extract(detail_json, '$.eventKey')
+  );
+
+CREATE UNIQUE INDEX IF NOT EXISTS admin_player_audit_event_key
+  ON admin_player_audit(
+    CASE
+      WHEN json_valid(detail_json) THEN json_extract(detail_json, '$.eventKey')
+      ELSE NULL
+    END
+  )
+  WHERE CASE
+    WHEN json_valid(detail_json) THEN json_type(detail_json, '$.eventKey') = 'text'
+    ELSE 0
+  END;
+
 -- API-Football is queried only by the Worker after an official fixture is
 -- final. The sync row provides a durable retry/lease state so browser traffic
 -- can never consume the external provider quota.

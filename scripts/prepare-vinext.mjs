@@ -10,15 +10,18 @@ if (!buildOutput.startsWith(`${root}${sep}`)) throw new Error("Nieprawidłowy ka
 
 await rm(output, { recursive: true, force: true });
 await rm(buildOutput, { recursive: true, force: true });
-await mkdir(join(output, "legacy"), { recursive: true });
+await mkdir(output, { recursive: true });
 
 await Promise.all([
-  cp(join(root, "app.js"), join(output, "legacy", "app.js")),
-  cp(join(root, "data.js"), join(output, "legacy", "data.js")),
-  cp(join(root, "firebase-config.js"), join(output, "legacy", "firebase-config.js")),
-  cp(join(root, "live-provider.js"), join(output, "legacy", "live-provider.js")),
-  cp(join(root, "league-provider.js"), join(output, "legacy", "league-provider.js")),
+  cp(join(root, "app.js"), join(output, "app.js")),
+  cp(join(root, "data.js"), join(output, "data.js")),
+  cp(join(root, "firebase-config.js"), join(output, "firebase-config.js")),
+  cp(join(root, "live-provider.js"), join(output, "live-provider.js")),
+  cp(join(root, "league-provider.js"), join(output, "league-provider.js")),
+  cp(join(root, "player-rating.js"), join(output, "player-rating.js")),
+  cp(join(root, "payment-banner.js"), join(output, "payment-banner.js")),
   cp(join(root, "styles.css"), join(output, "styles.css")),
+  cp(join(root, "payment-banner.css"), join(output, "payment-banner.css")),
   cp(join(root, "manifest.webmanifest"), join(output, "manifest.webmanifest")),
   cp(join(root, "sw.js"), join(output, "sw.js")),
   cp(join(root, "downloads"), join(output, "downloads"), { recursive: true }),
