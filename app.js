@@ -28,7 +28,7 @@ const NOTIFICATION_OUTBOX_CHAT_TTL_MS = 9 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PLAYER_TTL_MS = 14 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PICK_TTL_MS = 45 * 24 * 60 * 60 * 1000;
 const NOTIFICATION_OUTBOX_NAME_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const APP_SERVICE_WORKER_VERSION = "36";
+const APP_SERVICE_WORKER_VERSION = "37";
 const FINAL = new Set(["FT", "AET", "PEN", "AWD", "WO", "FINISHED", "AWARDED"]);
 const LIVE = new Set(["1H", "HT", "2H", "ET", "BT", "P", "LIVE", "IN_PLAY", "PAUSED"]);
 const VIEWS = new Set(["matches", "ekstraklasa", "ranking", "rules", "settings", "admin"]);
@@ -218,6 +218,7 @@ const state = {
   chatNotificationsEnabled: false,
   chatNotificationsSyncPending: false,
   chatNotificationsBusy: false,
+  notificationTestBusy: false,
   chatSending: false,
   chatLastReadMs: 0,
   chatRemoteReadMs: 0,
@@ -1844,6 +1845,7 @@ function settingsView() {
   const notificationBusy = notificationState === "busy";
   const notificationPending = notificationState === "pending";
   const notificationBlocked = notificationBusy || notificationState === "unsupported";
+  const notificationTestBlocked = notificationBlocked || !notificationEnabled || state.notificationTestBusy;
   const notificationCopy = notificationState === "unsupported"
     ? "To urządzenie nie obsługuje powiadomień webowych."
     : notificationState === "denied"
@@ -1900,7 +1902,10 @@ function settingsView() {
         <div class="settings-panel-heading"><span>05</span><div><h3>Powiadomienia</h3><p>${notificationCopy}</p></div></div>
         <div class="settings-notification-row">
           <span class="settings-notification-status ${notificationEnabled ? "is-enabled" : ""}">${notificationBusy ? "Łączenie…" : notificationPending ? "Oczekuje" : notificationEnabled ? "Włączone" : notificationState === "denied" ? "Zablokowane" : notificationState === "unsupported" ? "Niedostępne" : "Wyłączone"}</span>
-          <button type="button" class="settings-notification-button" data-chat-notifications ${notificationBlocked ? "disabled" : ""}>${notificationBusy ? "ŁĄCZENIE…" : notificationPending ? "SPRÓBUJ PONOWNIE" : notificationEnabled ? "WYŁĄCZ" : "WŁĄCZ POWIADOMIENIA"}</button>
+          <div class="settings-notification-actions">
+            <button type="button" class="settings-notification-test" data-notification-test ${notificationTestBlocked ? "disabled" : ""}>${state.notificationTestBusy ? "WYSYŁANIE…" : "WYŚLIJ TEST"}</button>
+            <button type="button" class="settings-notification-button" data-chat-notifications ${notificationBlocked || state.notificationTestBusy ? "disabled" : ""}>${notificationBusy ? "ŁĄCZENIE…" : notificationPending ? "SPRÓBUJ PONOWNIE" : notificationEnabled ? "WYŁĄCZ" : "WŁĄCZ POWIADOMIENIA"}</button>
+          </div>
         </div>
       </article>
 
@@ -1990,6 +1995,7 @@ function bindRendered() {
     void loadAdminPlayers({ force: true });
   }));
   app.querySelector("[data-chat-notifications]")?.addEventListener("click", toggleChatNotifications);
+  app.querySelector("[data-notification-test]")?.addEventListener("click", sendNotificationTest);
   app.querySelector("[data-ranking-retry]")?.addEventListener("click", () => loadRankingData());
   app.querySelector("[data-league-refresh]")?.addEventListener("click", () => loadLeagueData({ force: true }));
   app.querySelector("[data-lineup-retry]")?.addEventListener("click", () => {
@@ -3195,10 +3201,17 @@ async function retryChatPushIfNeeded() {
     || !chatNotificationsSupported() || Notification.permission !== "granted"
     || state.chatNotificationsBusy || chatPushSessionClosing) return;
   const localState = await readLocalChatPushState();
+  let currentSubscription = null;
+  try {
+    ({ subscription: currentSubscription } = await appPushSubscription(false));
+  } catch (error) {
+    console.warn("Nie udało się potwierdzić bieżącej subskrypcji push:", error);
+  }
   const localStateReady = localState.muted === false
     && typeof localState.endpoint === "string"
     && localState.endpoint.startsWith("https://")
-    && /^[A-Za-z0-9_-]{43}$/.test(localState.rotationToken || "");
+    && /^[A-Za-z0-9_-]{43}$/.test(localState.rotationToken || "")
+    && currentSubscription?.endpoint === localState.endpoint;
   if (!state.chatNotificationsSyncPending && localState.needsSync !== true && localStateReady) return;
   await enableChatPush(uid, { silent: true });
 }
@@ -3279,6 +3292,30 @@ async function toggleChatNotifications() {
   }
   const enabled = await enableChatPush(state.user?.uid);
   return { completed: enabled, enabled };
+}
+
+async function sendNotificationTest() {
+  const uid = state.user?.uid;
+  if (!uid || !state.participantReady || state.notificationTestBusy) return;
+  if (!chatNotificationsSupported() || Notification.permission !== "granted") {
+    notify("Najpierw włącz powiadomienia na tym urządzeniu.");
+    return;
+  }
+  state.notificationTestBusy = true;
+  if (state.view === "settings") render();
+  try {
+    // Ponowna rejestracja naprawia również stary endpoint lub utracony lokalny stan.
+    const repaired = await enableChatPush(uid, { silent: true });
+    if (!repaired) throw new Error("Nie udało się odświeżyć subskrypcji tego urządzenia.");
+    await notificationApiRequest("/api/push/test", {});
+    notify("Test wysłany. Powiadomienie powinno pojawić się w ciągu kilku sekund.");
+  } catch (error) {
+    console.error("Test powiadomień nie powiódł się:", error);
+    notify(error?.message || "Nie udało się wysłać testowego powiadomienia.");
+  } finally {
+    state.notificationTestBusy = false;
+    if (state.view === "settings") render();
+  }
 }
 
 function notificationPrimerStorageKey(uid = state.user?.uid) {

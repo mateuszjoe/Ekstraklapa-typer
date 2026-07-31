@@ -328,8 +328,11 @@ svg { width: 1.1em; height: 1.1em; fill: none; stroke: currentColor; stroke-widt
 .settings-notification-status { display: inline-flex; align-items: center; gap: 8px; font-size: 9px; font-weight: 900; letter-spacing: .04em; text-transform: uppercase; }
 .settings-notification-status::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
 .settings-notification-status.is-enabled::before { background: var(--green); box-shadow: 0 0 0 4px rgba(110,173,50,.16); }
+.settings-notification-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
 .settings-notification-button { min-height: 42px; padding: 9px 15px; color: var(--ink); background: var(--yellow); border: 2px solid var(--ink); border-radius: 8px; box-shadow: 3px 3px 0 var(--green); font-size: 9px; font-weight: 900; }
 .settings-notification-button:disabled { cursor: not-allowed; opacity: .5; box-shadow: none; }
+.settings-notification-test { min-height: 42px; padding: 9px 15px; color: var(--ink); background: var(--paper); border: 2px solid var(--ink); border-radius: 8px; font-size: 9px; font-weight: 900; }
+.settings-notification-test:disabled { cursor: not-allowed; opacity: .45; }
 
 .admin-section { width: min(1180px, 100%); display: grid; gap: 25px; }
 .admin-hero h1 { max-width: 900px; }
@@ -1180,6 +1183,7 @@ footer { min-height: 96px; padding: 20px clamp(25px, 7vw, 110px); color: #b7b0a3
   .profile-name-help { grid-column: auto; }
   .settings-account-row { align-items: stretch; flex-direction: column; }
   .settings-notification-row { align-items: stretch; flex-direction: column; }
+  .settings-notification-actions { align-items: stretch; flex-direction: column; }
   .notification-primer-actions { grid-template-columns: 1fr; }
   .notification-primer-actions button { width: 100%; }
   .settings-signout-button { width: 100%; }

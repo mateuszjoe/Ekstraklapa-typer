@@ -1240,6 +1240,30 @@ async function playerJoined(request, env) {
   }, { excludeUid: user.uid });
 }
 
+async function testPush(request, env) {
+  const user = await authenticatedParticipant(request, env);
+  await consumeRateLimit(env, user.uid, "push-test", 4, 10 * 60 * 1000);
+  const body = await jsonBody(request);
+  exactBodyFields(body, []);
+  const subscription = await env.DB.prepare(
+    "SELECT COUNT(*) AS total FROM subscriptions WHERE uid = ?1"
+  ).bind(user.uid).first();
+  if (Number(subscription?.total || 0) < 1) {
+    throw new HttpError(409, "missing-subscription", "To urządzenie nie ma aktywnej subskrypcji powiadomień.");
+  }
+  const timestamp = Date.now();
+  const testId = (await sha256(`push-test:${user.uid}:${timestamp}:${crypto.randomUUID()}`)).slice(0, 20);
+  return enqueueAndScheduleEvent(env, `push-test:${user.uid}:${testId}`, "test-notification", {
+    type: "test-notification",
+    testId,
+    timestamp,
+    title: "Powiadomienia działają",
+    body: "Ten telefon jest poprawnie połączony z Typerem.",
+    url: appUrl(env, "#settings"),
+    renotify: true
+  }, { uid: user.uid });
+}
+
 async function playerJoinRequest(request, env) {
   const user = await firebaseUser(request, env);
   await consumeRateLimit(env, user.uid, "join-request", 4, 10 * 60 * 1000);
@@ -2711,6 +2735,7 @@ async function handleRequest(request, env) {
     "/api/push/register": registerSubscription,
     "/api/push/unregister": unregisterSubscription,
     "/api/push/rotate": rotateSubscription,
+    "/api/push/test": testPush,
     "/api/events/player-joined": playerJoined,
     "/api/events/join-request": playerJoinRequest,
     "/api/events/chat-message": chatMessage,

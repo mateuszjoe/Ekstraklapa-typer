@@ -1,4 +1,4 @@
-const CACHE_NAME = "ekstraklasa-typer-v42";
+const CACHE_NAME = "ekstraklasa-typer-v43";
 const PUSH_STATE_CACHE = "ekstraklasa-typer-push-state-v1";
 const PUSH_STATE_URL = new URL("./__chat-push-state__", self.registration.scope).href;
 const VAPID_PUBLIC_KEY = "BHxWAMhHw3KJBpTqgJZK38Kr-fPA_dvKIYurfBjxTfuw9ie4D9I0cpYR8S9-5FEmzDYoLoBwdutcR_kLW7cADd0";
@@ -8,10 +8,10 @@ const MAX_ROTATION_RETRIES = 4;
 const OFFLINE_ASSETS = [
   "./",
   "./?app=typer-v2",
-  "./styles.css?v=34",
+  "./styles.css?v=35",
   "./payment-banner.css?v=2",
   "./payment-banner.js?v=2",
-  "./app.js?v=41",
+  "./app.js?v=42",
   "./data.js",
   "./firebase-config.js",
   "./live-provider.js",
@@ -132,7 +132,20 @@ const NOTIFICATION_TYPES = Object.freeze({
     body: "Otwórz ustawienia, aby zobaczyć aktualną nazwę gracza.",
     url: "./#settings",
     idFields: ["playerUid", "nameVersion"]
+  }),
+  "test-notification": Object.freeze({
+    title: "Powiadomienia działają",
+    body: "Ten telefon jest poprawnie połączony z Typerem.",
+    url: "./#settings",
+    idFields: ["testId", "timestamp"]
   })
+});
+
+const FALLBACK_NOTIFICATION = Object.freeze({
+  title: "Nowe powiadomienie z Typera",
+  body: "Otwórz aplikację, aby zobaczyć szczegóły.",
+  url: "./#matches",
+  idFields: ["notificationId", "id", "timestamp"]
 });
 
 function safeNotificationText(value, fallback, maxLength) {
@@ -275,7 +288,9 @@ async function recordPushRotationFailure() {
 self.addEventListener("push", (event) => {
   event.waitUntil((async () => {
     const pushState = await readPushState();
-    if (pushState.muted !== false) return;
+    // Wyłącznie jawne wyciszenie blokuje komunikat. Brak wpisu w Cache Storage
+    // nie może po cichu kasować poprawnie dostarczonego powiadomienia.
+    if (pushState.muted === true) return;
     let payload = {};
     try {
       payload = event.data?.json?.() || {};
@@ -286,9 +301,8 @@ self.addEventListener("push", (event) => {
         payload = {};
       }
     }
-    const type = safeNotificationId(payload.type, "");
-    const config = NOTIFICATION_TYPES[type];
-    if (!config) return;
+    const type = safeNotificationId(payload.type, "typer-update");
+    const config = NOTIFICATION_TYPES[type] || FALLBACK_NOTIFICATION;
     const notificationId = notificationIdentity(payload, type, config);
     const targetUrl = notificationTarget(payload.url, config.url);
     await self.registration.showNotification(safeNotificationText(payload.title, config.title, 80), {
