@@ -41,7 +41,7 @@
       @media (prefers-reduced-motion: reduce) { .loader-emblem::before, .loader-emblem img, .loader-track i, .loader-status i { animation: none; } }
     </style>
     <link rel="stylesheet" href="./styles.css?v=33" />
-    <link rel="stylesheet" href="./payment-banner.css?v=1" />
+    <link rel="stylesheet" href="./payment-banner.css?v=2" />
   </head>
   <body>
     <div id="appLoader" role="status" aria-live="polite" aria-label="Wczytywanie Ekstraklapa Typer">
@@ -80,6 +80,21 @@
           <strong id="blikPaymentTitle">Pozostań w grze</strong>
           <span>Wpłać <b>100 zł</b> BLIK na telefon</span>
         </div>
+        <time
+          class="blik-payment-banner__deadline"
+          datetime="2026-08-03T00:00:00+02:00"
+          data-entry-fee-countdown
+          role="timer"
+          aria-label="Obliczanie czasu do końca wpłat"
+        >
+          <span>Do pon. 03.08, 00:00</span>
+          <strong data-entry-fee-countdown-value aria-hidden="true">
+            <span><b data-entry-fee-days>--</b><small>DNI</small></span>
+            <span><b data-entry-fee-hours>--</b><small>GODZ.</small></span>
+            <span><b data-entry-fee-minutes>--</b><small>MIN</small></span>
+            <span><b data-entry-fee-seconds>--</b><small>SEK</small></span>
+          </strong>
+        </time>
         <button
           type="button"
           class="blik-payment-banner__phone"
@@ -157,7 +172,7 @@
 
     <dialog id="matchDialog" class="modal match-modal"></dialog>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="./payment-banner.js?v=1"></script>
-    <script type="module" src="./app.js?v=39"></script>
+    <script type="module" src="./payment-banner.js?v=2"></script>
+    <script type="module" src="./app.js?v=40"></script>
   </body>
 </html>

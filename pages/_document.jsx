@@ -40,7 +40,7 @@ export default function Document() {
         <link rel="preload" as="image" href="/assets/brand/app-icon-192.png?v=14" />
         <style dangerouslySetInnerHTML={{ __html: loaderCss }} />
         <link rel="stylesheet" href="/styles.css?v=33" />
-        <link rel="stylesheet" href="/payment-banner.css?v=1" />
+        <link rel="stylesheet" href="/payment-banner.css?v=2" />
       </Head>
       <body>
         <div id="appLoader" role="status" aria-live="polite" aria-label="Wczytywanie Ekstraklapa Typer">

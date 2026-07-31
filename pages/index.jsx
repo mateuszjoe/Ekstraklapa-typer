@@ -6,14 +6,14 @@ export default function Home() {
     if (!document.querySelector("script[data-payment-banner-runtime]")) {
       const paymentScript = document.createElement("script");
       paymentScript.type = "module";
-      paymentScript.src = "/payment-banner.js?v=1";
+      paymentScript.src = "/payment-banner.js?v=2";
       paymentScript.dataset.paymentBannerRuntime = "true";
       document.body.appendChild(paymentScript);
     }
     if (!document.querySelector("script[data-ekstraklasa-runtime]")) {
       const script = document.createElement("script");
       script.type = "module";
-      script.src = "/app.js?v=39";
+      script.src = "/app.js?v=40";
       script.dataset.ekstraklasaRuntime = "true";
       document.body.appendChild(script);
     }
@@ -57,6 +57,21 @@ export default function Home() {
             <strong id="blikPaymentTitle">Pozostań w grze</strong>
             <span>Wpłać <b>100 zł</b> BLIK na telefon</span>
           </div>
+          <time
+            className="blik-payment-banner__deadline"
+            dateTime="2026-08-03T00:00:00+02:00"
+            data-entry-fee-countdown
+            role="timer"
+            aria-label="Obliczanie czasu do końca wpłat"
+          >
+            <span>Do pon. 03.08, 00:00</span>
+            <strong data-entry-fee-countdown-value aria-hidden="true">
+              <span><b data-entry-fee-days>--</b><small>DNI</small></span>
+              <span><b data-entry-fee-hours>--</b><small>GODZ.</small></span>
+              <span><b data-entry-fee-minutes>--</b><small>MIN</small></span>
+              <span><b data-entry-fee-seconds>--</b><small>SEK</small></span>
+            </strong>
+          </time>
           <button
             type="button"
             className="blik-payment-banner__phone"

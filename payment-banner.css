@@ -16,7 +16,7 @@
   margin: 0 auto;
   padding: 7px 28px;
   display: grid;
-  grid-template-columns: auto minmax(230px, 1fr) auto;
+  grid-template-columns: auto minmax(230px, 1fr) auto auto;
   align-items: center;
   gap: 14px;
   position: relative;
@@ -58,6 +58,69 @@
 .blik-payment-banner__copy b {
   color: #ffd000;
   font-weight: 950;
+}
+
+.blik-payment-banner__deadline {
+  min-width: 132px;
+  min-height: 42px;
+  display: grid;
+  align-content: center;
+  gap: 3px;
+  padding: 5px 10px;
+  color: #fff;
+  background: rgba(255, 255, 255, .07);
+  border: 1px solid rgba(255, 208, 0, .62);
+  border-radius: 7px;
+  font-style: normal;
+  text-decoration: none;
+}
+
+.blik-payment-banner__deadline > span {
+  color: #d7d1c6;
+  font-size: 6px;
+  font-weight: 900;
+  letter-spacing: .08em;
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.blik-payment-banner__deadline > strong {
+  color: #ffd000;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  font: 900 12px/1 "Space Grotesk", Arial, sans-serif;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .035em;
+  white-space: nowrap;
+}
+
+.blik-payment-banner__deadline > strong > span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+}
+
+.blik-payment-banner__deadline > strong b {
+  color: inherit;
+  font: inherit;
+}
+
+.blik-payment-banner__deadline > strong small {
+  color: #d7d1c6;
+  font-size: 5px;
+  font-weight: 900;
+  letter-spacing: .03em;
+}
+
+.blik-payment-banner__deadline.is-expired {
+  border-color: #ff6b57;
+}
+
+.blik-payment-banner__deadline.is-expired > strong {
+  color: #ff8b7b;
+  font-size: 9px;
 }
 
 .blik-payment-banner__phone {
@@ -158,19 +221,56 @@
   transform: translateY(0);
 }
 
+@media (min-width: 721px) and (max-width: 900px) {
+  .blik-payment-banner__inner {
+    grid-template-columns: auto minmax(230px, 1fr) auto;
+    grid-template-rows: auto auto;
+    row-gap: 6px;
+  }
+
+  .blik-payment-banner__mark {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .blik-payment-banner__copy {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .blik-payment-banner__phone {
+    grid-column: 3;
+    grid-row: 1 / 3;
+  }
+
+  .blik-payment-banner__deadline {
+    grid-column: 1 / 3;
+    grid-row: 2;
+    min-height: 24px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding-block: 3px;
+  }
+}
+
 @media (max-width: 720px) {
   .blik-payment-banner {
     top: 68px;
   }
 
   .blik-payment-banner__inner {
-    min-height: 66px;
+    min-height: 80px;
     grid-template-columns: auto minmax(0, 1fr) auto;
-    gap: 9px;
-    padding: 7px 12px;
+    grid-template-rows: auto auto;
+    column-gap: 9px;
+    row-gap: 5px;
+    padding: 6px 12px;
   }
 
   .blik-payment-banner__mark {
+    grid-column: 1;
+    grid-row: 1;
     min-width: 39px;
     min-height: 29px;
     padding-inline: 5px;
@@ -178,6 +278,8 @@
   }
 
   .blik-payment-banner__copy {
+    grid-column: 2;
+    grid-row: 1;
     display: grid;
     gap: 3px;
   }
@@ -191,7 +293,33 @@
     line-height: 1.25;
   }
 
+  .blik-payment-banner__deadline {
+    grid-column: 1 / 3;
+    grid-row: 2;
+    min-width: 0;
+    min-height: 20px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 3px 6px;
+  }
+
+  .blik-payment-banner__deadline > span {
+    font-size: 6px;
+  }
+
+  .blik-payment-banner__deadline > strong {
+    gap: 5px;
+    font-size: 10px;
+  }
+
+  .blik-payment-banner__deadline > strong small {
+    font-size: 4px;
+  }
+
   .blik-payment-banner__phone {
+    grid-column: 3;
+    grid-row: 1 / 3;
     min-width: 118px;
     min-height: 48px;
     grid-template-columns: minmax(0, 1fr) 31px;
@@ -224,7 +352,7 @@
 @media (max-width: 410px) {
   .blik-payment-banner__inner {
     grid-template-columns: auto minmax(0, 1fr) 108px;
-    gap: 7px;
+    column-gap: 7px;
     padding-inline: 8px;
   }
 
@@ -241,6 +369,20 @@
   .blik-payment-banner__copy > span {
     max-width: 120px;
     font-size: 8px;
+  }
+
+  .blik-payment-banner__deadline {
+    gap: 5px;
+    padding-inline: 5px;
+  }
+
+  .blik-payment-banner__deadline > span {
+    font-size: 5px;
+  }
+
+  .blik-payment-banner__deadline > strong {
+    gap: 4px;
+    font-size: 9px;
   }
 
   .blik-payment-banner__phone {
