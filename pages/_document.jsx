@@ -39,7 +39,7 @@ export default function Document() {
         <link rel="manifest" href="/manifest.webmanifest?v=17" />
         <link rel="preload" as="image" href="/assets/brand/app-icon-192.png?v=14" />
         <style dangerouslySetInnerHTML={{ __html: loaderCss }} />
-        <link rel="stylesheet" href="/styles.css?v=33" />
+        <link rel="stylesheet" href="/styles.css?v=34" />
         <link rel="stylesheet" href="/payment-banner.css?v=2" />
       </Head>
       <body>

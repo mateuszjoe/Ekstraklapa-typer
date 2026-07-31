@@ -28,7 +28,7 @@ const NOTIFICATION_OUTBOX_CHAT_TTL_MS = 9 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PLAYER_TTL_MS = 14 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PICK_TTL_MS = 45 * 24 * 60 * 60 * 1000;
 const NOTIFICATION_OUTBOX_NAME_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const APP_SERVICE_WORKER_VERSION = "35";
+const APP_SERVICE_WORKER_VERSION = "36";
 const FINAL = new Set(["FT", "AET", "PEN", "AWD", "WO", "FINISHED", "AWARDED"]);
 const LIVE = new Set(["1H", "HT", "2H", "ET", "BT", "P", "LIVE", "IN_PLAY", "PAUSED"]);
 const VIEWS = new Set(["matches", "ekstraklasa", "ranking", "rules", "settings", "admin"]);
@@ -179,9 +179,14 @@ const state = {
   adminRequests: [],
   adminRequestsStatus: "idle",
   adminRequestsError: "",
+  adminJoinRequests: [],
+  adminJoinRequestsStatus: "idle",
+  adminJoinRequestsError: "",
   adminBusyId: "",
   adminSearch: "",
   participantReady: false,
+  membershipStatus: "checking",
+  joinRequest: null,
   userDataReady: false,
   participantActivationBusy: false,
   participantActivationError: false,
@@ -236,10 +241,15 @@ const state = {
 
 let seasonStatsUnsubscribe = null;
 let ownProfileUnsubscribe = null;
+let ownMembershipUnsubscribes = [];
+let ownMembershipActivationQueuedUid = "";
 let ownProfileRequestRevision = 0;
 let adminNameRequestsUnsubscribe = null;
 let adminRequestsSnapshotReady = false;
 let adminPendingRequestIds = new Set();
+let adminJoinRequestsUnsubscribe = null;
+let adminJoinRequestsSnapshotReady = false;
+let adminPendingJoinRequestIds = new Set();
 let chatUnsubscribes = [];
 let serviceWorkerRegistrationPromise = null;
 let chatPushOperation = Promise.resolve();
@@ -713,6 +723,48 @@ function playerDashboardHtml() {
     </div>`;
   }
 
+  if (!state.participantReady) {
+    const rejected = state.membershipStatus === "rejected";
+    const removed = state.membershipStatus === "removed";
+    const failed = state.membershipStatus === "error" || state.participantActivationError;
+    const pending = state.membershipStatus === "pending";
+    const title = rejected
+      ? "Zgłoszenie odrzucone"
+      : removed
+        ? "Konto poza grą"
+        : failed
+          ? "Nie udało się sprawdzić konta"
+          : pending
+            ? "Czekasz na akceptację"
+            : "Sprawdzamy Twoje zgłoszenie";
+    const description = rejected
+      ? (state.joinRequest?.adminNote || "Administrator nie zaakceptował tego zgłoszenia do gry.")
+      : removed
+        ? "To konto zostało wcześniej usunięte z tej edycji typera."
+        : failed
+          ? "Sprawdź połączenie i spróbuj ponownie. Dostęp do gry pozostaje zablokowany do poprawnej weryfikacji."
+          : pending
+            ? "Administrator musi zaakceptować konto, zanim zaczniesz typować. Status zmieni się tutaj automatycznie."
+            : "Za chwilę pokażemy, czy konto jest już dopuszczone do gry.";
+    const statusLabel = rejected ? "ODRZUCONE" : removed ? "BRAK DOSTĘPU" : failed ? "BŁĄD WERYFIKACJI" : pending ? "ZGŁOSZENIE OCZEKUJE" : "WERYFIKACJA";
+    const requestDate = pending && state.joinRequest?.requestedAt
+      ? `Zgłoszenie wysłane ${formatAdminDate(state.joinRequest.requestedAt)}`
+      : "Nowe konta trafiają najpierw do poczekalni";
+    return `<div class="player-dashboard-card is-waiting${rejected || removed ? " is-blocked" : ""}">
+      <span class="season-pill">SEZON 2026/27 · RUNDA JESIENNA</span>
+      <header class="player-dashboard-head waiting-room-head">
+        ${avatarVisualMarkup("player-dashboard-avatar", `Avatar ${state.user.name}`)}
+        <div class="player-dashboard-identity"><p class="eyebrow">POCZEKALNIA</p><h1>${escapeHtml(state.user.name)}</h1><span>${escapeHtml(requestDate)}</span></div>
+        <span class="waiting-room-status${pending ? " is-pending" : ""}">${statusLabel}</span>
+      </header>
+      <div class="waiting-room-message"><span aria-hidden="true">${pending ? "⌛" : failed ? "!" : rejected || removed ? "×" : "…"}</span><div><h2>${title}</h2><p>${escapeHtml(description)}</p></div></div>
+      <div class="player-dashboard-actions waiting-room-actions">
+        ${failed ? `<button type="button" class="primary-button" data-membership-retry>SPRÓBUJ PONOWNIE ${icon("arrow")}</button>` : ""}
+        <button type="button" class="text-button" data-sign-out>WYLOGUJ SIĘ</button>
+      </div>
+    </div>`;
+  }
+
   const players = rankingRows();
   const own = state.rankingStatus === "ready"
     ? players.find((player) => player.uid === state.user.uid) || null
@@ -788,13 +840,18 @@ function matchCard(match) {
   const locked = isLocked(match);
   const waitingForKickoff = !match.kickoffConfirmed;
   const waitingForPlayer = Boolean(state.user && (!state.userDataReady || !state.participantReady));
+  const playerAccessLabel = state.membershipStatus === "pending"
+    ? "oczekuje na akceptację"
+    : ["rejected", "removed"].includes(state.membershipStatus)
+      ? "brak dostępu"
+      : "synchronizacja konta";
   const live = LIVE.has(match.status);
   const final = FINAL.has(match.status);
   const score = (live || final) && Number.isFinite(match.homeScore) ? `${match.homeScore} : ${match.awayScore}` : null;
   return `<article class="match-card ${prediction ? "is-typed" : ""} ${live ? "is-live" : ""}">
     <div class="match-meta">
       <span>${live ? `<b class="live-label">LIVE${Number.isFinite(match.liveElapsed) ? ` ${match.liveElapsed}'` : ""}</b>` : `${formatDay(match)} · ${formatTime(match)}`}</span>
-      <span>${locked ? `${icon("lock")} zamknięty` : waitingForKickoff ? `${icon("calendar")} czeka na termin` : waitingForPlayer ? `${icon("calendar")} synchronizacja konta` : prediction ? `${icon("check")} typ zapisany` : "1 pkt do zdobycia"}</span>
+      <span>${locked ? `${icon("lock")} zamknięty` : waitingForKickoff ? `${icon("calendar")} czeka na termin` : waitingForPlayer ? `${icon("calendar")} ${playerAccessLabel}` : prediction ? `${icon("check")} typ zapisany` : "1 pkt do zdobycia"}</span>
     </div>
     <div class="match-teams">
       <div class="team home"><a class="team-route-link" href="${teamRouteHref(home.id)}" data-team-route="${home.id}"><span>${home.name}</span><img src="${home.crest}" alt="Herb ${home.name}"></a></div>
@@ -1326,15 +1383,27 @@ function entryFeeBadgeHtml(entryFeePaid, statusKnown = true, { withLabel = false
 
 function rankingView() {
   const players = rankingRows();
+  const waitingForApproval = membershipWaiting();
+  const membershipBlocked = state.user && ["rejected", "removed"].includes(state.membershipStatus);
+  const membershipNotice = waitingForApproval
+    ? `<div class="notice membership-notice"><strong>Jesteś w poczekalni.</strong><span>Ranking odblokuje się po zaakceptowaniu konta przez administratora.</span></div>`
+    : membershipBlocked
+      ? `<div class="notice membership-notice is-blocked"><strong>Brak dostępu do gry.</strong><span>To konto nie jest aktywnym uczestnikiem typera.</span></div>`
+      : "";
   return `<section class="subpage-hero"><p class="eyebrow">KLASYFIKACJA</p><h1>Ranking typerów</h1><p>Ranking obejmuje rundę jesienną. Każdy trafiony rezultat to dokładnie jeden punkt.</p></section>
     <section class="content-section narrow">
       ${!state.user ? `<div class="notice">Zaloguj się przez Google, żeby pojawić się w rankingu i zapisywać typy między urządzeniami.</div>` : ""}
+      ${membershipNotice}
       ${state.rankingError ? `<div class="notice ranking-notice"><span>${escapeHtml(state.rankingError)}</span><button type="button" data-ranking-retry>SPRÓBUJ PONOWNIE</button></div>` : ""}
       ${players.length ? `<div class="ranking-fee-legend"><span>Status składki:</span>${entryFeeBadgeHtml(true, true, { withLabel: true })}${entryFeeBadgeHtml(false, true, { withLabel: true })}</div>` : ""}
       <div class="ranking-card" aria-live="polite" aria-busy="${state.rankingStatus === "loading"}">
         <div class="ranking-head"><span>#</span><span>Gracz</span><span>Punkty</span><span>Typy</span><span>Skuteczność</span></div>
-        ${state.user && (state.rankingStatus === "idle" || state.rankingStatus === "loading") && !players.length
+        ${state.user && state.participantReady && (state.rankingStatus === "idle" || state.rankingStatus === "loading") && !players.length
           ? `<div class="ranking-empty ranking-loading"><strong>Pobieramy prawdziwych graczy…</strong><span>Za chwilę zobaczysz aktualną klasyfikację.</span></div>`
+          : waitingForApproval
+            ? `<div class="ranking-empty"><strong>Ranking czeka na Twoją akceptację</strong><span>Nie jesteś jeszcze liczony jako gracz ani w puli nagród.</span></div>`
+            : membershipBlocked
+              ? `<div class="ranking-empty"><strong>Konto nieaktywne</strong><span>Ranking jest dostępny tylko dla zaakceptowanych graczy.</span></div>`
           : players.length
             ? players.map((player, index) => {
               const profile = profileForUid(player.uid);
@@ -1568,6 +1637,25 @@ function adminRequestStatusLabel(status) {
   return status === "approved" ? "Zatwierdzony" : status === "rejected" ? "Odrzucony" : "Oczekuje";
 }
 
+function adminJoinRequestCard(request, playersByUid) {
+  const player = playersByUid.get(request.uid) || {};
+  const displayName = player.displayName || player.googleName || "Nowy gracz";
+  const identity = player.email || player.googleName || request.uid;
+  const busy = state.adminBusyId === `join:${request.uid}`;
+  const actionsLocked = Boolean(state.adminBusyId);
+  return `<article class="admin-request-card admin-join-request-card is-pending" data-admin-join-request="${escapeHtml(request.uid)}">
+    <header><span class="admin-status-chip is-pending">Poczekalnia</span><time>${escapeHtml(formatAdminDate(request.requestedAt))}</time></header>
+    <div class="admin-join-player">
+      <span class="admin-player-initial">${escapeHtml(String(displayName).slice(0, 1).toUpperCase())}</span>
+      <div><h3>${escapeHtml(displayName)}</h3><p>${escapeHtml(identity)}</p><small>UID: ${escapeHtml(request.uid)}</small></div>
+    </div>
+    <div class="admin-request-actions">
+      <button type="button" data-admin-join-action="approve" data-join-uid="${escapeHtml(request.uid)}" ${actionsLocked ? "disabled" : ""}>${busy ? "DODAWANIE…" : "AKCEPTUJ I DODAJ DO GRY"}</button>
+      <button type="button" class="is-reject" data-admin-join-action="reject" data-join-uid="${escapeHtml(request.uid)}" ${actionsLocked ? "disabled" : ""}>${busy ? "…" : "ODRZUĆ"}</button>
+    </div>
+  </article>`;
+}
+
 function adminPlayerCard(player) {
   const profileReady = player.hasProfile === true && Boolean(player.displayName);
   const displayName = profileReady ? player.displayName : "Brak profilu gracza";
@@ -1583,6 +1671,8 @@ function adminPlayerCard(player) {
   const removalCleanupComplete = removed && player.removalCleanupComplete === true;
   const removalCleanupPending = removed && !removalCleanupComplete;
   const isActiveParticipant = player.isParticipant && !removed;
+  const rejectedApplicant = player.joinStatus === "rejected" && !isActiveParticipant;
+  const profileEditable = profileReady && isActiveParticipant;
   const entryFeePaid = player.entryFeePaid === true;
   const entryFeeStatusKnown = player.isParticipant === true;
   const busy = state.adminBusyId === player.uid;
@@ -1592,7 +1682,9 @@ function adminPlayerCard(player) {
       <div><h3>${escapeHtml(displayName)}</h3><small>UID: ${escapeHtml(player.uid)}</small></div>
       ${removed
         ? `<span class="admin-player-removed${removalCleanupComplete ? " is-complete" : " is-pending"}">${removalCleanupComplete ? "Usunięty z typera" : "Usuwanie niedokończone"}</span>`
-        : pending}
+        : rejectedApplicant
+          ? `<span class="admin-player-removed">Zgłoszenie odrzucone</span>`
+          : pending}
     </header>
     <dl class="admin-player-data">
       <div><dt>Nazwa Google</dt><dd>${escapeHtml(googleName)}</dd></div>
@@ -1608,12 +1700,13 @@ function adminPlayerCard(player) {
       ${isActiveParticipant ? `<button type="button" class="admin-entry-fee-toggle${entryFeePaid ? " is-revoke" : ""}" data-admin-entry-fee="${escapeHtml(player.uid)}" data-next-paid="${entryFeePaid ? "false" : "true"}" ${busy ? "disabled" : ""}>${busy ? "ZAPISYWANIE…" : entryFeePaid ? "OZNACZ JAKO NIEOPŁACONE" : "OZNACZ JAKO OPŁACONE"}</button>` : ""}
     </div>` : ""}
     <form class="admin-player-name-form" data-admin-name-form="${escapeHtml(player.uid)}">
-      <label><span>Nick w typerze</span><input name="displayName" type="text" maxlength="${MAX_DISPLAY_NAME_LENGTH}" value="${escapeHtml(player.displayName || "")}" autocomplete="off" ${profileReady && !removed ? "" : "disabled"}></label>
-      <button type="submit" ${!profileReady || removed || busy ? "disabled" : ""}>${busy ? "ZAPISYWANIE…" : "ZAPISZ NICK"}</button>
+      <label><span>Nick w typerze</span><input name="displayName" type="text" maxlength="${MAX_DISPLAY_NAME_LENGTH}" value="${escapeHtml(player.displayName || "")}" autocomplete="off" ${profileEditable ? "" : "disabled"}></label>
+      <button type="submit" ${!profileEditable || busy ? "disabled" : ""}>${busy ? "ZAPISYWANIE…" : "ZAPISZ NICK"}</button>
     </form>
     ${player.uid !== state.user?.uid && (isActiveParticipant || removalCleanupPending) ? `<button type="button" class="admin-player-remove${removalCleanupPending ? " is-cleanup" : ""}" data-admin-remove-player="${escapeHtml(player.uid)}" ${busy ? "disabled" : ""}>${busy ? (removalCleanupPending ? "KOŃCZENIE…" : "USUWANIE…") : removalCleanupPending ? "DOKOŃCZ USUWANIE" : "USUŃ Z TYPERA"}</button>` : ""}
     ${removalCleanupComplete ? `<p class="admin-player-note is-removal-complete">Usunięcie zakończone${player.removalCleanupCompletedAt ? ` ${escapeHtml(formatAdminDate(player.removalCleanupCompletedAt))}` : ""}. Gracz nie jest liczony w puli i nie może wrócić do tej edycji.</p>` : ""}
     ${removalCleanupPending ? `<p class="admin-player-note is-removal-pending">Gracz jest już poza rankingiem i pulą. Dokończ czyszczenie danych powiadomień, żeby zamknąć operację.</p>` : ""}
+    ${rejectedApplicant ? `<p class="admin-player-note is-removal-pending">Zgłoszenie zostało odrzucone. Konto nie jest graczem i nie liczy się do puli.</p>` : ""}
     ${profileReady ? "" : `<p class="admin-player-note">Edycja będzie dostępna, gdy konto utworzy profil i wpis w rankingu.</p>`}
   </article>`;
 }
@@ -1645,7 +1738,7 @@ function adminRequestCard(request, playersByUid) {
 }
 
 function adminView() {
-  const heroMarkup = `<section class="subpage-hero admin-hero"><p class="eyebrow">ZARZĄDZANIE LIGĄ</p><h1>Panel admina</h1><p>Gracze, składki, nicki i wnioski o kolejną zmianę nazwy.</p></section>`;
+  const heroMarkup = `<section class="subpage-hero admin-hero"><p class="eyebrow">ZARZĄDZANIE LIGĄ</p><h1>Panel admina</h1><p>Poczekalnia, gracze, składki, nicki i wnioski o kolejną zmianę nazwy.</p></section>`;
   if (state.authStatus === "loading") {
     return `${heroMarkup}<section class="content-section admin-section"><div class="admin-state-card"><span class="admin-state-spinner"></span><h2>Sprawdzamy uprawnienia</h2><p>Panel otworzy się po potwierdzeniu sesji Google.</p></div></section>`;
   }
@@ -1654,10 +1747,20 @@ function adminView() {
   }
 
   const pendingCount = state.adminRequests.filter((request) => request.status === "pending").length;
+  const pendingJoinRequests = state.adminJoinRequests.filter((request) => request.status === "pending");
   const playersByUid = new Map(state.adminPlayers.map((player) => [player.uid, player]));
   const activePlayers = state.adminPlayers.filter((player) => player.isParticipant && !player.removed);
   const paidPlayers = activePlayers.filter((player) => player.entryFeePaid === true);
   const unpaidPlayers = activePlayers.filter((player) => player.entryFeePaid !== true);
+  const pendingJoinUids = new Set(pendingJoinRequests.map((request) => request.uid));
+  const managedPlayers = state.adminPlayers.filter((player) => !pendingJoinUids.has(player.uid));
+  const joinRequestMarkup = state.adminJoinRequestsStatus === "loading" || state.adminJoinRequestsStatus === "idle"
+    ? `<div class="admin-state-inline"><span class="admin-state-spinner"></span>Wczytujemy poczekalnię…</div>`
+    : state.adminJoinRequestsStatus === "error"
+      ? `<div class="admin-error"><span>${escapeHtml(state.adminJoinRequestsError || "Nie udało się pobrać poczekalni.")}</span><button type="button" data-admin-retry>SPRÓBUJ PONOWNIE</button></div>`
+      : pendingJoinRequests.length
+        ? `<div class="admin-request-list admin-join-request-list">${pendingJoinRequests.map((request) => adminJoinRequestCard(request, playersByUid)).join("")}</div>`
+        : `<div class="admin-empty"><h3>Poczekalnia jest pusta</h3><p>Każde nowe konto pojawi się tutaj i nie wejdzie do gry bez Twojej decyzji.</p></div>`;
   const requestMarkup = state.adminRequestsStatus === "loading" || state.adminRequestsStatus === "idle"
     ? `<div class="admin-state-inline"><span class="admin-state-spinner"></span>Wczytujemy wnioski…</div>`
     : state.adminRequestsStatus === "error"
@@ -1669,17 +1772,22 @@ function adminView() {
     ? `<div class="admin-state-inline"><span class="admin-state-spinner"></span>Wczytujemy konta graczy…</div>`
     : state.adminPlayersStatus === "error"
       ? `<div class="admin-error"><span>${escapeHtml(state.adminPlayersError || "Nie udało się pobrać graczy.")}</span><button type="button" data-admin-retry>SPRÓBUJ PONOWNIE</button></div>`
-      : state.adminPlayers.length
-        ? `<div class="admin-player-list">${state.adminPlayers.map(adminPlayerCard).join("")}</div><div class="admin-empty admin-search-empty" data-admin-search-empty hidden><h3>Brak wyników</h3><p>Zmień wyszukiwaną nazwę, email albo UID.</p></div>`
+      : managedPlayers.length
+        ? `<div class="admin-player-list">${managedPlayers.map(adminPlayerCard).join("")}</div><div class="admin-empty admin-search-empty" data-admin-search-empty hidden><h3>Brak wyników</h3><p>Zmień wyszukiwaną nazwę, email albo UID.</p></div>`
         : `<div class="admin-empty"><h3>Brak graczy</h3><p>Dane kont pojawią się po zalogowaniu użytkowników.</p></div>`;
 
   return `${heroMarkup}<section class="content-section admin-section">
     <div class="admin-stats">
       <article><strong>${activePlayers.length}</strong><span>graczy</span></article>
+      <article><strong>${pendingJoinRequests.length}</strong><span>w poczekalni</span></article>
       <article><strong>${paidPlayers.length}</strong><span>opłaconych</span></article>
       <article><strong>${unpaidPlayers.length}</strong><span>nieopłaconych</span></article>
       <article><strong>${pendingCount}</strong><span>wniosków o nick</span></article>
     </div>
+    <article class="admin-panel admin-join-panel">
+      <div class="admin-panel-heading"><div><p class="eyebrow">POCZEKALNIA</p><h2>Nowi gracze</h2></div><span>Dopiero akceptacja doda konto do rankingu, puli i gry.</span></div>
+      ${joinRequestMarkup}
+    </article>
     <article class="admin-panel">
       <div class="admin-panel-heading"><div><p class="eyebrow">WNIOSKI O NICK</p><h2>Wszystkie zgłoszenia</h2></div><span>Najpierw oczekujące, potem najnowsze.</span></div>
       ${requestMarkup}
@@ -1698,6 +1806,15 @@ function settingsView() {
   const heroMarkup = `<section class="subpage-hero"><p class="eyebrow">TWÓJ PROFIL</p><h1>Ustawienia</h1><p>Ustaw nazwę i avatar, z którymi wchodzisz do gry.</p></section>`;
   if (!state.user) {
     return `${heroMarkup}<section class="content-section narrow"><div class="settings-locked"><div class="settings-lock-icon">G</div><h2>Zaloguj się przez Google</h2><p>Nazwa i avatar są częścią profilu gracza i synchronizują się między urządzeniami.</p><button class="primary-button" data-open-auth>PRZEJDŹ DO LOGOWANIA ${icon("arrow")}</button></div></section>`;
+  }
+
+  if (!state.participantReady) {
+    const pending = state.membershipStatus === "pending";
+    const title = pending ? "Konto czeka w poczekalni" : "Ustawienia są zablokowane";
+    const copy = pending
+      ? "Nick, avatar i powiadomienia odblokują się po zaakceptowaniu konta przez administratora."
+      : "Ustawienia profilu są dostępne wyłącznie dla aktywnych graczy.";
+    return `${heroMarkup}<section class="content-section narrow"><div class="settings-locked membership-settings-locked"><div class="settings-lock-icon">${pending ? "⌛" : "!"}</div><h2>${title}</h2><p>${copy}</p><button type="button" class="settings-signout-button" data-sign-out>WYLOGUJ SIĘ</button></div></section>`;
   }
 
   const profileBusy = state.avatarBusy || state.nameBusy;
@@ -1826,6 +1943,7 @@ function render() {
   document.title = currentDocumentTitle();
   document.querySelectorAll(".nav-link").forEach((node) => node.classList.toggle("is-active", node.dataset.view === state.view));
   updateAuthButton();
+  updateMembershipSurface();
   bindRendered();
   updateCountdowns();
   updateChatWidget({ keepScroll: true });
@@ -1854,6 +1972,7 @@ function bindRendered() {
   app.querySelector("[data-scroll-matches]")?.addEventListener("click", () => document.querySelector("#mecze")?.scrollIntoView({ behavior: "smooth" }));
   app.querySelectorAll("[data-match-centre]").forEach((button) => button.addEventListener("click", () => showMatchCentre(button.dataset.matchCentre)));
   app.querySelector("[data-open-auth]")?.addEventListener("click", openAuthDialog);
+  app.querySelector("[data-membership-retry]")?.addEventListener("click", () => activateSeasonParticipant(state.user?.uid));
   app.querySelectorAll("[data-avatar-type]").forEach((button) => button.addEventListener("click", () => selectAvatar(button.dataset.avatarType, button.dataset.avatarValue || "")));
   app.querySelector("#avatarUpload")?.addEventListener("change", (event) => handleAvatarUpload(event.target.files?.[0]));
   app.querySelector("#displayNameForm")?.addEventListener("submit", saveDisplayName);
@@ -1864,8 +1983,10 @@ function bindRendered() {
   app.querySelectorAll("[data-admin-entry-fee]").forEach((button) => button.addEventListener("click", toggleAdminEntryFee));
   app.querySelectorAll("[data-admin-remove-player]").forEach((button) => button.addEventListener("click", removeAdminPlayer));
   app.querySelectorAll("[data-admin-request-action]").forEach((button) => button.addEventListener("click", decideAdminNameRequest));
+  app.querySelectorAll("[data-admin-join-action]").forEach((button) => button.addEventListener("click", decideAdminJoinRequest));
   app.querySelectorAll("[data-admin-retry]").forEach((button) => button.addEventListener("click", () => {
     startAdminNameRequestsRealtime({ restart: true });
+    startAdminJoinRequestsRealtime({ restart: true });
     void loadAdminPlayers({ force: true });
   }));
   app.querySelector("[data-chat-notifications]")?.addEventListener("click", toggleChatNotifications);
@@ -1900,7 +2021,11 @@ function setPrediction(matchId, pick) {
     return;
   }
   if (!state.userDataReady || !state.participantReady) {
-    notify("Kończymy synchronizację konta — typowanie będzie dostępne za chwilę.");
+    notify(state.membershipStatus === "pending"
+      ? "Twoje konto czeka na akceptację administratora."
+      : ["rejected", "removed"].includes(state.membershipStatus)
+        ? "To konto nie ma dostępu do gry."
+        : "Kończymy synchronizację konta — typowanie będzie dostępne za chwilę.");
     return;
   }
   const match = state.matches.find((item) => item.id === matchId);
@@ -2141,12 +2266,14 @@ function updateAuthButton() {
   if (mobileAccountName) mobileAccountName.textContent = state.user?.name || "Gracz";
   const adminAllowed = isCurrentUserAdmin();
   const pendingAdminRequests = state.adminRequests.filter((request) => request.status === "pending").length;
+  const pendingJoinRequests = state.adminJoinRequests.filter((request) => request.status === "pending").length;
+  const pendingAdminTotal = pendingAdminRequests + pendingJoinRequests;
   document.querySelectorAll("[data-admin-nav]").forEach((node) => {
     node.hidden = !adminAllowed;
     const badge = node.querySelector("[data-admin-badge]");
     if (badge) {
-      badge.textContent = String(pendingAdminRequests);
-      badge.hidden = pendingAdminRequests < 1;
+      badge.textContent = String(pendingAdminTotal);
+      badge.hidden = pendingAdminTotal < 1;
     }
   });
   document.querySelectorAll("[data-account-admin]").forEach((node) => {
@@ -2171,7 +2298,14 @@ function openAccountDialog() {
   if (!dialog || !state.user) return;
   setMainMenuOpen(false);
   dialog.querySelector("#accountName").textContent = state.user.name;
-  dialog.querySelector("#accountDetails").textContent = `${state.user.googleName || "Konto Google"} · ${state.user.email || "Zalogowano przez Google"}`;
+  const membershipLabel = state.participantReady
+    ? "Aktywny gracz"
+    : state.membershipStatus === "pending"
+      ? "Poczekalnia"
+      : ["rejected", "removed"].includes(state.membershipStatus)
+        ? "Brak dostępu"
+        : "Weryfikacja konta";
+  dialog.querySelector("#accountDetails").textContent = `${state.user.googleName || "Konto Google"} · ${state.user.email || "Zalogowano przez Google"} · ${membershipLabel}`;
   const avatarHost = dialog.querySelector("#accountAvatar");
   if (avatarHost) {
     avatarHost.innerHTML = playerAvatarButton(state.user.uid, "account-avatar-image");
@@ -2455,6 +2589,7 @@ function reportNotificationSyncError(label, error) {
 function notificationOutboxId(type, uid, data) {
   if (!uid) return "";
   if (type === "player") return `player:${uid}`;
+  if (type === "join-request" && data?.uid === uid) return `join-request:${uid}`;
   if (type === "chat" && typeof data?.messageId === "string" && data.messageId) return `chat:${uid}:${data.messageId}`;
   if (type === "pick" && typerMatchIds.has(data?.matchId) && ["1", "X", "2"].includes(data?.pick)) {
     return `pick:${uid}:${data.matchId}`;
@@ -2476,6 +2611,7 @@ function notificationOutboxId(type, uid, data) {
 
 function notificationOutboxSignature(type, data) {
   if (type === "player") return "joined";
+  if (type === "join-request") return typeof data?.uid === "string" && data.uid ? "pending" : "";
   if (type === "chat") return String(data?.messageId || "");
   if (type === "pick") return `${data?.matchId || ""}:${data?.pick || ""}`;
   if (["name-request", "name-changed", "name-decision", "admin-name-edited"].includes(type)) {
@@ -2487,7 +2623,7 @@ function notificationOutboxSignature(type, data) {
 function notificationOutboxTtl(type) {
   if (type === "chat") return NOTIFICATION_OUTBOX_CHAT_TTL_MS;
   if (type === "player") return NOTIFICATION_OUTBOX_PLAYER_TTL_MS;
-  if (["name-request", "name-changed", "name-decision", "admin-name-edited"].includes(type)) {
+  if (["join-request", "name-request", "name-changed", "name-decision", "admin-name-edited"].includes(type)) {
     return NOTIFICATION_OUTBOX_NAME_TTL_MS;
   }
   return NOTIFICATION_OUTBOX_PICK_TTL_MS;
@@ -2495,7 +2631,7 @@ function notificationOutboxTtl(type) {
 
 function normalizeNotificationOutboxItem(value, now = Date.now()) {
   if (!value || typeof value !== "object" || Array.isArray(value) || typeof value.uid !== "string") return null;
-  const type = ["chat", "player", "pick", "name-request", "name-changed", "name-decision", "admin-name-edited"].includes(value.type) ? value.type : "";
+  const type = ["chat", "player", "pick", "join-request", "name-request", "name-changed", "name-decision", "admin-name-edited"].includes(value.type) ? value.type : "";
   const data = asRecord(value.data);
   const id = notificationOutboxId(type, value.uid, data);
   const signature = notificationOutboxSignature(type, data);
@@ -2598,7 +2734,7 @@ function markNotificationOutboxSent(selected) {
   const now = Date.now();
   updateNotificationOutboxItems(selected, (item) => {
     if (item.type === "pick") return null;
-    const receiptTtl = ["name-request", "name-changed", "name-decision", "admin-name-edited"].includes(item.type)
+    const receiptTtl = ["join-request", "name-request", "name-changed", "name-decision", "admin-name-edited"].includes(item.type)
       ? NOTIFICATION_OUTBOX_NAME_TTL_MS
       : item.type === "player"
         ? 180 * 24 * 60 * 60 * 1000
@@ -2675,6 +2811,7 @@ function handlePartialPickSync(entries, payload, { outbox = false, uid = state.u
 function notificationOutboxPath(item) {
   if (item.type === "chat") return "/api/events/chat-message";
   if (item.type === "player") return "/api/events/player-joined";
+  if (item.type === "join-request") return "/api/events/join-request";
   if (item.type === "name-request") return "/api/events/name-change-request";
   if (item.type === "name-changed") return "/api/events/player-name-changed";
   if (item.type === "name-decision") return "/api/events/name-change-decision";
@@ -2824,6 +2961,12 @@ function queueNotificationPickSync(matchId, pick, uid = state.user?.uid) {
 async function announceSeasonParticipant() {
   const uid = state.user?.uid;
   if (!uid || !enqueueNotificationOutbox("player", uid, {})) return;
+  await flushNotificationOutbox(uid);
+}
+
+async function announceJoinRequest() {
+  const uid = state.user?.uid;
+  if (!uid || state.membershipStatus !== "pending" || !enqueueNotificationOutbox("join-request", uid, { uid })) return;
   await flushNotificationOutbox(uid);
 }
 
@@ -3861,6 +4004,8 @@ function chatMessageHtml(message) {
 
 function chatMessagesHtml() {
   if (!state.user) return `<div class="chat-login"><strong>Czat graczy</strong><span>Zaloguj się przez Google, aby czytać i pisać razem z uczestnikami ligi.</span></div>`;
+  if (membershipWaiting()) return `<div class="chat-login"><strong>Czekasz na przyjęcie do gry</strong><span>Chat odblokuje się automatycznie po akceptacji konta przez administratora.</span></div>`;
+  if (!state.participantReady && ["rejected", "removed"].includes(state.membershipStatus)) return `<div class="chat-login"><strong>Chat jest niedostępny</strong><span>To konto nie jest aktywnym uczestnikiem typera.</span></div>`;
   if (!state.participantReady) return state.participantActivationError
     ? `<div class="chat-login"><strong>Nie udało się aktywować konta gracza.</strong><span>Sprawdź internet i spróbuj ponownie poniżej.</span></div>`
     : `<div class="chat-login"><strong>Dołączamy Cię do gry…</strong><span>Po aktywacji konta chat uruchomi się automatycznie.</span></div>`;
@@ -3893,6 +4038,10 @@ function renderChatComposer() {
   host.dataset.mode = chatComposerMode();
   if (!state.user) {
     host.innerHTML = `<div class="chat-login"><span>Do rozmowy dołączają tylko zalogowani gracze.</span><button type="button" class="primary-button" data-chat-login>ZALOGUJ SIĘ PRZEZ GOOGLE</button></div>`;
+  } else if (membershipWaiting()) {
+    host.innerHTML = `<div class="chat-login"><span>Wiadomości wyślesz po zaakceptowaniu konta przez administratora.</span></div>`;
+  } else if (!state.participantReady && ["rejected", "removed"].includes(state.membershipStatus)) {
+    host.innerHTML = `<div class="chat-login"><span>To konto nie ma dostępu do chatu graczy.</span></div>`;
   } else if (!state.participantReady) {
     host.innerHTML = state.participantActivationError
       ? `<div class="chat-login"><span>Aktywacja nie powiodła się.</span><button type="button" class="primary-button" data-chat-participant-retry ${state.participantActivationBusy ? "disabled" : ""}>${state.participantActivationBusy ? "ŁĄCZENIE…" : "SPRÓBUJ PONOWNIE"}</button></div>`
@@ -4478,54 +4627,129 @@ function subscribeSeasonStats() {
   });
 }
 
+function participantMembershipStatus(data = {}) {
+  const status = String(data?.status || "").trim().toLowerCase();
+  if (data?.disabled === true || ["removed", "disabled", "blocked", "banned", "suspended"].includes(status)) return "removed";
+  if (status === "pending") return "pending";
+  if (status === "rejected") return "rejected";
+  return !status || ["active", "approved"].includes(status) ? "active" : "removed";
+}
+
+function stopOwnMembershipRealtime() {
+  ownMembershipUnsubscribes.forEach((unsubscribe) => unsubscribe?.());
+  ownMembershipUnsubscribes = [];
+  ownMembershipActivationQueuedUid = "";
+}
+
+function requestOwnMembershipActivation(uid) {
+  if (!uid || state.auth?.currentUser?.uid !== uid || state.user?.uid !== uid || state.participantReady) return;
+  if (state.participantActivationBusy) {
+    ownMembershipActivationQueuedUid = uid;
+    return;
+  }
+  void activateSeasonParticipant(uid);
+}
+
+function startOwnMembershipRealtime(uid) {
+  stopOwnMembershipRealtime();
+  if (!uid || !state.db || !state.firebaseModules || state.auth?.currentUser?.uid !== uid) return;
+  const { doc, onSnapshot } = state.firebaseModules;
+  const participantReference = doc(state.db, "seasons", SEASON_ID, "participants", uid);
+  const joinRequestReference = doc(state.db, "seasons", SEASON_ID, "joinRequests", uid);
+  ownMembershipUnsubscribes.push(onSnapshot(participantReference, (snapshot) => {
+    if (state.auth?.currentUser?.uid !== uid || state.user?.uid !== uid) return;
+    if (!snapshot.exists()) return;
+    const nextStatus = participantMembershipStatus(snapshot.data({ serverTimestamps: "estimate" }));
+    if (nextStatus === "active") {
+      requestOwnMembershipActivation(uid);
+      return;
+    }
+    state.membershipStatus = nextStatus;
+    state.participantReady = false;
+    stopChatRealtime();
+    render();
+  }, (error) => console.warn("Status uczestnictwa nie jest chwilowo dostępny:", error)));
+  ownMembershipUnsubscribes.push(onSnapshot(joinRequestReference, (snapshot) => {
+    if (state.auth?.currentUser?.uid !== uid || state.user?.uid !== uid) return;
+    const request = snapshot.exists()
+      ? normalizeJoinRequest(snapshot.id, snapshot.data({ serverTimestamps: "estimate" }))
+      : null;
+    state.joinRequest = request;
+    if (!request) return;
+    if (request.status === "approved") {
+      requestOwnMembershipActivation(uid);
+      return;
+    }
+    state.membershipStatus = request.status;
+    state.participantReady = false;
+    render();
+  }, (error) => console.warn("Status zgłoszenia do gry nie jest chwilowo dostępny:", error)));
+}
+
 async function ensureSeasonParticipant(uid) {
   if (!state.db || !state.firebaseModules || state.auth?.currentUser?.uid !== uid) throw new Error("Brak aktywnej sesji Google");
   const { doc, runTransaction, serverTimestamp } = state.firebaseModules;
   const participantReference = doc(state.db, "seasons", SEASON_ID, "participants", uid);
-  const statsReference = doc(state.db, "seasonStats", SEASON_ID);
   const leaderboardReference = doc(state.db, "seasons", SEASON_ID, "leaderboard", uid);
+  const joinRequestReference = doc(state.db, "seasons", SEASON_ID, "joinRequests", uid);
   const avatar = normalizeAvatar(state.avatar) || { ...DEFAULT_AVATAR };
   const displayName = normalizeDisplayName(state.user?.name) || "Gracz";
-  await runTransaction(state.db, async (transaction) => {
-    const [participantSnapshot, leaderboardSnapshot] = await Promise.all([
+  return runTransaction(state.db, async (transaction) => {
+    const [participantSnapshot, leaderboardSnapshot, joinRequestSnapshot] = await Promise.all([
       transaction.get(participantReference),
-      transaction.get(leaderboardReference)
+      transaction.get(leaderboardReference),
+      transaction.get(joinRequestReference)
     ]);
-    const participant = participantSnapshot.exists() ? participantSnapshot.data() : null;
-    if (participant?.disabled === true || participant?.status === "removed") {
-      const error = new Error("To konto zostało usunięte z typera.");
-      error.code = "participant/removed";
+    if (participantSnapshot.exists()) {
+      const participant = participantSnapshot.data();
+      const status = participantMembershipStatus(participant);
+      if (status !== "active") return { status, request: null, created: false };
+      if (!leaderboardSnapshot.exists()) {
+        if (!participant.joinedAt) throw new Error("Konto uczestnika nie ma prawidłowej daty dołączenia.");
+        transaction.set(leaderboardReference, {
+          uid,
+          displayName,
+          avatarType: avatar.type,
+          avatarValue: avatar.value,
+          points: 0,
+          typed: 0,
+          joinedAt: participant.joinedAt,
+          lastScoreMatchId: "",
+          settledMatchIds: [],
+          updatedAt: serverTimestamp()
+        });
+      }
+      return { status: "active", request: null, created: false };
+    }
+    if (leaderboardSnapshot.exists()) {
+      const error = new Error("Konto wymaga sprawdzenia przez administratora.");
+      error.code = "participant/inconsistent";
       throw error;
     }
-    if (participantSnapshot.exists() && leaderboardSnapshot.exists()) return;
-
-    const joinedAt = participantSnapshot.exists() ? participantSnapshot.data().joinedAt : serverTimestamp();
-    if (!participantSnapshot.exists()) {
-      const statsSnapshot = await transaction.get(statsReference);
-      const currentCount = statsSnapshot.exists() && Number.isInteger(statsSnapshot.data().participantCount)
-        ? statsSnapshot.data().participantCount
-        : 0;
-      transaction.set(participantReference, { uid, seasonId: SEASON_ID, joinedAt });
-      transaction.set(statsReference, {
-        seasonId: SEASON_ID,
-        participantCount: currentCount + 1,
-        updatedAt: serverTimestamp()
-      });
+    if (joinRequestSnapshot.exists()) {
+      const request = normalizeJoinRequest(joinRequestSnapshot.id, joinRequestSnapshot.data());
+      if (!request) throw new Error("Zgłoszenie do gry ma nieprawidłowy format.");
+      if (request.status === "approved") {
+        const error = new Error("Akceptacja konta nie została jeszcze dokończona.");
+        error.code = "participant/inconsistent";
+        throw error;
+      }
+      return { status: request.status, request, created: false };
     }
-    if (!leaderboardSnapshot.exists()) {
-      transaction.set(leaderboardReference, {
-        uid,
-        displayName,
-        avatarType: avatar.type,
-        avatarValue: avatar.value,
-        points: 0,
-        typed: 0,
-        joinedAt,
-        lastScoreMatchId: "",
-        settledMatchIds: [],
-        updatedAt: serverTimestamp()
-      });
-    }
+    transaction.set(joinRequestReference, {
+      uid,
+      seasonId: SEASON_ID,
+      status: "pending",
+      requestedAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      resolvedAt: null,
+      resolvedBy: ""
+    });
+    return {
+      status: "pending",
+      request: { id: uid, uid, seasonId: SEASON_ID, status: "pending", requestedAt: null, resolvedAt: null, resolvedBy: "", adminNote: "" },
+      created: true
+    };
   });
 }
 
@@ -4595,17 +4819,49 @@ async function activateSeasonParticipant(uid, options = {}) {
   state.participantActivationError = false;
   updateChatWidget({ keepScroll: true });
   try {
-    await ensureSeasonParticipant(uid);
+    const membership = await ensureSeasonParticipant(uid);
     if (state.auth?.currentUser?.uid !== uid || state.user?.uid !== uid) return false;
+    state.membershipStatus = membership.status;
+    if (membership.request) state.joinRequest = membership.request;
+    if (membership.status !== "active") {
+      state.participantReady = false;
+      state.participantActivationError = false;
+      if (membership.status === "pending") {
+        announceJoinRequest().catch((error) => reportNotificationSyncError("Nie udało się powiadomić administratora o zgłoszeniu", error));
+      }
+      render();
+      return false;
+    }
+    const activatedNow = !state.participantReady;
     state.participantReady = true;
+    state.membershipStatus = "active";
     state.participantActivationError = false;
     if (startRealtime) startChatRealtime(uid);
     if (state.view === "ranking") void loadRankingData();
     if (state.view === "matches" && state.userDataReady) void loadPlayerDashboardData();
+    if (activatedNow && state.userDataReady) {
+      migrateLegacyLocalPredictions(uid).then((migratedPredictions) => {
+        if (state.auth?.currentUser?.uid !== uid || state.user?.uid !== uid) return;
+        Object.assign(state.predictions, migratedPredictions);
+        Object.assign(state.confirmedPredictions, migratedPredictions);
+        render();
+      }).catch((error) => console.warn("Nie udało się przenieść zapisanych typów po akceptacji:", error));
+      Promise.allSettled([
+        announceSeasonParticipant(),
+        queueNotificationPicksSync(state.confirmedPredictions, uid),
+        syncAuthenticatedProfileMetadata(uid)
+      ]).then((results) => results.forEach((result) => {
+        if (result.status === "rejected") reportNotificationSyncError("Synchronizacja po akceptacji konta nie powiodła się", result.reason);
+      }));
+      reconcileChatPush(uid).catch((error) => console.warn("Nie udało się włączyć powiadomień po akceptacji konta:", error));
+      scheduleNotificationPrimer(1200);
+      render();
+    }
     return true;
   } catch (error) {
     if (state.auth?.currentUser?.uid !== uid || state.user?.uid !== uid) return false;
     state.participantActivationError = true;
+    state.membershipStatus = error?.code === "participant/removed" ? "removed" : "error";
     console.error("Nie udało się zarejestrować gracza w sezonie:", error);
     if (notifyOnError) notify(error?.code === "participant/removed"
       ? "To konto zostało usunięte z typera."
@@ -4615,6 +4871,10 @@ async function activateSeasonParticipant(uid, options = {}) {
     if (state.auth?.currentUser?.uid === uid && state.user?.uid === uid) {
       state.participantActivationBusy = false;
       updateChatWidget({ keepScroll: true });
+      if (ownMembershipActivationQueuedUid === uid) {
+        ownMembershipActivationQueuedUid = "";
+        if (!state.participantReady) queueMicrotask(() => requestOwnMembershipActivation(uid));
+      }
     }
   }
 }
@@ -4642,6 +4902,7 @@ function isGoogleAccount(user) {
 
 async function handleAuthState(user) {
   stopOwnProfileRealtime();
+  stopOwnMembershipRealtime();
   const previousUid = state.user?.uid || null;
   state.userDataReady = false;
   if (previousUid && (!user || previousUid !== user.uid)) {
@@ -4674,6 +4935,8 @@ async function handleAuthState(user) {
   state.nameRequestStatus = "idle";
   state.nameRequestError = "";
   state.participantReady = false;
+  state.membershipStatus = user ? "checking" : "guest";
+  state.joinRequest = null;
   state.participantActivationBusy = false;
   state.participantActivationError = false;
   state.rankingPlayers = [];
@@ -4729,7 +4992,11 @@ async function handleAuthState(user) {
   state.avatar = cachedAvatar;
   state.chatNotificationsEnabled = state.chatNotificationsByUser[user.uid] === true;
   state.chatNotificationsSyncPending = false;
-  if (isCurrentUserAdmin()) startAdminNameRequestsRealtime();
+  startOwnMembershipRealtime(user.uid);
+  if (isCurrentUserAdmin()) {
+    startAdminNameRequestsRealtime();
+    startAdminJoinRequestsRealtime();
+  }
   else resetAdminClientState();
 
   let remote = {};
@@ -4742,10 +5009,6 @@ async function handleAuthState(user) {
   else console.error("Nie udało się pobrać typów z Firestore:", predictionsResult.reason);
   if (profileResult.status === "fulfilled") remoteProfile = profileResult.value;
   else console.error("Nie udało się pobrać profilu z Firestore:", profileResult.reason);
-  if (predictionsResult.status === "rejected" || profileResult.status === "rejected") {
-    notify("Zalogowano przez Google, ale synchronizacja danych jest chwilowo niedostępna");
-  }
-
   if (state.auth?.currentUser?.uid !== user.uid) return;
 
   state.predictions = { ...remote };
@@ -4776,16 +5039,17 @@ async function handleAuthState(user) {
 
   await activateSeasonParticipant(user.uid, { startRealtime: false, notifyOnError: true });
   if (state.auth?.currentUser?.uid !== user.uid) return;
-  const profileMetadataSync = state.participantReady
-    ? syncAuthenticatedProfileMetadata(user.uid)
-    : Promise.resolve();
+  if (profileResult.status === "rejected" || (predictionsResult.status === "rejected" && state.participantReady)) {
+    notify("Zalogowano przez Google, ale synchronizacja danych jest chwilowo niedostępna");
+  }
+  const profileMetadataSync = syncAuthenticatedProfileMetadata(user.uid);
 
-  const migratedPredictions = await migrateLegacyLocalPredictions(user.uid);
+  const migratedPredictions = state.participantReady ? await migrateLegacyLocalPredictions(user.uid) : {};
   if (state.auth?.currentUser?.uid !== user.uid) return;
   Object.assign(state.predictions, migratedPredictions);
   Object.assign(state.confirmedPredictions, migratedPredictions);
 
-  if (profileResult.status === "fulfilled" && !profileDidNotExist) {
+  if (state.participantReady && profileResult.status === "fulfilled" && !profileDidNotExist) {
     try {
       const profileSave = saveRemoteProfile(user.uid, state.avatar, remoteProfile?.data || null).then(
         () => ({ status: "saved" }),
@@ -4809,18 +5073,23 @@ async function handleAuthState(user) {
   profileMetadataSync.finally(() => {
     if (!isCurrentUserAdmin() || state.auth?.currentUser?.uid !== user.uid) return;
     startAdminNameRequestsRealtime();
+    startAdminJoinRequestsRealtime();
     if (state.view === "admin") void loadAdminPlayers({ force: true });
   });
-  Promise.allSettled([
-    announceSeasonParticipant(),
-    queueNotificationPicksSync(state.confirmedPredictions, user.uid)
-  ]).then((results) => {
-    results.forEach((result, index) => {
-      if (result.status === "rejected") reportNotificationSyncError(index === 0
-        ? "Nie udało się zsynchronizować powiadomienia o graczu"
-        : "Nie udało się zsynchronizować typów z powiadomieniami", result.reason);
+  if (state.participantReady) {
+    Promise.allSettled([
+      announceSeasonParticipant(),
+      queueNotificationPicksSync(state.confirmedPredictions, user.uid)
+    ]).then((results) => {
+      results.forEach((result, index) => {
+        if (result.status === "rejected") reportNotificationSyncError(index === 0
+          ? "Nie udało się zsynchronizować powiadomienia o graczu"
+          : "Nie udało się zsynchronizować typów z powiadomieniami", result.reason);
+      });
     });
-  });
+  } else if (state.membershipStatus === "pending") {
+    announceJoinRequest().catch((error) => reportNotificationSyncError("Nie udało się powiadomić administratora o zgłoszeniu", error));
+  }
   if (state.view === "ranking" && state.participantReady) void loadRankingData();
   if (state.view === "matches" && state.participantReady) void loadPlayerDashboardData();
   if (state.participantReady) startChatRealtime(user.uid);
@@ -4828,7 +5097,7 @@ async function handleAuthState(user) {
     console.warn("Nie udało się uzgodnić stanu powiadomień tego urządzenia:", error);
   });
   document.querySelector("#authDialog")?.close();
-  scheduleNotificationPrimer(1200);
+  if (state.participantReady) scheduleNotificationPrimer(1200);
   tryApplyNotificationRoute().catch((error) => console.warn("Nie udało się otworzyć widoku z powiadomienia:", error));
 
   syncTrustedMatchTimes().then(() => {
@@ -4955,8 +5224,11 @@ async function logout() {
   state.nameRequestError = "";
   state.avatarOperationId += 1;
   state.participantReady = false;
+  state.membershipStatus = "guest";
+  state.joinRequest = null;
   state.participantActivationBusy = false;
   state.participantActivationError = false;
+  stopOwnMembershipRealtime();
   stopChatRealtime();
   predictionWriteQueues.clear();
   predictionWriteVersions.clear();
@@ -5240,6 +5512,7 @@ async function loadOwnNameRequest(uid, requestId) {
 
 async function syncAuthenticatedProfileMetadata(uid) {
   if (!uid || state.auth?.currentUser?.uid !== uid || state.user?.uid !== uid) return;
+  if (!state.participantReady) return;
   try {
     await notificationApiRequest("/api/profile/sync", {});
   } catch (error) {
@@ -5264,13 +5537,67 @@ function stopAdminNameRequestsRealtime({ reset = true } = {}) {
   state.adminRequestsError = "";
 }
 
+function stopAdminJoinRequestsRealtime({ reset = true } = {}) {
+  adminJoinRequestsUnsubscribe?.();
+  adminJoinRequestsUnsubscribe = null;
+  adminJoinRequestsSnapshotReady = false;
+  adminPendingJoinRequestIds = new Set();
+  if (!reset) return;
+  state.adminJoinRequests = [];
+  state.adminJoinRequestsStatus = "idle";
+  state.adminJoinRequestsError = "";
+}
+
 function resetAdminClientState() {
   stopAdminNameRequestsRealtime();
+  stopAdminJoinRequestsRealtime();
   state.adminPlayers = [];
   state.adminPlayersStatus = "idle";
   state.adminPlayersError = "";
   state.adminBusyId = "";
   state.adminSearch = "";
+}
+
+function startAdminJoinRequestsRealtime({ restart = false } = {}) {
+  if (restart) stopAdminJoinRequestsRealtime({ reset: false });
+  if (adminJoinRequestsUnsubscribe || !isCurrentUserAdmin() || !state.db || !state.firebaseModules) return;
+  const { collection, onSnapshot } = state.firebaseModules;
+  state.adminJoinRequestsStatus = "loading";
+  state.adminJoinRequestsError = "";
+  adminJoinRequestsUnsubscribe = onSnapshot(collection(state.db, "seasons", SEASON_ID, "joinRequests"), (snapshot) => {
+    if (!isCurrentUserAdmin()) {
+      stopAdminJoinRequestsRealtime();
+      return;
+    }
+    const requests = [];
+    snapshot.forEach((item) => {
+      const request = normalizeJoinRequest(item.id, item.data({ serverTimestamps: "estimate" }));
+      if (request) requests.push(request);
+    });
+    requests.sort((a, b) => {
+      if (a.status === "pending" && b.status !== "pending") return -1;
+      if (a.status !== "pending" && b.status === "pending") return 1;
+      return firestoreTimeMs(b.requestedAt) - firestoreTimeMs(a.requestedAt);
+    });
+    const nextPendingIds = new Set(requests.filter((request) => request.status === "pending").map((request) => request.uid));
+    if (adminJoinRequestsSnapshotReady) {
+      const newPending = requests.find((request) => request.status === "pending" && !adminPendingJoinRequestIds.has(request.uid));
+      if (newPending) notify("Nowy gracz czeka na akceptację w panelu admina.");
+    }
+    adminPendingJoinRequestIds = nextPendingIds;
+    adminJoinRequestsSnapshotReady = true;
+    state.adminJoinRequests = requests;
+    state.adminJoinRequestsStatus = "ready";
+    state.adminJoinRequestsError = "";
+    updateAuthButton();
+    if (state.view === "admin") void loadAdminPlayers({ force: true });
+  }, (error) => {
+    console.error("Poczekalnia graczy jest niedostępna:", error);
+    state.adminJoinRequestsStatus = "error";
+    state.adminJoinRequestsError = "Nie udało się uruchomić aktualizacji poczekalni na żywo.";
+    updateAuthButton();
+    if (state.view === "admin") render();
+  });
 }
 
 function startAdminNameRequestsRealtime({ restart = false } = {}) {
@@ -5327,6 +5654,42 @@ function normalizeAdminPrivatePlayer(value = {}) {
   };
 }
 
+function updateMembershipSurface() {
+  const status = state.user ? state.membershipStatus : "guest";
+  document.documentElement.dataset.membershipStatus = status;
+  const title = document.querySelector("#blikPaymentTitle");
+  const copyButton = document.querySelector("[data-blik-copy]");
+  const locked = Boolean(state.user && !state.participantReady);
+  if (title) title.textContent = locked
+    ? "Wpłatę wykonaj po akceptacji konta"
+    : "Pozostań w grze — wpłać 100 zł BLIK";
+  if (copyButton) {
+    copyButton.disabled = locked;
+    copyButton.setAttribute("aria-disabled", String(locked));
+    copyButton.title = locked ? "Numer BLIK odblokuje się po przyjęciu do gry" : "Skopiuj numer telefonu do BLIK";
+  }
+}
+
+function normalizeJoinRequest(id, value = {}) {
+  const uid = typeof value?.uid === "string" ? value.uid : "";
+  const status = ["pending", "approved", "rejected"].includes(value?.status) ? value.status : "";
+  if (!id || id !== uid || !status || value?.seasonId !== SEASON_ID) return null;
+  return {
+    id,
+    uid,
+    seasonId: SEASON_ID,
+    status,
+    requestedAt: value?.requestedAt || null,
+    resolvedAt: value?.resolvedAt || null,
+    resolvedBy: typeof value?.resolvedBy === "string" ? value.resolvedBy : "",
+    adminNote: typeof value?.adminNote === "string" ? value.adminNote.slice(0, 300) : ""
+  };
+}
+
+function membershipWaiting() {
+  return Boolean(state.user && !state.participantReady && state.membershipStatus === "pending");
+}
+
 function normalizeAdminRemoval(value = {}) {
   const uid = typeof value?.uid === "string" ? value.uid.trim() : "";
   if (!uid) return null;
@@ -5343,15 +5706,17 @@ async function loadAdminPlayers({ force = false } = {}) {
   state.adminPlayersError = "";
   if (state.view === "admin") render();
   const { collection, getDocs } = state.firebaseModules;
-  const [privateResult, profilesResult, participantsResult] = await Promise.allSettled([
+  const [privateResult, profilesResult, participantsResult, joinRequestsResult] = await Promise.allSettled([
     notificationApiRequest("/api/admin/players", {}, { method: "GET" }),
     getDocs(collection(state.db, "profiles")),
-    getDocs(collection(state.db, "seasons", SEASON_ID, "participants"))
+    getDocs(collection(state.db, "seasons", SEASON_ID, "participants")),
+    getDocs(collection(state.db, "seasons", SEASON_ID, "joinRequests"))
   ]);
   if (!isCurrentUserAdmin()) return;
   if (privateResult.status === "rejected"
     && profilesResult.status === "rejected"
-    && participantsResult.status === "rejected") {
+    && participantsResult.status === "rejected"
+    && joinRequestsResult.status === "rejected") {
     state.adminPlayers = [];
     state.adminPlayersStatus = "error";
     state.adminPlayersError = "Nie udało się pobrać ani danych kont, ani publicznych profili.";
@@ -5413,13 +5778,47 @@ async function loadAdminPlayers({ force = false } = {}) {
       };
       byUid.set(snapshot.id, {
         ...previous,
-        isParticipant: data?.uid === snapshot.id && data?.seasonId === SEASON_ID,
+        isParticipant: data?.uid === snapshot.id && data?.seasonId === SEASON_ID && participantMembershipStatus(data) === "active",
+        participantStatus: participantMembershipStatus(data),
         removed: data?.disabled === true || data?.status === "removed",
         entryFeePaid: data?.entryFeePaid === true,
         entryFeeUpdatedAt: data?.entryFeeUpdatedAt || null,
         entryFeeUpdatedBy: typeof data?.entryFeeUpdatedBy === "string" ? data.entryFeeUpdatedBy : ""
       });
     });
+  }
+  if (joinRequestsResult.status === "fulfilled") {
+    const requests = [];
+    joinRequestsResult.value.forEach((snapshot) => {
+      const request = normalizeJoinRequest(snapshot.id, snapshot.data({ serverTimestamps: "estimate" }));
+      if (!request) return;
+      requests.push(request);
+      const previous = byUid.get(request.uid) || {
+        uid: request.uid,
+        email: "",
+        googleName: "",
+        lastSeenAt: null,
+        hasProfile: false
+      };
+      byUid.set(request.uid, {
+        ...previous,
+        joinStatus: request.status,
+        joinRequestedAt: request.requestedAt,
+        joinResolvedAt: request.resolvedAt,
+        joinAdminNote: request.adminNote
+      });
+    });
+    requests.sort((a, b) => {
+      if (a.status === "pending" && b.status !== "pending") return -1;
+      if (a.status !== "pending" && b.status === "pending") return 1;
+      return firestoreTimeMs(b.requestedAt) - firestoreTimeMs(a.requestedAt);
+    });
+    state.adminJoinRequests = requests;
+    state.adminJoinRequestsStatus = "ready";
+    state.adminJoinRequestsError = "";
+  } else if (!adminJoinRequestsUnsubscribe) {
+    state.adminJoinRequestsStatus = "error";
+    state.adminJoinRequestsError = "Nie udało się pobrać poczekalni.";
   }
   state.adminRequests.forEach((request) => {
     if (!byUid.has(request.uid)) {
@@ -5447,6 +5846,7 @@ async function loadAdminPlayers({ force = false } = {}) {
   if (privateResult.status === "rejected") partialErrors.push("Prywatne dane kont są chwilowo niedostępne.");
   if (profilesResult.status === "rejected") partialErrors.push("Publiczne profile są chwilowo niedostępne.");
   if (participantsResult.status === "rejected") partialErrors.push("Status uczestnictwa jest chwilowo niedostępny.");
+  if (joinRequestsResult.status === "rejected") partialErrors.push("Poczekalnia jest chwilowo niedostępna.");
   state.adminPlayersError = partialErrors.join(" ");
   if (state.view === "admin") render();
 }
@@ -5473,6 +5873,106 @@ function normalizeAdminNote(value) {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 300);
+}
+
+async function resolveAdminJoinRequest(uid, decision) {
+  if (!isCurrentUserAdmin() || !["approved", "rejected"].includes(decision)) {
+    throw new Error("Brak uprawnień administratora.");
+  }
+  const { doc, runTransaction, serverTimestamp } = state.firebaseModules;
+  const requestReference = doc(state.db, "seasons", SEASON_ID, "joinRequests", uid);
+  const participantReference = doc(state.db, "seasons", SEASON_ID, "participants", uid);
+  const leaderboardReference = doc(state.db, "seasons", SEASON_ID, "leaderboard", uid);
+  const profileReference = doc(state.db, "profiles", uid);
+  const statsReference = doc(state.db, "seasonStats", SEASON_ID);
+  return runTransaction(state.db, async (transaction) => {
+    const [requestSnapshot, participantSnapshot, leaderboardSnapshot, profileSnapshot, statsSnapshot] = await Promise.all([
+      transaction.get(requestReference),
+      transaction.get(participantReference),
+      transaction.get(leaderboardReference),
+      transaction.get(profileReference),
+      transaction.get(statsReference)
+    ]);
+    const request = requestSnapshot.exists() ? normalizeJoinRequest(requestSnapshot.id, requestSnapshot.data()) : null;
+    if (!request || request.status !== "pending") throw new Error("Zgłoszenie zostało już rozpatrzone albo nie istnieje.");
+    if (decision === "rejected") {
+      transaction.update(requestReference, {
+        status: "rejected",
+        updatedAt: serverTimestamp(),
+        resolvedAt: serverTimestamp(),
+        resolvedBy: state.user.uid
+      });
+      return { uid, status: "rejected" };
+    }
+    if (participantSnapshot.exists() || leaderboardSnapshot.exists()) {
+      throw new Error("Konto ma już dane uczestnika i nie może zostać dodane ponownie.");
+    }
+    if (!profileSnapshot.exists()) throw new Error("Profil gracza nie istnieje.");
+    const profile = profileSnapshot.data();
+    const displayName = normalizeDisplayName(profile?.displayName);
+    const avatar = normalizeAvatar({ avatarType: profile?.avatarType, avatarValue: profile?.avatarValue }) || { ...DEFAULT_AVATAR };
+    if (!validDisplayName(displayName)) throw new Error("Profil gracza nie ma prawidłowego nicku.");
+    const currentCount = statsSnapshot.exists() ? Number(statsSnapshot.data()?.participantCount) : 0;
+    if (!Number.isInteger(currentCount) || currentCount < 0) throw new Error("Liczba uczestników jest nieprawidłowa.");
+    const timestamp = serverTimestamp();
+    transaction.update(requestReference, {
+      status: "approved",
+      updatedAt: timestamp,
+      resolvedAt: timestamp,
+      resolvedBy: state.user.uid
+    });
+    transaction.set(participantReference, { uid, seasonId: SEASON_ID, joinedAt: timestamp });
+    transaction.set(leaderboardReference, {
+      uid,
+      displayName,
+      avatarType: avatar.type,
+      avatarValue: avatar.value,
+      points: 0,
+      typed: 0,
+      joinedAt: timestamp,
+      lastScoreMatchId: "",
+      settledMatchIds: [],
+      updatedAt: timestamp
+    });
+    const statsPayload = {
+      seasonId: SEASON_ID,
+      participantCount: currentCount + 1,
+      updatedAt: timestamp,
+      lastMembershipUid: uid,
+      lastMembershipAction: "approved"
+    };
+    if (statsSnapshot.exists()) transaction.update(statsReference, statsPayload);
+    else transaction.set(statsReference, statsPayload);
+    return { uid, status: "approved", displayName };
+  });
+}
+
+async function decideAdminJoinRequest(event) {
+  const button = event.currentTarget;
+  const uid = button.dataset.joinUid || "";
+  const decision = button.dataset.adminJoinAction === "approve" ? "approved" : "rejected";
+  if (!uid || state.adminBusyId || !isCurrentUserAdmin()) return;
+  const player = state.adminPlayers.find((item) => item.uid === uid);
+  const displayName = player?.displayName || player?.googleName || player?.email || "ten gracz";
+  const confirmation = decision === "approved"
+    ? `Dodać gracza „${displayName}” do gry? Konto pojawi się w rankingu i puli oraz uzyska dostęp do typowania i chatu.`
+    : `Odrzucić zgłoszenie gracza „${displayName}”? Konto nie uzyska dostępu do tej edycji.`;
+  if (!window.confirm(confirmation)) return;
+  state.adminBusyId = `join:${uid}`;
+  render();
+  try {
+    await resolveAdminJoinRequest(uid, decision);
+    notify(decision === "approved" ? `Gracz ${displayName} został dodany do gry.` : `Zgłoszenie gracza ${displayName} zostało odrzucone.`);
+    await loadAdminPlayers({ force: true });
+  } catch (error) {
+    console.error("Nie udało się rozpatrzyć zgłoszenia do gry:", error);
+    notify(error?.message || "Nie udało się rozpatrzyć zgłoszenia do gry.");
+  } finally {
+    if (isCurrentUserAdmin()) {
+      state.adminBusyId = "";
+      if (state.view === "admin") render();
+    }
+  }
 }
 
 async function resolveAdminNameRequest(requestId, decision, adminNote = "") {

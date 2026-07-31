@@ -40,7 +40,7 @@
       @keyframes loader-dot { 0%, 70%, 100% { opacity: .25; transform: translateY(0); } 35% { opacity: 1; transform: translateY(-3px); } }
       @media (prefers-reduced-motion: reduce) { .loader-emblem::before, .loader-emblem img, .loader-track i, .loader-status i { animation: none; } }
     </style>
-    <link rel="stylesheet" href="./styles.css?v=33" />
+    <link rel="stylesheet" href="./styles.css?v=34" />
     <link rel="stylesheet" href="./payment-banner.css?v=2" />
   </head>
   <body>
@@ -130,9 +130,9 @@
     <dialog id="authDialog" class="modal auth-modal" aria-labelledby="authDialogTitle" aria-describedby="authDialogCopy">
       <button type="button" class="modal-close" data-close aria-label="Zamknij">×</button>
       <img class="modal-logo" src="./assets/brand/logo-compact.png" alt="Ekstraklapa Typer" />
-      <p class="eyebrow">DOŁĄCZ DO GRY</p>
-      <h2 id="authDialogTitle">Zaloguj się i typuj</h2>
-      <p class="modal-copy" id="authDialogCopy">Twoje typy będą dostępne na każdym urządzeniu. Jeden klik i jesteś w grze.</p>
+      <p class="eyebrow">ZGŁOŚ SIĘ DO GRY</p>
+      <h2 id="authDialogTitle">Zaloguj się i wyślij zgłoszenie</h2>
+      <p class="modal-copy" id="authDialogCopy">Zaloguj się przez Google. Nowe konto trafi do poczekalni i zacznie grę dopiero po akceptacji administratora.</p>
       <button type="button" class="provider google" data-provider="google" autofocus><span>G</span> Kontynuuj przez Google</button>
       <small>Logując się, akceptujesz zasady prywatnej ligi.</small>
     </dialog>
@@ -173,6 +173,6 @@
     <dialog id="matchDialog" class="modal match-modal"></dialog>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <script type="module" src="./payment-banner.js?v=2"></script>
-    <script type="module" src="./app.js?v=40"></script>
+    <script type="module" src="./app.js?v=41"></script>
   </body>
 </html>

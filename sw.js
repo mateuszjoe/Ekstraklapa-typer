@@ -1,4 +1,4 @@
-const CACHE_NAME = "ekstraklasa-typer-v41";
+const CACHE_NAME = "ekstraklasa-typer-v42";
 const PUSH_STATE_CACHE = "ekstraklasa-typer-push-state-v1";
 const PUSH_STATE_URL = new URL("./__chat-push-state__", self.registration.scope).href;
 const VAPID_PUBLIC_KEY = "BHxWAMhHw3KJBpTqgJZK38Kr-fPA_dvKIYurfBjxTfuw9ie4D9I0cpYR8S9-5FEmzDYoLoBwdutcR_kLW7cADd0";
@@ -8,10 +8,10 @@ const MAX_ROTATION_RETRIES = 4;
 const OFFLINE_ASSETS = [
   "./",
   "./?app=typer-v2",
-  "./styles.css?v=33",
+  "./styles.css?v=34",
   "./payment-banner.css?v=2",
   "./payment-banner.js?v=2",
-  "./app.js?v=40",
+  "./app.js?v=41",
   "./data.js",
   "./firebase-config.js",
   "./live-provider.js",
@@ -96,6 +96,12 @@ const NOTIFICATION_TYPES = Object.freeze({
     body: "Sprawdź wyjściowe jedenastki przed pierwszym gwizdkiem.",
     url: "./#ekstraklasa",
     idFields: ["localMatchId", "matchId", "providerMatchId"]
+  }),
+  "admin-join-request": Object.freeze({
+    title: "Nowy gracz czeka na akceptację",
+    body: "Otwórz panel administratora i sprawdź zgłoszenie.",
+    url: "./#admin",
+    idFields: ["requestId", "playerUid", "uid"]
   }),
   "admin-name-request": Object.freeze({
     title: "Nowy wniosek o zmianę nicku",

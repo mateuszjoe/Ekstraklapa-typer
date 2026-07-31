@@ -13,7 +13,7 @@ export default function Home() {
     if (!document.querySelector("script[data-ekstraklasa-runtime]")) {
       const script = document.createElement("script");
       script.type = "module";
-      script.src = "/app.js?v=40";
+      script.src = "/app.js?v=41";
       script.dataset.ekstraklasaRuntime = "true";
       document.body.appendChild(script);
     }
@@ -107,9 +107,9 @@ export default function Home() {
       <dialog id="authDialog" className="modal auth-modal">
         <button className="modal-close" data-close aria-label="Zamknij">×</button>
         <img className="modal-logo" src="/assets/brand/logo-compact.png" alt="Ekstraklapa Typer" />
-        <p className="eyebrow">DOŁĄCZ DO GRY</p>
-        <h2>Zaloguj się i typuj</h2>
-        <p className="modal-copy">Twoje typy będą dostępne na każdym urządzeniu. Jeden klik i jesteś w grze.</p>
+        <p className="eyebrow">ZGŁOŚ SIĘ DO GRY</p>
+        <h2>Zaloguj się i wyślij zgłoszenie</h2>
+        <p className="modal-copy">Zaloguj się przez Google. Nowe konto trafi do poczekalni i zacznie grę dopiero po akceptacji administratora.</p>
         <button className="provider google" data-provider="google"><span>G</span> Kontynuuj przez Google</button>
         <small>Logując się, akceptujesz zasady prywatnej ligi.</small>
       </dialog>

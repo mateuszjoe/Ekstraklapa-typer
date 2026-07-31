@@ -52,7 +52,7 @@ const DEFAULT_API_FOOTBALL_DAILY_LIMIT = 80;
 const ADMIN_NOTIFICATION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const FINAL_STATUSES = new Set(["FT", "AWD"]);
 const VALID_PICKS = new Set(["1", "X", "2"]);
-const ADMIN_NOTIFICATION_TYPES = new Set(["admin-name-request", "admin-name-changed"]);
+const ADMIN_NOTIFICATION_TYPES = new Set(["admin-join-request", "admin-name-request", "admin-name-changed"]);
 const MATCH_BY_ID = new Map(matches.map((match) => [match.id, match]));
 const TEAM_BY_ID = new Map(teams.map((team) => [team.id, team]));
 
@@ -280,7 +280,12 @@ function participantIsDisabled(data) {
     || data?.blocked === true
     || data?.enabled === false
     || data?.active === false
-    || ["disabled", "blocked", "banned", "suspended", "removed"].includes(status);
+    || ["pending", "waiting", "awaiting-approval", "awaiting_approval", "rejected", "disabled", "blocked", "banned", "suspended", "removed"].includes(status);
+}
+
+function participantIsActive(data) {
+  const status = String(data?.status || "").trim().toLowerCase();
+  return !participantIsDisabled(data) && (!status || ["active", "approved"].includes(status));
 }
 
 async function authenticatedParticipant(request, env) {
@@ -289,7 +294,7 @@ async function authenticatedParticipant(request, env) {
   if (participant.data.uid !== user.uid || participant.data.seasonId !== SEASON_ID) {
     throw new HttpError(403, "not-participant", "Konto nie jest uczestnikiem typera.");
   }
-  if (participantIsDisabled(participant.data)) {
+  if (!participantIsActive(participant.data)) {
     throw new HttpError(403, "participant-disabled", "To konto zostało wyłączone z typera.");
   }
   return { ...user, participant };
@@ -365,7 +370,7 @@ async function upsertPlayerIdentity(env, user) {
     statements.push(env.DB.prepare(`
       UPDATE notification_events
       SET target_uid = ?1, updated_at = ?2
-      WHERE kind IN ('admin-name-request', 'admin-name-changed')
+      WHERE kind IN ('admin-join-request', 'admin-name-request', 'admin-name-changed')
         AND status IN ('pending', 'failed')
         AND target_uid != ?1
     `).bind(user.uid, now));
@@ -446,11 +451,12 @@ async function playerStatuses(request, env) {
     players: participants
       .filter((participant) => participant.id
         && participant.data.uid === participant.id
-        && participant.data.seasonId === SEASON_ID)
+        && participant.data.seasonId === SEASON_ID
+        && participantIsActive(participant.data))
       .map((participant) => ({
         uid: participant.id,
         entryFeePaid: participant.data.entryFeePaid === true,
-        excluded: participantIsDisabled(participant.data)
+        excluded: false
       }))
   };
 }
@@ -555,7 +561,7 @@ async function adminPlayerPayment(request, env) {
   if (participant.data.uid !== targetUid || participant.data.seasonId !== SEASON_ID) {
     throw new HttpError(409, "invalid-participant", "Konto nie jest uczestnikiem bieżącej edycji typera.");
   }
-  if (participantIsDisabled(participant.data)) {
+  if (!participantIsActive(participant.data)) {
     throw new HttpError(409, "participant-disabled", "Nie można zmienić wpłaty usuniętego gracza.");
   }
   const paid = body.paid;
@@ -1012,7 +1018,7 @@ async function wakePendingAdminEvents(env, adminUid) {
     SELECT event_key
     FROM notification_events
     WHERE target_uid = ?1
-      AND kind IN ('admin-name-request', 'admin-name-changed')
+      AND kind IN ('admin-join-request', 'admin-name-request', 'admin-name-changed')
       AND (
         status = 'pending'
         OR (status = 'processing' AND lease_until <= ?2)
@@ -1232,6 +1238,56 @@ async function playerJoined(request, env) {
     body: `${name} dołącza do gry. Powodzenia!`,
     url: appUrl(env, `?player=${encodeURIComponent(user.uid)}#ranking`)
   }, { excludeUid: user.uid });
+}
+
+async function playerJoinRequest(request, env) {
+  const user = await firebaseUser(request, env);
+  await consumeRateLimit(env, user.uid, "join-request", 4, 10 * 60 * 1000);
+  const body = await jsonBody(request);
+  exactBodyFields(body, ["uid"]);
+  const targetUid = safeDocumentSegment(body.uid, "uid gracza");
+  if (targetUid !== user.uid) {
+    throw new HttpError(403, "uid-mismatch", "Nie możesz zgłosić innego gracza.");
+  }
+
+  const joinDocument = await firestoreDocument(env, user.token, [
+    "seasons", SEASON_ID, "joinRequests", user.uid
+  ], 404);
+  if (joinDocument.id !== user.uid
+    || joinDocument.data.uid !== user.uid
+    || joinDocument.data.seasonId !== SEASON_ID) {
+    throw new HttpError(409, "invalid-join-request", "Zgłoszenie do poczekalni jest nieprawidłowe.");
+  }
+
+  const status = String(joinDocument.data.status || "").trim().toLowerCase();
+  if (status !== "pending") {
+    throw new HttpError(409, "join-request-not-pending", "To zgłoszenie nie oczekuje już na akceptację.");
+  }
+  const requestedAt = firestoreTimeMs(joinDocument.data.requestedAt, joinDocument.createTime);
+  if (!requestedAt || requestedAt > Date.now() + 2 * 60 * 1000) {
+    throw new HttpError(409, "invalid-join-request-time", "Zgłoszenie ma nieprawidłową datę.");
+  }
+
+  const profile = await firestoreDocument(env, user.token, ["profiles", user.uid], 404);
+  if (profile.data.uid !== user.uid) {
+    throw new HttpError(409, "invalid-profile", "Profil gracza jest nieprawidłowy.");
+  }
+  const displayName = normalizedPlayerName(profile.data.displayName || user.displayName || "Gracz");
+  await upsertPlayerIdentity(env, user);
+  if (requestedAt < Date.now() - ADMIN_NOTIFICATION_RETENTION_MS) {
+    return { status: "ignored", reason: "stale-join-request", uid: user.uid };
+  }
+
+  const adminUid = await configuredAdminUid(env);
+  return enqueueAndScheduleEvent(env, `admin-join-request:${SEASON_ID}:${user.uid}`, "admin-join-request", {
+    type: "admin-join-request",
+    requestId: user.uid,
+    playerUid: user.uid,
+    title: "Nowy gracz czeka na akceptację",
+    body: `${displayName} chce dołączyć do Typera. Otwórz panel administratora i podejmij decyzję.`,
+    url: appUrl(env, "#admin"),
+    expiresAt: Date.now() + ADMIN_NOTIFICATION_RETENTION_MS
+  }, { uid: adminUid });
 }
 
 async function chatMessage(request, env) {
@@ -2656,6 +2712,7 @@ async function handleRequest(request, env) {
     "/api/push/unregister": unregisterSubscription,
     "/api/push/rotate": rotateSubscription,
     "/api/events/player-joined": playerJoined,
+    "/api/events/join-request": playerJoinRequest,
     "/api/events/chat-message": chatMessage,
     "/api/events/name-change-request": nameChangeRequest,
     "/api/events/player-name-changed": playerNameChanged,

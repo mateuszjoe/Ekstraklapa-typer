@@ -15,10 +15,17 @@ service cloud.firestore {
       return googleSignedIn() && request.auth.token.email == 'mateuszjoe@gmail.com';
     }
 
+    function participantAccessAllowed(data) {
+      return data.get('disabled', false) == false
+        && data.get('status', 'active') in ['active', 'approved'];
+    }
+
     function isSeasonParticipant() {
       return googleSignedIn()
         && exists(/databases/$(database)/documents/seasons/2026-27/participants/$(request.auth.uid))
-        && get(/databases/$(database)/documents/seasons/2026-27/participants/$(request.auth.uid)).data.get('disabled', false) == false;
+        && participantAccessAllowed(
+          get(/databases/$(database)/documents/seasons/2026-27/participants/$(request.auth.uid)).data
+        );
     }
 
     function validEntryFeeState(data) {
@@ -124,6 +131,132 @@ service cloud.firestore {
         && request.resource.data.matchCount <= 153
         && request.resource.data.updatedAt == request.time
         && request.resource.data.keys().hasOnly(['seasonId', 'signature', 'matchCount', 'updatedAt']);
+    }
+
+    function joinRequestPendingBefore(seasonId, uid) {
+      return exists(/databases/$(database)/documents/seasons/$(seasonId)/joinRequests/$(uid))
+        && get(/databases/$(database)/documents/seasons/$(seasonId)/joinRequests/$(uid)).data.uid == uid
+        && get(/databases/$(database)/documents/seasons/$(seasonId)/joinRequests/$(uid)).data.seasonId == seasonId
+        && get(/databases/$(database)/documents/seasons/$(seasonId)/joinRequests/$(uid)).data.status == 'pending';
+    }
+
+    function joinRequestApprovedAfter(seasonId, uid) {
+      return existsAfter(/databases/$(database)/documents/seasons/$(seasonId)/joinRequests/$(uid))
+        && getAfter(/databases/$(database)/documents/seasons/$(seasonId)/joinRequests/$(uid)).data.uid == uid
+        && getAfter(/databases/$(database)/documents/seasons/$(seasonId)/joinRequests/$(uid)).data.seasonId == seasonId
+        && getAfter(/databases/$(database)/documents/seasons/$(seasonId)/joinRequests/$(uid)).data.status == 'approved'
+        && getAfter(/databases/$(database)/documents/seasons/$(seasonId)/joinRequests/$(uid)).data.resolvedAt == request.time
+        && getAfter(/databases/$(database)/documents/seasons/$(seasonId)/joinRequests/$(uid)).data.resolvedBy == request.auth.uid;
+    }
+
+    function seasonStatsIncrementedAfterApproval(seasonId, uid) {
+      return existsAfter(/databases/$(database)/documents/seasonStats/$(seasonId))
+        && getAfter(/databases/$(database)/documents/seasonStats/$(seasonId)).data.seasonId == seasonId
+        && getAfter(/databases/$(database)/documents/seasonStats/$(seasonId)).data.participantCount is int
+        && getAfter(/databases/$(database)/documents/seasonStats/$(seasonId)).data.participantCount > 0
+        && getAfter(/databases/$(database)/documents/seasonStats/$(seasonId)).data.lastMembershipUid == uid
+        && getAfter(/databases/$(database)/documents/seasonStats/$(seasonId)).data.lastMembershipAction == 'approved'
+        && getAfter(/databases/$(database)/documents/seasonStats/$(seasonId)).data.updatedAt == request.time
+        && (
+          (
+            !exists(/databases/$(database)/documents/seasonStats/$(seasonId))
+            && getAfter(/databases/$(database)/documents/seasonStats/$(seasonId)).data.participantCount == 1
+          )
+          || (
+            exists(/databases/$(database)/documents/seasonStats/$(seasonId))
+            && getAfter(/databases/$(database)/documents/seasonStats/$(seasonId)).data.participantCount
+              == get(/databases/$(database)/documents/seasonStats/$(seasonId)).data.participantCount + 1
+          )
+        );
+    }
+
+    function validOwnJoinRequestCreate(seasonId, uid) {
+      return googleSignedIn()
+        && seasonId == '2026-27'
+        && uid == request.auth.uid
+        && request.resource.data.uid == uid
+        && request.resource.data.seasonId == seasonId
+        && request.resource.data.status == 'pending'
+        && request.resource.data.requestedAt == request.time
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.resolvedAt == null
+        && request.resource.data.resolvedBy == ''
+        && request.resource.data.keys().hasOnly([
+          'uid', 'seasonId', 'status', 'requestedAt', 'updatedAt', 'resolvedAt', 'resolvedBy'
+        ])
+        && !exists(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(uid))
+        && exists(/databases/$(database)/documents/profiles/$(uid))
+        && get(/databases/$(database)/documents/profiles/$(uid)).data.uid == uid;
+    }
+
+    function validAdminJoinRequestApproval(seasonId, uid) {
+      return isAdmin()
+        && seasonId == '2026-27'
+        && resource.data.uid == uid
+        && resource.data.seasonId == seasonId
+        && resource.data.status == 'pending'
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.seasonId == resource.data.seasonId
+        && request.resource.data.requestedAt == resource.data.requestedAt
+        && request.resource.data.status == 'approved'
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.resolvedAt == request.time
+        && request.resource.data.resolvedBy == request.auth.uid
+        && request.resource.data.keys().hasOnly([
+          'uid', 'seasonId', 'status', 'requestedAt', 'updatedAt', 'resolvedAt', 'resolvedBy'
+        ])
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status', 'updatedAt', 'resolvedAt', 'resolvedBy'
+        ])
+        && !exists(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(uid))
+        && existsAfter(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(uid))
+        && participantAccessAllowed(
+          getAfter(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(uid)).data
+        )
+        && !exists(/databases/$(database)/documents/seasons/$(seasonId)/leaderboard/$(uid))
+        && existsAfter(/databases/$(database)/documents/seasons/$(seasonId)/leaderboard/$(uid))
+        && seasonStatsIncrementedAfterApproval(seasonId, uid);
+    }
+
+    function validAdminJoinRequestRejection(seasonId, uid) {
+      return isAdmin()
+        && seasonId == '2026-27'
+        && resource.data.uid == uid
+        && resource.data.seasonId == seasonId
+        && resource.data.status == 'pending'
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.seasonId == resource.data.seasonId
+        && request.resource.data.requestedAt == resource.data.requestedAt
+        && request.resource.data.status == 'rejected'
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.resolvedAt == request.time
+        && request.resource.data.resolvedBy == request.auth.uid
+        && request.resource.data.keys().hasOnly([
+          'uid', 'seasonId', 'status', 'requestedAt', 'updatedAt', 'resolvedAt', 'resolvedBy'
+        ])
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status', 'updatedAt', 'resolvedAt', 'resolvedBy'
+        ])
+        && !exists(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(uid))
+        && !existsAfter(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(uid))
+        && !exists(/databases/$(database)/documents/seasons/$(seasonId)/leaderboard/$(uid))
+        && !existsAfter(/databases/$(database)/documents/seasons/$(seasonId)/leaderboard/$(uid));
+    }
+
+    function validAdminParticipantCreateFromJoin(seasonId, uid) {
+      return isAdmin()
+        && seasonId == '2026-27'
+        && request.resource.data.uid == uid
+        && request.resource.data.seasonId == seasonId
+        && request.resource.data.joinedAt == request.time
+        && request.resource.data.keys().hasOnly(['uid', 'seasonId', 'joinedAt'])
+        && joinRequestPendingBefore(seasonId, uid)
+        && joinRequestApprovedAfter(seasonId, uid)
+        && !exists(/databases/$(database)/documents/seasons/$(seasonId)/leaderboard/$(uid))
+        && existsAfter(/databases/$(database)/documents/seasons/$(seasonId)/leaderboard/$(uid))
+        && getAfter(/databases/$(database)/documents/seasons/$(seasonId)/leaderboard/$(uid)).data.joinedAt
+          == request.resource.data.joinedAt
+        && seasonStatsIncrementedAfterApproval(seasonId, uid);
     }
 
     function validAvatar() {
@@ -574,8 +707,8 @@ service cloud.firestore {
         ]);
     }
 
-    function validLeaderboardCreate(seasonId, uid) {
-      return uid == request.auth.uid
+    function validAdminLeaderboardCreateFromJoin(seasonId, uid) {
+      return isAdmin()
         && validLeaderboardDocument(seasonId, uid)
         && existsAfter(/databases/$(database)/documents/profiles/$(uid))
         && getAfter(/databases/$(database)/documents/profiles/$(uid)).data.uid == uid
@@ -585,10 +718,41 @@ service cloud.firestore {
           == request.resource.data.avatarType
         && getAfter(/databases/$(database)/documents/profiles/$(uid)).data.avatarValue
           == request.resource.data.avatarValue
+        && joinRequestPendingBefore(seasonId, uid)
+        && joinRequestApprovedAfter(seasonId, uid)
+        && !exists(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(uid))
         && existsAfter(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(uid))
-        && getAfter(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(uid)).data.get('disabled', false) == false
+        && participantAccessAllowed(
+          getAfter(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(uid)).data
+        )
         && request.resource.data.joinedAt
           == getAfter(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(uid)).data.joinedAt
+        && request.resource.data.points == 0
+        && request.resource.data.typed == 0
+        && request.resource.data.lastScoreMatchId == ''
+        && request.resource.data.settledMatchIds.size() == 0
+        && seasonStatsIncrementedAfterApproval(seasonId, uid);
+    }
+
+    function validExistingParticipantLeaderboardRepair(seasonId, uid) {
+      return uid == request.auth.uid
+        && validLeaderboardDocument(seasonId, uid)
+        && isSeasonParticipant()
+        && exists(/databases/$(database)/documents/profiles/$(uid))
+        && getAfter(/databases/$(database)/documents/profiles/$(uid)).data.uid == uid
+        && getAfter(/databases/$(database)/documents/profiles/$(uid)).data.displayName
+          == request.resource.data.displayName
+        && getAfter(/databases/$(database)/documents/profiles/$(uid)).data.avatarType
+          == request.resource.data.avatarType
+        && getAfter(/databases/$(database)/documents/profiles/$(uid)).data.avatarValue
+          == request.resource.data.avatarValue
+        && get(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(uid)).data.uid == uid
+        && get(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(uid)).data.seasonId == seasonId
+        && participantAccessAllowed(
+          get(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(uid)).data
+        )
+        && request.resource.data.joinedAt
+          == get(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(uid)).data.joinedAt
         && request.resource.data.points == 0
         && request.resource.data.typed == 0
         && request.resource.data.lastScoreMatchId == ''
@@ -695,7 +859,9 @@ service cloud.firestore {
     }
 
     match /predictions/{predictionId} {
-      allow read: if googleSignedIn() && resource.data.uid == request.auth.uid;
+      allow read: if googleSignedIn()
+        && isSeasonParticipant()
+        && resource.data.uid == request.auth.uid;
       allow create: if validOwnPrediction(predictionId);
       allow update: if googleSignedIn()
         && resource.data.uid == request.auth.uid
@@ -705,9 +871,12 @@ service cloud.firestore {
 
     match /seasons/{seasonId}/players/{uid}/picks/{matchId} {
       allow get: if googleSignedIn()
+        && isSeasonParticipant()
         && (uid == request.auth.uid
-          || (isSeasonParticipant() && matchRevealed(seasonId, matchId)));
-      allow list: if googleSignedIn() && uid == request.auth.uid;
+          || matchRevealed(seasonId, matchId));
+      allow list: if googleSignedIn()
+        && isSeasonParticipant()
+        && uid == request.auth.uid;
       allow create: if isSeasonParticipant()
         && uid == request.auth.uid
         && matchOpen(seasonId, matchId)
@@ -720,7 +889,10 @@ service cloud.firestore {
     }
 
     match /seasons/{seasonId}/players/{uid}/scores/{matchId} {
-      allow get, list: if googleSignedIn() && seasonId == '2026-27' && uid == request.auth.uid;
+      allow get, list: if googleSignedIn()
+        && isSeasonParticipant()
+        && seasonId == '2026-27'
+        && uid == request.auth.uid;
       allow create: if validPlayerScore(seasonId, uid, matchId);
       allow update, delete: if false;
     }
@@ -731,7 +903,8 @@ service cloud.firestore {
         && (uid == request.auth.uid || isSeasonParticipant() || isAdmin());
       allow list: if seasonId == '2026-27'
         && (isSeasonParticipant() || isAdmin());
-      allow create: if validLeaderboardCreate(seasonId, uid);
+      allow create: if validAdminLeaderboardCreateFromJoin(seasonId, uid)
+        || validExistingParticipantLeaderboardRepair(seasonId, uid);
       allow update: if validLeaderboardIdentityUpdate(seasonId, uid)
         || validAdminLeaderboardIdentityUpdate(seasonId, uid)
         || validLeaderboardScoreUpdate(seasonId, uid);
@@ -792,25 +965,23 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    match /seasons/{seasonId}/joinRequests/{uid} {
+      allow get: if googleSignedIn()
+        && seasonId == '2026-27'
+        && (uid == request.auth.uid || isAdmin());
+      allow list: if seasonId == '2026-27' && isAdmin();
+      allow create: if validOwnJoinRequestCreate(seasonId, uid);
+      allow update: if validAdminJoinRequestApproval(seasonId, uid)
+        || validAdminJoinRequestRejection(seasonId, uid);
+      allow delete: if false;
+    }
+
     match /seasons/{seasonId}/participants/{uid} {
       allow get: if googleSignedIn()
         && seasonId == '2026-27'
         && (uid == request.auth.uid || isAdmin());
       allow list: if seasonId == '2026-27' && (isSeasonParticipant() || isAdmin());
-      allow create: if googleSignedIn()
-        && seasonId == '2026-27'
-        && uid == request.auth.uid
-        && request.resource.data.uid == request.auth.uid
-        && request.resource.data.seasonId == seasonId
-        && request.resource.data.joinedAt == request.time
-        && request.resource.data.keys().hasOnly(['uid', 'seasonId', 'joinedAt'])
-        && (
-          (!exists(/databases/$(database)/documents/seasonStats/$(seasonId))
-            && getAfter(/databases/$(database)/documents/seasonStats/$(seasonId)).data.participantCount == 1)
-          || (exists(/databases/$(database)/documents/seasonStats/$(seasonId))
-            && getAfter(/databases/$(database)/documents/seasonStats/$(seasonId)).data.participantCount
-              == get(/databases/$(database)/documents/seasonStats/$(seasonId)).data.participantCount + 1)
-        );
+      allow create: if validAdminParticipantCreateFromJoin(seasonId, uid);
       allow update: if validAdminEntryFeeUpdate(seasonId, uid)
         || (
           isAdmin()
@@ -851,23 +1022,46 @@ service cloud.firestore {
     match /seasonStats/{seasonId} {
       allow get: if seasonId == '2026-27';
       allow list: if false;
-      allow create: if googleSignedIn()
+      allow create: if isAdmin()
         && seasonId == '2026-27'
         && request.resource.data.seasonId == seasonId
         && request.resource.data.participantCount == 1
         && request.resource.data.updatedAt == request.time
-        && request.resource.data.keys().hasOnly(['seasonId', 'participantCount', 'updatedAt'])
-        && !exists(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(request.auth.uid))
-        && existsAfter(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(request.auth.uid));
+        && request.resource.data.lastMembershipUid is string
+        && request.resource.data.lastMembershipUid.size() > 0
+        && request.resource.data.lastMembershipUid.size() <= 128
+        && request.resource.data.lastMembershipAction == 'approved'
+        && request.resource.data.keys().hasOnly([
+          'seasonId', 'participantCount', 'updatedAt', 'lastMembershipUid', 'lastMembershipAction'
+        ])
+        && joinRequestPendingBefore(seasonId, request.resource.data.lastMembershipUid)
+        && joinRequestApprovedAfter(seasonId, request.resource.data.lastMembershipUid)
+        && !exists(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(request.resource.data.lastMembershipUid))
+        && existsAfter(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(request.resource.data.lastMembershipUid))
+        && !exists(/databases/$(database)/documents/seasons/$(seasonId)/leaderboard/$(request.resource.data.lastMembershipUid))
+        && existsAfter(/databases/$(database)/documents/seasons/$(seasonId)/leaderboard/$(request.resource.data.lastMembershipUid));
       allow update: if (
-          googleSignedIn()
+          isAdmin()
           && seasonId == '2026-27'
           && request.resource.data.seasonId == resource.data.seasonId
           && request.resource.data.participantCount == resource.data.participantCount + 1
           && request.resource.data.updatedAt == request.time
-          && request.resource.data.keys().hasOnly(['seasonId', 'participantCount', 'updatedAt'])
-          && !exists(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(request.auth.uid))
-          && existsAfter(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(request.auth.uid))
+          && request.resource.data.lastMembershipUid is string
+          && request.resource.data.lastMembershipUid.size() > 0
+          && request.resource.data.lastMembershipUid.size() <= 128
+          && request.resource.data.lastMembershipAction == 'approved'
+          && request.resource.data.keys().hasOnly([
+            'seasonId', 'participantCount', 'updatedAt', 'lastMembershipUid', 'lastMembershipAction'
+          ])
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'participantCount', 'updatedAt', 'lastMembershipUid', 'lastMembershipAction'
+          ])
+          && joinRequestPendingBefore(seasonId, request.resource.data.lastMembershipUid)
+          && joinRequestApprovedAfter(seasonId, request.resource.data.lastMembershipUid)
+          && !exists(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(request.resource.data.lastMembershipUid))
+          && existsAfter(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(request.resource.data.lastMembershipUid))
+          && !exists(/databases/$(database)/documents/seasons/$(seasonId)/leaderboard/$(request.resource.data.lastMembershipUid))
+          && existsAfter(/databases/$(database)/documents/seasons/$(seasonId)/leaderboard/$(request.resource.data.lastMembershipUid))
         )
         || (
           isAdmin()
@@ -877,7 +1071,16 @@ service cloud.firestore {
           && resource.data.participantCount > 0
           && request.resource.data.participantCount == resource.data.participantCount - 1
           && request.resource.data.updatedAt == request.time
-          && request.resource.data.keys().hasOnly(['seasonId', 'participantCount', 'updatedAt'])
+          && request.resource.data.keys().hasOnly([
+            'seasonId', 'participantCount', 'updatedAt', 'lastMembershipUid', 'lastMembershipAction'
+          ])
+          && request.resource.data.get('lastMembershipUid', '')
+            == resource.data.get('lastMembershipUid', '')
+          && request.resource.data.get('lastMembershipAction', '')
+            == resource.data.get('lastMembershipAction', '')
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'participantCount', 'updatedAt'
+          ])
         );
       allow delete: if false;
     }

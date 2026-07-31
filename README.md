@@ -16,7 +16,7 @@ npm run dev
 
 Aplikacja będzie dostępna pod adresem `http://localhost:5173`.
 
-Pełny interfejs i terminarz są dostępne publicznie. Oddawanie typów wymaga zalogowania prawdziwym kontem Google.
+Pełny interfejs i terminarz są dostępne publicznie. Oddawanie typów wymaga zalogowania prawdziwym kontem Google oraz akceptacji administratora.
 
 Po publikacji przez HTTPS aplikację można dodać do ekranu głównego telefonu. Manifest wykorzystuje osobne ikony 192 × 192 i 512 × 512, a urządzenia Apple plik 180 × 180.
 
@@ -41,11 +41,16 @@ Aplikacja korzysta z osobnego projektu Firebase `ekstraklasa-typer-2026-27`. Pub
 - avatar profilu można ustawić jako zdjęcie Google, własną pomniejszoną grafikę, herb klubu albo jeden z gotowych avatarów;
 - pływający chat graczy działa w czasie rzeczywistym i obsługuje odpowiedzi, reakcje oraz automatycznie pomniejszone grafiki;
 - pełne powiadomienia Web Push są przypisane do urządzenia i docierają również po zamknięciu strony lub aplikacji; obejmują chat, nowych graczy, przypomnienia o kolejce, opublikowane składy, wynik i punkt za mecz oraz podsumowanie kolejki;
-- licznik uczestników jest zwiększany transakcyjnie tylko raz dla danego konta Google, a sekcja zasad wylicza aktualną pulę i trzy nagrody;
+- nowe konto tworzy wyłącznie zgłoszenie w poczekalni; dopiero administrator atomowo dodaje uczestnika, wpis rankingu i zwiększa licznik graczy;
+- oczekujące i odrzucone konta nie mogą typować, korzystać z chatu ani rankingu i nie są liczone do puli nagród;
 - dostęp do dokumentów zabezpieczają reguły z `firestore.rules`;
 - Facebook nie jest używany jako dostawca logowania.
 
 Konfigurację podstawowego backendu wdraża się poleceniami `firebase deploy --only auth` oraz `firebase deploy --only firestore:rules`.
+
+### Poczekalnia graczy
+
+Zalogowanie nowego konta Google nie oznacza automatycznego dołączenia do edycji. Użytkownik trafia do `seasons/2026-27/joinRequests`, a administrator `mateuszjoe@gmail.com` otrzymuje push i rozpatruje zgłoszenie w panelu admina. Akceptacja odbywa się jedną transakcją Firestore: zmienia status zgłoszenia, tworzy uczestnika i wpis rankingu oraz zwiększa licznik puli. Reguły nie pozwalają klientowi samodzielnie wykonać żadnego z tych zapisów.
 
 ### Backend powiadomień
 
