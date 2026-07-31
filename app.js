@@ -7,6 +7,7 @@ import {
   getOfficialTeamSquad
 } from "./league-provider.js";
 import { formatRecentPlayerRating } from "./player-rating.js";
+import { notificationPrimerDecision } from "./notification-primer-policy.js?v=1";
 
 const bootStartedAt = performance.now();
 const app = document.querySelector("#app");
@@ -28,7 +29,7 @@ const NOTIFICATION_OUTBOX_CHAT_TTL_MS = 9 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PLAYER_TTL_MS = 14 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PICK_TTL_MS = 45 * 24 * 60 * 60 * 1000;
 const NOTIFICATION_OUTBOX_NAME_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const APP_SERVICE_WORKER_VERSION = "37";
+const APP_SERVICE_WORKER_VERSION = "38";
 const FINAL = new Set(["FT", "AET", "PEN", "AWD", "WO", "FINISHED", "AWARDED"]);
 const LIVE = new Set(["1H", "HT", "2H", "ET", "BT", "P", "LIVE", "IN_PLAY", "PAUSED"]);
 const VIEWS = new Set(["matches", "ekstraklasa", "ranking", "rules", "settings", "admin"]);
@@ -280,6 +281,7 @@ let notificationDeepLinkHandled = false;
 let notificationPrimerTimer = null;
 let notificationPrimerRetries = 0;
 let notificationPrimerBusy = false;
+let notificationPrimerDismissedThisLaunch = false;
 let notificationRouteApplying = false;
 let firstLivePollSettled = false;
 let notificationLoginPromptShown = false;
@@ -2354,6 +2356,10 @@ function runsAsInstalledApp() {
     || navigator.standalone === true;
 }
 
+function runsAsInstalledAndroidApp() {
+  return isAndroidDevice() && runsAsInstalledApp();
+}
+
 function shouldShowAndroidAppPrompt() {
   if (!isAndroidDevice() || runsAsInstalledApp() || !navigator.onLine) return false;
   if (document.querySelector("dialog[open], #androidAppDialog")) return false;
@@ -3343,12 +3349,47 @@ function notificationPrimerRecentlyDismissed() {
   }
 }
 
+function currentNotificationPrimerDecision() {
+  const dialog = document.querySelector("#notificationPrimerDialog");
+  const otherDialogOpen = [...document.querySelectorAll("dialog[open]")]
+    .some((openDialog) => openDialog !== dialog);
+  return notificationPrimerDecision({
+    installedAndroidApp: runsAsInstalledAndroidApp(),
+    launchedFromNotification,
+    userReady: Boolean(state.user && state.userDataReady),
+    participantReady: state.participantReady,
+    supported: chatNotificationsSupported(),
+    permission: globalThis.Notification?.permission || "default",
+    channelState: chatNotificationState(),
+    busy: notificationPrimerBusy || chatPushSessionClosing || state.chatNotificationsBusy,
+    dismissedThisLaunch: notificationPrimerDismissedThisLaunch,
+    recentlyDismissed: notificationPrimerRecentlyDismissed(),
+    otherDialogOpen
+  });
+}
+
+function configureNotificationPrimer(dialog) {
+  if (!dialog) return;
+  const deniedOnAndroid = runsAsInstalledAndroidApp() && globalThis.Notification?.permission === "denied";
+  const title = dialog.querySelector("#notificationPrimerTitle");
+  const copy = dialog.querySelector("#notificationPrimerCopy");
+  const enableButton = dialog.querySelector("[data-enable-notifications]");
+  const note = dialog.querySelector(".notification-primer-note");
+  if (deniedOnAndroid) {
+    if (title) title.textContent = "Odblokuj powiadomienia w Androidzie";
+    if (copy) copy.textContent = "Otwórz Ustawienia telefonu → Aplikacje → Typer → Powiadomienia i wybierz Zezwól. Po powrocie tutaj kliknij „Sprawdź ponownie”.";
+    if (enableButton) enableButton.textContent = "SPRAWDŹ PONOWNIE";
+    if (note) note.textContent = "Po wcześniejszym zablokowaniu zgody Android wymaga ręcznej zmiany w ustawieniach aplikacji.";
+    return;
+  }
+  if (title) title.textContent = "Nie przegap kolejki i swoich punktów";
+  if (copy) copy.textContent = "Włącz powiadomienia, a damy Ci znać o nadchodzącej kolejce, podanych składach, wynikach i zdobytych punktach, nowych graczach oraz wiadomościach na chacie.";
+  if (enableButton) enableButton.textContent = "WŁĄCZ POWIADOMIENIA";
+  if (note) note.textContent = "Decyzję możesz później zmienić w ustawieniach Typera.";
+}
+
 function shouldShowNotificationPrimer() {
-  if (launchedFromNotification || !state.user || !state.userDataReady || !state.participantReady) return false;
-  if (notificationPrimerBusy || chatPushSessionClosing || state.chatNotificationsBusy) return false;
-  if (!chatNotificationsSupported() || Notification.permission === "denied" || state.chatNotificationsEnabled) return false;
-  if (notificationPrimerRecentlyDismissed()) return false;
-  return !document.querySelector("dialog[open]");
+  return currentNotificationPrimerDecision().show;
 }
 
 function scheduleNotificationPrimer(delay = 1000, retry = false) {
@@ -3359,20 +3400,20 @@ function scheduleNotificationPrimer(delay = 1000, retry = false) {
     const dialog = document.querySelector("#notificationPrimerDialog");
     if (!dialog || dialog.open) return;
     if (!shouldShowNotificationPrimer()) {
-      if (state.user && state.userDataReady && state.participantReady && !notificationPrimerRecentlyDismissed()
-        && globalThis.Notification?.permission !== "denied"
-        && (document.querySelector("dialog[open]") || chatPushSessionClosing || state.chatNotificationsBusy)) {
+      if (currentNotificationPrimerDecision().retry) {
         notificationPrimerRetries += 1;
         if (notificationPrimerRetries < 20) scheduleNotificationPrimer(1500, true);
       }
       return;
     }
+    configureNotificationPrimer(dialog);
     dialog.showModal();
   }, delay);
 }
 
 function dismissNotificationPrimer() {
   if (notificationPrimerBusy || state.chatNotificationsBusy) return;
+  notificationPrimerDismissedThisLaunch = true;
   rememberNotificationPrimer("later");
   document.querySelector("#notificationPrimerDialog")?.close();
 }
@@ -3380,6 +3421,11 @@ function dismissNotificationPrimer() {
 async function enableNotificationsFromPrimer() {
   const dialog = document.querySelector("#notificationPrimerDialog");
   if (!dialog?.open || notificationPrimerBusy || chatPushSessionClosing || state.chatNotificationsBusy || !chatNotificationsSupported()) return;
+  if (runsAsInstalledAndroidApp() && Notification.permission === "denied") {
+    configureNotificationPrimer(dialog);
+    notify("Android: Ustawienia → Aplikacje → Typer → Powiadomienia → Zezwól.");
+    return;
+  }
   notificationPrimerBusy = true;
   const controls = [...dialog.querySelectorAll("button")];
   controls.forEach((button) => { button.disabled = true; });
@@ -3387,6 +3433,11 @@ async function enableNotificationsFromPrimer() {
   try {
     const result = await toggleChatNotifications();
     if (!result?.completed) return;
+    if (!result.enabled) {
+      configureNotificationPrimer(dialog);
+      return;
+    }
+    notificationPrimerDismissedThisLaunch = true;
     rememberNotificationPrimer("asked");
     dialog.close();
   } finally {
@@ -6600,6 +6651,10 @@ document.addEventListener("visibilitychange", () => {
   state.chatReadRetryAt = 0;
   markChatRead();
   retryChatPushIfNeeded().catch(() => {});
+  if (runsAsInstalledAndroidApp()) {
+    configureNotificationPrimer(document.querySelector("#notificationPrimerDialog"));
+    scheduleNotificationPrimer(350);
+  }
   flushNotificationOutbox(state.user?.uid).catch((error) => reportNotificationSyncError("Nie udało się ponowić kolejki powiadomień po powrocie do aplikacji", error));
 });
 

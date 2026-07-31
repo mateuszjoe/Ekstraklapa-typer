@@ -19,6 +19,7 @@ await Promise.all([
   cp(join(root, "live-provider.js"), join(output, "live-provider.js")),
   cp(join(root, "league-provider.js"), join(output, "league-provider.js")),
   cp(join(root, "player-rating.js"), join(output, "player-rating.js")),
+  cp(join(root, "notification-primer-policy.js"), join(output, "notification-primer-policy.js")),
   cp(join(root, "payment-banner.js"), join(output, "payment-banner.js")),
   cp(join(root, "styles.css"), join(output, "styles.css")),
   cp(join(root, "payment-banner.css"), join(output, "payment-banner.css")),

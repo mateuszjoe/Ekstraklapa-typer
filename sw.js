@@ -1,4 +1,4 @@
-const CACHE_NAME = "ekstraklasa-typer-v43";
+const CACHE_NAME = "ekstraklasa-typer-v44";
 const PUSH_STATE_CACHE = "ekstraklasa-typer-push-state-v1";
 const PUSH_STATE_URL = new URL("./__chat-push-state__", self.registration.scope).href;
 const VAPID_PUBLIC_KEY = "BHxWAMhHw3KJBpTqgJZK38Kr-fPA_dvKIYurfBjxTfuw9ie4D9I0cpYR8S9-5FEmzDYoLoBwdutcR_kLW7cADd0";
@@ -11,12 +11,13 @@ const OFFLINE_ASSETS = [
   "./styles.css?v=35",
   "./payment-banner.css?v=2",
   "./payment-banner.js?v=2",
-  "./app.js?v=42",
+  "./app.js?v=43",
   "./data.js",
   "./firebase-config.js",
   "./live-provider.js",
   "./league-provider.js",
   "./player-rating.js",
+  "./notification-primer-policy.js?v=1",
   "./manifest.webmanifest?v=18",
   "./assets/fonts/manrope-latin.woff2",
   "./assets/fonts/manrope-latin-ext.woff2",
