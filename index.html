@@ -33,6 +33,12 @@
       .loader-status i { width: 3px; height: 3px; border-radius: 50%; background: #6ead32; animation: loader-dot 1.2s ease-in-out infinite; }
       .loader-status i:nth-child(2) { animation-delay: .15s; }
       .loader-status i:nth-child(3) { margin-right: 5px; animation-delay: .3s; }
+      @media (max-width: 380px) {
+        .loader-card { width: calc(100vw - 32px); }
+        .loader-title { font-size: clamp(22px, 7vw, 27px); line-height: 1.08; }
+        .loader-title span { display: block; margin-top: 4px; }
+        .loader-copy { padding-inline: 8px; }
+      }
       html.app-ready #appLoader { opacity: 0; visibility: hidden; pointer-events: none; }
       @keyframes loader-spin { to { transform: rotate(360deg); } }
       @keyframes loader-breathe { 50% { transform: scale(.94); filter: saturate(1.15) brightness(1.06); } }
@@ -40,7 +46,7 @@
       @keyframes loader-dot { 0%, 70%, 100% { opacity: .25; transform: translateY(0); } 35% { opacity: 1; transform: translateY(-3px); } }
       @media (prefers-reduced-motion: reduce) { .loader-emblem::before, .loader-emblem img, .loader-track i, .loader-status i { animation: none; } }
     </style>
-    <link rel="stylesheet" href="./styles.css?v=36" />
+    <link rel="stylesheet" href="./styles.css?v=37" />
   </head>
   <body>
     <div id="appLoader" role="status" aria-live="polite" aria-label="Wczytywanie Ekstraklapa Typer">
@@ -126,6 +132,6 @@
 
     <dialog id="matchDialog" class="modal match-modal"></dialog>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="./app.js?v=44"></script>
+    <script type="module" src="./app.js?v=45"></script>
   </body>
 </html>
