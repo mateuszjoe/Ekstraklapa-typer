@@ -1,6 +1,6 @@
 import { matches as baseMatches, teamById, teams, roundDatesByNumber } from "./data.js";
 import { firebaseConfig, notificationApiBase, webPushPublicKey } from "./firebase-config.js";
-import { getOfficialLivePayload } from "./live-provider.js";
+import { getOfficialLivePayload } from "./live-provider.js?v=2";
 import {
   getOfficialLeaguePayload,
   getOfficialMatchLineup,
@@ -29,7 +29,7 @@ const NOTIFICATION_OUTBOX_CHAT_TTL_MS = 9 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PLAYER_TTL_MS = 14 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PICK_TTL_MS = 45 * 24 * 60 * 60 * 1000;
 const NOTIFICATION_OUTBOX_NAME_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const APP_SERVICE_WORKER_VERSION = "41";
+const APP_SERVICE_WORKER_VERSION = "42";
 const FINAL = new Set(["FT", "AET", "PEN", "AWD", "WO", "FINISHED", "AWARDED"]);
 const LIVE = new Set(["1H", "HT", "2H", "ET", "BT", "P", "LIVE", "IN_PLAY", "PAUSED"]);
 const VIEWS = new Set(["matches", "ekstraklasa", "ranking", "rules", "settings", "admin"]);
@@ -294,6 +294,10 @@ let notificationRouteApplying = false;
 let firstLivePollSettled = false;
 let notificationLoginPromptShown = false;
 let liveTransport = location.hostname.endsWith(".github.io") ? "official" : "server";
+let livePollRunning = false;
+let livePollTimeout = null;
+let livePollRefreshQueued = false;
+let lastForegroundLiveRefreshAt = Date.now();
 
 const canonicalInitialRoute = state.view === "matches"
   ? { view: "matches", matchday: state.matchday }
@@ -6566,10 +6570,12 @@ function normalizeName(value) {
   return value.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
 }
 
-async function loadLivePayloadForClient() {
+async function loadLivePayloadForClient({ force = false } = {}) {
   if (liveTransport === "server") {
     try {
-      const response = await fetch("./api/live");
+      const response = await fetch(force ? `./api/live?refresh=${Date.now()}` : "./api/live", {
+        cache: force ? "no-store" : "default"
+      });
       const contentType = response.headers.get("content-type") || "";
       if (!response.ok || !contentType.includes("application/json")) throw new Error(`LIVE HTTP ${response.status}`);
       return await response.json();
@@ -6578,13 +6584,22 @@ async function loadLivePayloadForClient() {
       liveTransport = "official";
     }
   }
-  return getOfficialLivePayload();
+  return getOfficialLivePayload({ force });
 }
 
-async function pollLive() {
+async function pollLive({ force = false } = {}) {
+  if (livePollRunning) {
+    livePollRefreshQueued ||= force;
+    return;
+  }
+  livePollRunning = true;
+  if (livePollTimeout !== null) {
+    clearTimeout(livePollTimeout);
+    livePollTimeout = null;
+  }
   let nextDelay = 5 * 60_000;
   try {
-    const payload = await loadLivePayloadForClient();
+    const payload = await loadLivePayloadForClient({ force });
     const settledResultsBefore = settledResultsSignature();
     const providerInterval = Number(payload.pollIntervalSeconds) * 1000;
     if (Number.isFinite(providerInterval)) {
@@ -6662,8 +6677,28 @@ async function pollLive() {
   finally {
     firstLivePollSettled = true;
     tryApplyNotificationRoute().catch((error) => console.warn("Nie udało się otworzyć widoku z powiadomienia:", error));
-    setTimeout(pollLive, nextDelay);
+    livePollRunning = false;
+    if (livePollRefreshQueued) {
+      livePollRefreshQueued = false;
+      livePollTimeout = setTimeout(() => {
+        livePollTimeout = null;
+        void pollLive({ force: true });
+      }, 0);
+    } else {
+      livePollTimeout = setTimeout(() => {
+        livePollTimeout = null;
+        void pollLive();
+      }, nextDelay);
+    }
   }
+}
+
+function refreshLiveAfterResume() {
+  if (!navigator.onLine || document.visibilityState === "hidden") return;
+  const now = Date.now();
+  if (now - lastForegroundLiveRefreshAt < 3000) return;
+  lastForegroundLiveRefreshAt = now;
+  void pollLive({ force: true });
 }
 
 document.addEventListener("click", (event) => {
@@ -6774,8 +6809,13 @@ document.addEventListener("keydown", (event) => {
 });
 window.addEventListener("popstate", applyRouteFromLocation);
 window.addEventListener("hashchange", applyRouteFromLocation);
-window.addEventListener("focus", refreshOpenRankingOnResume);
+window.addEventListener("focus", () => {
+  refreshOpenRankingOnResume();
+  refreshLiveAfterResume();
+});
+window.addEventListener("pageshow", refreshLiveAfterResume);
 window.addEventListener("online", () => {
+  refreshLiveAfterResume();
   state.chatReadRetryAt = 0;
   markChatRead();
   if (state.user && !state.participantReady && !state.participantActivationBusy) {
@@ -6786,6 +6826,7 @@ window.addEventListener("online", () => {
 });
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState !== "visible" || !navigator.onLine) return;
+  refreshLiveAfterResume();
   refreshOpenRankingOnResume();
   state.chatReadRetryAt = 0;
   markChatRead();

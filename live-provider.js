@@ -66,7 +66,7 @@ async function fetchOfficialJson(path) {
   }
 }
 
-function normalizeFixture(item) {
+export function normalizeOfficialFixture(item) {
   const home = teamByCode.get(normalizeCode(item.home_team_code));
   const away = teamByCode.get(normalizeCode(item.away_team_code));
   const week = Number(item.week);
@@ -122,7 +122,7 @@ async function loadLivePayload() {
     if (match?.match_id) matchesById.set(String(match.match_id), match);
   });
 
-  const fixtures = [...matchesById.values()].map(normalizeFixture).filter(Boolean);
+  const fixtures = [...matchesById.values()].map(normalizeOfficialFixture).filter(Boolean);
   const isLive = fixtures.some((fixture) => fixture.status === "LIVE");
   const nowMs = Date.now();
   const isNearKickoff = fixtures.some((fixture) => {
@@ -147,8 +147,12 @@ async function loadLivePayload() {
   };
 }
 
-export async function getOfficialLivePayload() {
-  if (cachedPayload && Date.now() < cacheExpiresAt) return cachedPayload;
+export async function getOfficialLivePayload({ force = false } = {}) {
+  if (!force && cachedPayload && Date.now() < cacheExpiresAt) return cachedPayload;
+
+  if (force && !inFlightRequest) {
+    cacheExpiresAt = 0;
+  }
 
   if (!inFlightRequest) {
     inFlightRequest = loadLivePayload()
