@@ -29,7 +29,7 @@ const NOTIFICATION_OUTBOX_CHAT_TTL_MS = 9 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PLAYER_TTL_MS = 14 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PICK_TTL_MS = 45 * 24 * 60 * 60 * 1000;
 const NOTIFICATION_OUTBOX_NAME_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const APP_SERVICE_WORKER_VERSION = "40";
+const APP_SERVICE_WORKER_VERSION = "41";
 const FINAL = new Set(["FT", "AET", "PEN", "AWD", "WO", "FINISHED", "AWARDED"]);
 const LIVE = new Set(["1H", "HT", "2H", "ET", "BT", "P", "LIVE", "IN_PLAY", "PAUSED"]);
 const VIEWS = new Set(["matches", "ekstraklasa", "ranking", "rules", "settings", "admin"]);
@@ -835,10 +835,10 @@ function hero() {
     <div class="hero-side">
       <p class="eyebrow">${current ? `<i class="live-dot"></i> MECZ NA ŻYWO` : "NAJBLIŻSZY MECZ"}</p>
       ${featured ? `<div class="next-match${current ? " is-live" : ""}">
-        <div class="next-date"><b>${current ? `LIVE${Number.isFinite(current.liveElapsed) ? ` ${current.liveElapsed}'` : ""}` : formatDay(featured)}</b><span>${current ? `${current.homeScore} : ${current.awayScore}` : formatTime(featured)}</span></div>
+        <div class="next-date${current ? " is-live" : ""}"><b>${current ? `<i class="live-dot"></i> LIVE` : formatDay(featured)}</b><span>${current && Number.isFinite(current.liveElapsed) ? `${current.liveElapsed}' minuta` : current ? "trwa mecz" : formatTime(featured)}</span></div>
         <div class="next-teams">
           <div><a class="team-route-tile" href="${teamRouteHref(featured.home)}" data-team-route="${featured.home}" aria-label="Szczegóły ${escapeHtml(teamById[featured.home].name)}"><img src="${teamById[featured.home].crest}" alt=""><b>${teamById[featured.home].short}</b></a></div>
-          <span>${current ? `${current.homeScore}:${current.awayScore}` : "VS"}</span>
+          ${current ? `<span class="featured-live-score"><small>WYNIK</small><strong>${current.homeScore}:${current.awayScore}</strong><em>LIVE</em></span>` : "<span>VS</span>"}
           <div><a class="team-route-tile" href="${teamRouteHref(featured.away)}" data-team-route="${featured.away}" aria-label="Szczegóły ${escapeHtml(teamById[featured.away].name)}"><img src="${teamById[featured.away].crest}" alt=""><b>${teamById[featured.away].short}</b></a></div>
         </div>
         ${current ? `<button type="button" class="match-centre-link" data-match-centre="${current.id}">Wynik i typy graczy ${icon("arrow")}</button>` : `<div class="countdown" data-countdown="${featured.kickoffAt}">Start za chwilę</div>`}
@@ -912,7 +912,7 @@ function homeRankingSection() {
   return `<section class="content-section home-ranking-section" aria-labelledby="home-ranking-title">
     <div class="section-heading">
       <div><p class="eyebrow">${state.rankingIsLive ? `<i class="live-dot"></i> RANKING LIVE` : "KLASYFIKACJA"}</p><h2 id="home-ranking-title">Ranking typerów</h2><p>${state.rankingIsLive ? "Punkty i ruchy pozycji uwzględniają aktualny wynik trwającego meczu." : "Strzałki pokazują zmianę po ostatnio rozliczonym meczu."}</p></div>
-      <button type="button" class="primary-button" data-view-jump="ranking">PEŁNY WIDOK ${icon("arrow")}</button>
+      <button type="button" class="home-ranking-link" data-view-jump="ranking">PEŁNY RANKING ${icon("arrow")}</button>
     </div>
     ${!state.user ? `<div class="notice">Zaloguj się, aby zobaczyć aktualny ranking graczy.</div>` : ""}
     <div class="ranking-card" aria-live="polite" aria-busy="${state.rankingStatus === "loading"}">
