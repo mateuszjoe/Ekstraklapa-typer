@@ -29,7 +29,7 @@ const NOTIFICATION_OUTBOX_CHAT_TTL_MS = 9 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PLAYER_TTL_MS = 14 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PICK_TTL_MS = 45 * 24 * 60 * 60 * 1000;
 const NOTIFICATION_OUTBOX_NAME_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const APP_SERVICE_WORKER_VERSION = "38";
+const APP_SERVICE_WORKER_VERSION = "39";
 const FINAL = new Set(["FT", "AET", "PEN", "AWD", "WO", "FINISHED", "AWARDED"]);
 const LIVE = new Set(["1H", "HT", "2H", "ET", "BT", "P", "LIVE", "IN_PLAY", "PAUSED"]);
 const VIEWS = new Set(["matches", "ekstraklasa", "ranking", "rules", "settings", "admin"]);
@@ -135,14 +135,18 @@ if (deprecatedLocalKeys.some((key) => key in saved)) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
 }
 const initialRoute = parseAppRoute();
-const savedMatchday = Number(saved.matchday);
+function nearestScheduledMatchday(referenceTime = Date.now()) {
+  const scheduled = baseMatches
+    .filter((match) => match.kickoffConfirmed && Number.isFinite(new Date(match.kickoffAt).getTime()))
+    .sort((a, b) => new Date(a.kickoffAt) - new Date(b.kickoffAt));
+  const next = scheduled.find((match) => new Date(match.kickoffAt).getTime() >= referenceTime);
+  return next?.matchday || scheduled.at(-1)?.matchday || 1;
+}
 const initialMatchday = Number.isInteger(notificationMatchday) && notificationMatchday >= 1 && notificationMatchday <= LAST_MATCHDAY
   ? notificationMatchday
   : Number.isInteger(initialRoute.matchday)
     ? initialRoute.matchday
-  : Number.isInteger(savedMatchday) && savedMatchday >= 1 && savedMatchday <= LAST_MATCHDAY
-    ? savedMatchday
-    : 1;
+    : nearestScheduledMatchday();
 const typerMatchIds = new Set(baseMatches.map((match) => match.id));
 const state = {
   view: initialRoute.valid ? initialRoute.view : "matches",
@@ -196,6 +200,8 @@ const state = {
   rankingPlayers: [],
   rankingStatus: "idle",
   rankingError: "",
+  rankingIsLive: false,
+  rankingMovementMatchId: "",
   playerForm: [],
   playerFormStatus: "idle",
   playerFormError: "",
@@ -231,6 +237,8 @@ const state = {
   playerPicksMatchday: initialMatchday,
   playerPicksStatus: "idle",
   playerPicksCache: {},
+  matchPicksCache: {},
+  matchPicksStatus: {},
   matches: baseMatches.map((match) => ({ ...match })),
   liveSignature: "",
   auth: null,
@@ -814,26 +822,40 @@ function playerDashboardHtml() {
 function hero() {
   const selected = state.matches.filter((match) => match.matchday === state.matchday);
   const typed = selected.filter((match) => state.predictions[match.id]).length;
+  const current = state.matches
+    .filter((match) => typerMatchIds.has(match.id) && LIVE.has(match.status))
+    .sort((a, b) => new Date(a.kickoffAt) - new Date(b.kickoffAt))[0];
   const next = [...state.matches]
     .filter((match) => typerMatchIds.has(match.id) && new Date(match.kickoffAt) > new Date() && match.kickoffConfirmed)
     .sort((a, b) => new Date(a.kickoffAt) - new Date(b.kickoffAt))[0];
+  const featured = current || next;
   return `<section class="hero">
     <div class="hero-glow"></div>
     ${playerDashboardHtml()}
     <div class="hero-side">
-      <p class="eyebrow">NAJBLIŻSZY MECZ</p>
-      ${next ? `<div class="next-match">
-        <div class="next-date"><b>${formatDay(next)}</b><span>${formatTime(next)}</span></div>
+      <p class="eyebrow">${current ? `<i class="live-dot"></i> MECZ NA ŻYWO` : "NAJBLIŻSZY MECZ"}</p>
+      ${featured ? `<div class="next-match${current ? " is-live" : ""}">
+        <div class="next-date"><b>${current ? `LIVE${Number.isFinite(current.liveElapsed) ? ` ${current.liveElapsed}'` : ""}` : formatDay(featured)}</b><span>${current ? `${current.homeScore} : ${current.awayScore}` : formatTime(featured)}</span></div>
         <div class="next-teams">
-          <div><a class="team-route-tile" href="${teamRouteHref(next.home)}" data-team-route="${next.home}" aria-label="Szczegóły ${escapeHtml(teamById[next.home].name)}"><img src="${teamById[next.home].crest}" alt=""><b>${teamById[next.home].short}</b></a></div>
-          <span>VS</span>
-          <div><a class="team-route-tile" href="${teamRouteHref(next.away)}" data-team-route="${next.away}" aria-label="Szczegóły ${escapeHtml(teamById[next.away].name)}"><img src="${teamById[next.away].crest}" alt=""><b>${teamById[next.away].short}</b></a></div>
+          <div><a class="team-route-tile" href="${teamRouteHref(featured.home)}" data-team-route="${featured.home}" aria-label="Szczegóły ${escapeHtml(teamById[featured.home].name)}"><img src="${teamById[featured.home].crest}" alt=""><b>${teamById[featured.home].short}</b></a></div>
+          <span>${current ? `${current.homeScore}:${current.awayScore}` : "VS"}</span>
+          <div><a class="team-route-tile" href="${teamRouteHref(featured.away)}" data-team-route="${featured.away}" aria-label="Szczegóły ${escapeHtml(teamById[featured.away].name)}"><img src="${teamById[featured.away].crest}" alt=""><b>${teamById[featured.away].short}</b></a></div>
         </div>
-        <div class="countdown" data-countdown="${next.kickoffAt}">Start za chwilę</div>
+        ${current ? `<button type="button" class="match-centre-link" data-match-centre="${current.id}">Wynik i typy graczy ${icon("arrow")}</button>` : `<div class="countdown" data-countdown="${featured.kickoffAt}">Start za chwilę</div>`}
       </div>` : "<p>Brak nadchodzących meczów.</p>"}
       <div class="hero-progress"><span><b>${typed}/9</b> typów w tej kolejce</span><i><u style="width:${typed / 9 * 100}%"></u></i></div>
     </div>
   </section>`;
+}
+
+function livePickOverviewHtml(match) {
+  if (!state.user) return `<div class="live-pick-overview"><span>Zaloguj się, aby zobaczyć typy graczy live.</span></div>`;
+  const picks = state.matchPicksCache[match.id] || [];
+  if (state.matchPicksStatus[match.id] !== "ready") return `<div class="live-pick-overview is-loading"><span>Pobieramy typy graczy…</span></div>`;
+  return `<div class="live-pick-overview">${["1", "X", "2"].map((pick) => {
+    const names = picks.filter((item) => item.pick === pick).map((item) => profileForUid(item.uid).name);
+    return `<div><b>${pick}</b><span>${names.length ? names.map(escapeHtml).join(", ") : "nikt"}</span></div>`;
+  }).join("")}</div>`;
 }
 
 function matchCard(match) {
@@ -865,6 +887,7 @@ function matchCard(match) {
       ${[["1",home.short],["X","REMIS"],["2",away.short]].map(([pick,label]) => `<button data-pick="${pick}" data-match="${match.id}" class="pick ${prediction === pick ? "selected" : ""}" aria-pressed="${prediction === pick}" ${locked || waitingForKickoff || waitingForPlayer ? "disabled" : ""}><b>${pick}</b><small>${label}</small></button>`).join("")}
     </div>
     ${(live || final) ? `<button class="match-centre-link" data-match-centre="${match.id}">Szczegóły wyniku ${icon("arrow")}</button>` : ""}
+    ${live ? livePickOverviewHtml(match) : ""}
   </article>`;
 }
 
@@ -884,6 +907,21 @@ function liveMatchesSection() {
   </section>`;
 }
 
+function homeRankingSection() {
+  const players = rankingRows();
+  return `<section class="content-section home-ranking-section" aria-labelledby="home-ranking-title">
+    <div class="section-heading">
+      <div><p class="eyebrow">${state.rankingIsLive ? `<i class="live-dot"></i> RANKING LIVE` : "KLASYFIKACJA"}</p><h2 id="home-ranking-title">Ranking typerów</h2><p>${state.rankingIsLive ? "Punkty i ruchy pozycji uwzględniają aktualny wynik trwającego meczu." : "Strzałki pokazują zmianę po ostatnio rozliczonym meczu."}</p></div>
+      <button type="button" class="primary-button" data-view-jump="ranking">PEŁNY WIDOK ${icon("arrow")}</button>
+    </div>
+    ${!state.user ? `<div class="notice">Zaloguj się, aby zobaczyć aktualny ranking graczy.</div>` : ""}
+    <div class="ranking-card" aria-live="polite" aria-busy="${state.rankingStatus === "loading"}">
+      <div class="ranking-head"><span>#</span><span>Gracz</span><span>Punkty</span><span>Typy</span><span>Skuteczność</span><span>Ruch</span></div>
+      ${players.length ? rankingPlayerRowsHtml(players) : `<div class="ranking-empty"><strong>${state.rankingStatus === "loading" ? "Pobieramy ranking…" : "Ranking jest jeszcze pusty"}</strong><span>Klasyfikacja pojawi się tutaj automatycznie.</span></div>`}
+    </div>
+  </section>`;
+}
+
 function matchesView() {
   const visible = state.matches
     .filter((match) => match.matchday === state.matchday && !LIVE.has(match.status))
@@ -893,6 +931,7 @@ function matchesView() {
   const typerMatches = state.matches.filter((match) => typerMatchIds.has(match.id));
   return `${hero()}
     <section class="club-ribbon" aria-label="Kluby sezonu 2026/27">${teams.map((team) => `<a href="${teamRouteHref(team.id)}" data-team-route="${team.id}" aria-label="Szczegóły ${escapeHtml(team.name)}"><img src="${team.crest}" alt="" title="${escapeHtml(team.name)}"></a>`).join("")}</section>
+    ${homeRankingSection()}
     ${liveMatchesSection()}
     <section class="content-section" id="mecze">
       <div class="section-heading">
@@ -1356,18 +1395,44 @@ async function loadLeagueLineup(match, { force = false } = {}) {
 }
 
 function rankingRows() {
-  return state.rankingPlayers.map((player) => {
+  const normalized = state.rankingPlayers.map((player) => {
     const typed = Number.isInteger(player.typed) ? player.typed : 0;
     const points = Number.isInteger(player.points) ? player.points : 0;
     return {
       ...player,
       points,
       typed,
+      baselinePoints: Number.isInteger(player.baselinePoints) ? player.baselinePoints : points,
+      baselineTyped: Number.isInteger(player.baselineTyped) ? player.baselineTyped : typed,
       accuracy: typed ? Math.round(points / typed * 100) : 0
     };
-  }).sort((a, b) => b.points - a.points
+  });
+  const compare = (a, b, pointsKey = "points", typedKey = "typed") => b[pointsKey] - a[pointsKey]
+    || b[typedKey] - a[typedKey]
     || a.joinedAtMs - b.joinedAtMs
-    || profileForUid(a.uid).name.localeCompare(profileForUid(b.uid).name, "pl"));
+    || profileForUid(a.uid).name.localeCompare(profileForUid(b.uid).name, "pl");
+  const previousPositions = new Map([...normalized]
+    .sort((a, b) => compare(a, b, "baselinePoints", "baselineTyped"))
+    .map((player, index) => [player.uid, index + 1]));
+  return normalized.sort(compare).map((player, index) => ({
+    ...player,
+    movement: (previousPositions.get(player.uid) || index + 1) - (index + 1)
+  }));
+}
+
+function rankingMovementHtml(movement) {
+  if (!Number.isInteger(movement) || movement === 0) return `<span class="ranking-movement is-even" aria-label="Bez zmiany">—</span>`;
+  const up = movement > 0;
+  return `<span class="ranking-movement ${up ? "is-up" : "is-down"}" aria-label="${up ? "Awans" : "Spadek"} o ${Math.abs(movement)} ${Math.abs(movement) === 1 ? "miejsce" : "miejsca"}"><i aria-hidden="true">${up ? "↑" : "↓"}</i>${Math.abs(movement)}</span>`;
+}
+
+function rankingPlayerRowsHtml(players) {
+  return players.map((player, index) => {
+    const profile = profileForUid(player.uid);
+    const mine = player.uid === state.user?.uid;
+    const rank = index + 1;
+    return `<div class="ranking-row${mine ? " me" : ""}"><b>${rank}</b><span>${playerAvatarButton(player.uid, "ranking-avatar")}<strong>${escapeHtml(profile.name)}</strong>${entryFeeBadgeHtml(player.entryFeePaid, player.entryFeeStatusKnown)}${mine ? "<small>TY</small>" : ""}</span><strong>${player.points}</strong><span>${player.typed}</span><span>${player.accuracy}%</span>${rankingMovementHtml(player.movement)}</div>`;
+  }).join("");
 }
 
 function entryFeeBadgeHtml(entryFeePaid, statusKnown = true, { withLabel = false } = {}) {
@@ -1400,7 +1465,7 @@ function rankingView() {
       ${state.rankingError ? `<div class="notice ranking-notice"><span>${escapeHtml(state.rankingError)}</span><button type="button" data-ranking-retry>SPRÓBUJ PONOWNIE</button></div>` : ""}
       ${players.length ? `<div class="ranking-fee-legend"><span>Status składki:</span>${entryFeeBadgeHtml(true, true, { withLabel: true })}${entryFeeBadgeHtml(false, true, { withLabel: true })}</div>` : ""}
       <div class="ranking-card" aria-live="polite" aria-busy="${state.rankingStatus === "loading"}">
-        <div class="ranking-head"><span>#</span><span>Gracz</span><span>Punkty</span><span>Typy</span><span>Skuteczność</span></div>
+        <div class="ranking-head"><span>#</span><span>Gracz</span><span>Punkty</span><span>Typy</span><span>Skuteczność</span><span>Ruch</span></div>
         ${state.user && state.participantReady && (state.rankingStatus === "idle" || state.rankingStatus === "loading") && !players.length
           ? `<div class="ranking-empty ranking-loading"><strong>Pobieramy prawdziwych graczy…</strong><span>Za chwilę zobaczysz aktualną klasyfikację.</span></div>`
           : waitingForApproval
@@ -1408,12 +1473,7 @@ function rankingView() {
             : membershipBlocked
               ? `<div class="ranking-empty"><strong>Konto nieaktywne</strong><span>Ranking jest dostępny tylko dla zaakceptowanych graczy.</span></div>`
           : players.length
-            ? players.map((player, index) => {
-              const profile = profileForUid(player.uid);
-              const mine = player.uid === state.user?.uid;
-              const rank = index + 1;
-              return `<div class="ranking-row${mine ? " me" : ""}"><b>${rank}</b><span>${playerAvatarButton(player.uid, "ranking-avatar")}<strong>${escapeHtml(profile.name)}</strong>${entryFeeBadgeHtml(player.entryFeePaid, player.entryFeeStatusKnown)}${mine ? "<small>TY</small>" : ""}</span><strong>${player.points}</strong><span>${player.typed}</span><span>${player.accuracy}%</span></div>`;
-            }).join("")
+            ? rankingPlayerRowsHtml(players)
             : `<div class="ranking-empty"><strong>Brak graczy do wyświetlenia</strong><span>Ranking pokazuje wyłącznie prawdziwe konta Google — bez fikcyjnych wpisów.</span></div>`}
       </div>
     </section>`;
@@ -1439,14 +1499,19 @@ async function loadRankingData() {
     void reconcileOwnLeaderboard(uid).catch((error) => {
       console.warn("Nie udało się odświeżyć pomocniczej historii gracza:", error);
     });
-    const [leaderboardSnapshot, authoritativeResult, playerStatusesResult] = await Promise.all([
+    const liveMatches = state.matches.filter((match) => LIVE.has(match.status)
+      && Number.isInteger(match.homeScore) && Number.isInteger(match.awayScore));
+    const [leaderboardSnapshot, authoritativeResult, playerStatusesResult, livePicksResults] = await Promise.all([
       getDocs(collection(state.db, "seasons", SEASON_ID, "leaderboard")),
       notificationApiRequest("/api/leaderboard", {}, { method: "GET" })
         .then((payload) => ({ payload }))
         .catch((error) => ({ error })),
       notificationApiRequest("/api/players/statuses", {}, { method: "GET" })
         .then((payload) => ({ payload }))
-        .catch((error) => ({ error }))
+        .catch((error) => ({ error })),
+      Promise.all(liveMatches.map((match) => notificationApiRequest(`/api/match-picks?match=${encodeURIComponent(match.id)}`, {}, { method: "GET" })
+        .then((payload) => ({ match, payload }))
+        .catch((error) => ({ match, error }))))
     ]);
     const hasAuthoritativeRanking = authoritativeResult.payload?.seasonId === SEASON_ID
       && Array.isArray(authoritativeResult.payload.scores);
@@ -1460,7 +1525,14 @@ async function loadRankingData() {
           && Number.isInteger(typed)
           && points >= 0
           && typed >= points) {
-          authoritativeScores.set(score.uid, { points, typed });
+          const previousPoints = Number(score?.previousPoints);
+          const previousTyped = Number(score?.previousTyped);
+          authoritativeScores.set(score.uid, {
+            points,
+            typed,
+            previousPoints: Number.isInteger(previousPoints) && previousPoints >= 0 ? previousPoints : points,
+            previousTyped: Number.isInteger(previousTyped) && previousTyped >= 0 ? previousTyped : typed
+          });
         }
       });
     } else if (authoritativeResult.error) {
@@ -1481,29 +1553,59 @@ async function loadRankingData() {
       console.warn("Statusy składek są chwilowo niedostępne:", playerStatusesResult.error);
     }
     const profiles = {};
+    const livePicks = livePicksResults.map(({ match, payload, error }) => {
+      if (error) console.warn(`Typy live dla meczu ${match.id} są chwilowo niedostępne:`, error);
+      const picks = new Map(Array.isArray(payload?.picks)
+        ? payload.picks.filter((item) => typeof item?.uid === "string" && ["1", "X", "2"].includes(item?.pick)).map((item) => [item.uid, item.pick])
+        : []);
+      if (!error) {
+        state.matchPicksCache[match.id] = [...picks].map(([pickUid, pick]) => ({ uid: pickUid, pick }));
+        state.matchPicksStatus[match.id] = "ready";
+      }
+      return { match, picks };
+    });
     const players = leaderboardSnapshot.docs.filter((item) => {
       if (!hasPlayerStatuses) return true;
       const status = playerStatuses.get(item.id);
       return Boolean(status) && status.excluded !== true;
     }).map((item) => {
       const data = item.data();
+      const playerUid = item.id;
       const playerStatus = playerStatuses.get(item.id);
       const authoritativeScore = authoritativeScores.get(item.id)
         || (hasAuthoritativeRanking ? { points: 0, typed: 0 } : null);
+      const liveScore = livePicks.reduce((score, liveItem) => {
+        const pick = liveItem.picks.get(playerUid);
+        if (!pick) return score;
+        score.typed += 1;
+        const provisionalResult = liveItem.match.homeScore === liveItem.match.awayScore ? "X" : liveItem.match.homeScore > liveItem.match.awayScore ? "1" : "2";
+        if (pick === provisionalResult) score.points += 1;
+        return score;
+      }, { points: 0, typed: 0 });
       profiles[item.id] = normalizePublicProfile(item.id, data);
       return {
         uid: item.id,
         joinedAtMs: firestoreTimeMs(data.joinedAt),
         entryFeePaid: playerStatus?.entryFeePaid === true,
         entryFeeStatusKnown: Boolean(playerStatus),
-        points: authoritativeScore?.points ?? (Number.isInteger(data.points) && data.points >= 0 ? data.points : 0),
-        typed: authoritativeScore?.typed ?? (Number.isInteger(data.typed) && data.typed >= 0 ? data.typed : 0)
+        points: (authoritativeScore?.points ?? (Number.isInteger(data.points) && data.points >= 0 ? data.points : 0)) + liveScore.points,
+        typed: (authoritativeScore?.typed ?? (Number.isInteger(data.typed) && data.typed >= 0 ? data.typed : 0)) + liveScore.typed,
+        baselinePoints: liveMatches.length
+          ? (authoritativeScore?.points ?? 0)
+          : (authoritativeScore?.previousPoints ?? authoritativeScore?.points ?? 0),
+        baselineTyped: liveMatches.length
+          ? (authoritativeScore?.typed ?? 0)
+          : (authoritativeScore?.previousTyped ?? authoritativeScore?.typed ?? 0)
       };
     });
 
     if (state.user?.uid !== uid || revision !== rankingLoadRevision) return;
     state.chatProfiles = { ...state.chatProfiles, ...profiles };
     state.rankingPlayers = players;
+    state.rankingIsLive = liveMatches.length > 0;
+    state.rankingMovementMatchId = liveMatches.length
+      ? liveMatches.map((match) => match.id).join(",")
+      : String(authoritativeResult.payload?.movementMatchId || "");
     state.rankingStatus = "ready";
     state.rankingError = "";
   })().catch((error) => {
@@ -2074,6 +2176,39 @@ function setPrediction(matchId, pick) {
   });
 }
 
+function matchPicksHtml(match) {
+  if (!state.user) return `<div class="match-picks-state">Zaloguj się, aby zobaczyć typy graczy po rozpoczęciu meczu.</div>`;
+  const status = state.matchPicksStatus[match.id] || "idle";
+  if (status === "loading" || status === "idle") return `<div class="match-picks-state is-loading"><i></i><span>Pobieramy typy graczy…</span></div>`;
+  if (status === "error") return `<div class="match-picks-state">Typy graczy są chwilowo niedostępne.</div>`;
+  const picks = state.matchPicksCache[match.id] || [];
+  if (!picks.length) return `<div class="match-picks-state">Nikt nie oddał typu na ten mecz.</div>`;
+  const result = resultOf(match) || (LIVE.has(match.status)
+    ? (match.homeScore === match.awayScore ? "X" : match.homeScore > match.awayScore ? "1" : "2")
+    : null);
+  const positions = new Map(rankingRows().map((player, index) => [player.uid, index + 1]));
+  return `<div class="match-picks-list">${[...picks].sort((a, b) => (positions.get(a.uid) || 999) - (positions.get(b.uid) || 999)).map((item) => {
+    const profile = profileForUid(item.uid);
+    const hit = result && item.pick === result;
+    return `<div class="match-picks-row${hit ? " is-hit" : ""}">${playerAvatarButton(item.uid, "match-picks-avatar")}<span><strong>${escapeHtml(profile.name)}</strong><small>${positions.has(item.uid) ? `#${positions.get(item.uid)} w rankingu` : "gracz"}</small></span><b>${item.pick}</b>${result ? `<i>${hit ? "+1" : "0"}</i>` : ""}</div>`;
+  }).join("")}</div>`;
+}
+
+async function loadMatchPicks(matchId) {
+  if (!state.user || state.matchPicksStatus[matchId] === "loading" || state.matchPicksStatus[matchId] === "ready") return;
+  state.matchPicksStatus[matchId] = "loading";
+  showMatchCentre(matchId);
+  try {
+    const payload = await notificationApiRequest(`/api/match-picks?match=${encodeURIComponent(matchId)}`, {}, { method: "GET" });
+    state.matchPicksCache[matchId] = Array.isArray(payload?.picks) ? payload.picks : [];
+    state.matchPicksStatus[matchId] = "ready";
+  } catch (error) {
+    console.warn("Nie udało się pobrać typów meczu:", error);
+    state.matchPicksStatus[matchId] = "error";
+  }
+  if (document.querySelector("#matchDialog[open]")?.dataset.matchId === matchId) showMatchCentre(matchId);
+}
+
 function showMatchCentre(matchId) {
   const match = state.matches.find((item) => item.id === matchId);
   if (!match || !typerMatchIds.has(match.id)) {
@@ -2091,8 +2226,9 @@ function showMatchCentre(matchId) {
     ? `<div class="match-pick-summary${points === 1 ? " is-hit" : points === 0 ? " is-miss" : ""}"><span>Twój typ</span><strong>${pick || "—"}</strong><small>${points === 1 ? "+1 pkt · trafiony" : points === 0 ? "0 pkt · nietrafiony" : pick ? "Czeka na rozliczenie" : "Brak oddanego typu"}</small></div>`
     : "";
   matchDialog.dataset.matchId = match.id;
-  matchDialog.innerHTML = `<button class="modal-close" data-close>×</button><p class="eyebrow">WYNIK MECZU</p><div class="modal-score"><a href="${teamRouteHref(home.id)}" data-team-route="${home.id}"><img src="${home.crest}" alt=""><b>${home.name}</b></a><strong>${Number.isFinite(match.homeScore) ? `${match.homeScore} : ${match.awayScore}` : "– : –"}</strong><a href="${teamRouteHref(away.id)}" data-team-route="${away.id}"><img src="${away.crest}" alt=""><b>${away.name}</b></a></div><p class="no-events">${status}</p>${pickSummary}`;
+  matchDialog.innerHTML = `<button class="modal-close" data-close>×</button><p class="eyebrow">WYNIK MECZU</p><div class="modal-score"><a href="${teamRouteHref(home.id)}" data-team-route="${home.id}"><img src="${home.crest}" alt=""><b>${home.name}</b></a><strong>${Number.isFinite(match.homeScore) ? `${match.homeScore} : ${match.awayScore}` : "– : –"}</strong><a href="${teamRouteHref(away.id)}" data-team-route="${away.id}"><img src="${away.crest}" alt=""><b>${away.name}</b></a></div><p class="no-events">${status}</p>${pickSummary}<section class="match-picks-panel"><header><span>Typy graczy</span><small>${LIVE.has(match.status) ? "na żywo" : "po meczu"}</small></header>${matchPicksHtml(match)}</section>`;
   if (!matchDialog.open) matchDialog.showModal();
+  if (state.user && (state.matchPicksStatus[match.id] || "idle") === "idle") void loadMatchPicks(match.id);
   return true;
 }
 
@@ -6501,6 +6637,9 @@ async function pollLive() {
     }
     const trustedMatchSync = syncTrustedMatchTimes();
     if (dataChanged || state.matches.some((match) => typerMatchIds.has(match.id) && LIVE.has(match.status))) render();
+    if (dataChanged && ["matches", "ranking"].includes(state.view) && state.user && state.userDataReady && state.participantReady) {
+      void loadRankingData();
+    }
     const openMatchDialog = document.querySelector("#matchDialog[open]");
     if (dataChanged && openMatchDialog?.dataset.matchId) showMatchCentre(openMatchDialog.dataset.matchId);
     if (settledResultsChanged && ["matches", "ranking"].includes(state.view) && state.user && state.userDataReady && state.participantReady) {

@@ -41,6 +41,8 @@ const EVENT_LEASE_MS = 90 * 1000;
 const MAX_EVENT_ATTEMPTS = 4;
 const QUEUE_RETRY_SECONDS = 30;
 const RESULT_BASELINE_STATE_KEY = "notification_result_baseline_at";
+const LIVE_FIXTURES_STATE_KEY = "official_live_fixtures_v1";
+const RANKING_SNAPSHOT_STATE_KEY = "ranking_snapshot_v1";
 const LEAGUE_FIXTURES_STATE_KEY = "official_league_fixtures_v1";
 const NEXT_LEAGUE_REFRESH_STATE_KEY = "next_official_league_refresh_at";
 const LEAGUE_REFRESH_MS = 5 * 60 * 1000;
@@ -51,6 +53,7 @@ const MAX_API_FOOTBALL_SYNC_ATTEMPTS = 12;
 const DEFAULT_API_FOOTBALL_DAILY_LIMIT = 80;
 const ADMIN_NOTIFICATION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const FINAL_STATUSES = new Set(["FT", "AWD"]);
+const LIVE_STATUSES = new Set(["1H", "HT", "2H", "ET", "BT", "P", "LIVE", "IN_PLAY", "PAUSED"]);
 const VALID_PICKS = new Set(["1", "X", "2"]);
 const ADMIN_NOTIFICATION_TYPES = new Set(["admin-join-request", "admin-name-request", "admin-name-changed"]);
 const MATCH_BY_ID = new Map(matches.map((match) => [match.id, match]));
@@ -1130,6 +1133,7 @@ function pushTtlSeconds(payload) {
     return 7 * 24 * 60 * 60;
   }
   if (["match-result", "matchday-summary"].includes(payload.type)) return 72 * 60 * 60;
+  if (["ranking-movement", "ranking-leader"].includes(payload.type)) return 6 * 60 * 60;
   if (["chat-message", "player-joined"].includes(payload.type)) return 24 * 60 * 60;
   if (payload.type === "lineup-published") {
     const kickoffAt = new Date(payload.kickoffAt || 0).getTime();
@@ -1749,27 +1753,36 @@ function parsedStoredFixtures(value) {
 
 async function leaderboard(request, env) {
   await authenticatedParticipant(request, env);
+  const latest = await env.DB.prepare(`
+    SELECT match_id FROM match_results
+    ORDER BY finalized_at DESC, updated_at DESC, match_id DESC LIMIT 1
+  `).first();
   const result = await env.DB.prepare(`
     SELECT p.uid,
       COUNT(*) AS typed,
-      COALESCE(SUM(CASE WHEN p.pick = r.result THEN 1 ELSE 0 END), 0) AS points
+      COALESCE(SUM(CASE WHEN p.pick = r.result THEN 1 ELSE 0 END), 0) AS points,
+      COALESCE(SUM(CASE WHEN r.match_id != ?1 THEN 1 ELSE 0 END), 0) AS previous_typed,
+      COALESCE(SUM(CASE WHEN r.match_id != ?1 AND p.pick = r.result THEN 1 ELSE 0 END), 0) AS previous_points
     FROM picks p
     INNER JOIN match_results r ON r.match_id = p.match_id
     GROUP BY p.uid
     ORDER BY points DESC, typed DESC, p.uid
-  `).all();
+  `).bind(String(latest?.match_id || "")).all();
   const completed = await env.DB.prepare(`
     SELECT COUNT(*) AS match_count, MAX(updated_at) AS updated_at
     FROM match_results
   `).first();
   return {
     seasonId: SEASON_ID,
+    movementMatchId: String(latest?.match_id || ""),
     completedMatches: Number(completed?.match_count || 0),
     updatedAt: Number(completed?.updated_at || 0),
     scores: (result.results || []).map((row) => ({
       uid: String(row.uid || ""),
       points: Number(row.points || 0),
-      typed: Number(row.typed || 0)
+      typed: Number(row.typed || 0),
+      previousPoints: Number(row.previous_points || 0),
+      previousTyped: Number(row.previous_typed || 0)
     })).filter((row) => row.uid
       && Number.isInteger(row.points)
       && Number.isInteger(row.typed)
@@ -1823,6 +1836,125 @@ async function removeAdminPlayer(request, env) {
     status: "removed",
     uid: targetUid,
     completedAt: new Date(now).toISOString()
+  };
+}
+
+function parsedRankingSnapshot(value) {
+  try {
+    const snapshot = JSON.parse(value || "null");
+    return snapshot && typeof snapshot === "object" && Array.isArray(snapshot.rows) ? snapshot : null;
+  } catch {
+    return null;
+  }
+}
+
+async function currentRankingSnapshot(env, fixtures = []) {
+  const finalRows = await env.DB.prepare("SELECT match_id, result FROM match_results").all();
+  const results = new Map((finalRows.results || []).map((row) => [String(row.match_id), String(row.result)]));
+  fixtures.filter((fixture) => LIVE_STATUSES.has(fixture.status))
+    .forEach((fixture) => {
+      const home = Number(fixture.score?.home);
+      const away = Number(fixture.score?.away);
+      if (MATCH_BY_ID.has(fixture.localMatchId) && Number.isInteger(home) && Number.isInteger(away)) {
+        results.set(fixture.localMatchId, resultForScore(home, away));
+      }
+    });
+  const pickRows = await env.DB.prepare("SELECT uid, match_id, pick FROM picks ORDER BY uid, match_id").all();
+  const identityRows = await env.DB.prepare("SELECT uid, first_seen_at FROM player_identities").all();
+  const joinedAt = new Map((identityRows.results || []).map((row) => [String(row.uid), Number(row.first_seen_at) || 0]));
+  const scores = new Map();
+  for (const row of pickRows.results || []) {
+    const result = results.get(String(row.match_id));
+    if (!result) continue;
+    const uid = String(row.uid || "");
+    if (!uid) continue;
+    const score = scores.get(uid) || { uid, points: 0, typed: 0, joinedAt: joinedAt.get(uid) || 0 };
+    score.typed += 1;
+    if (row.pick === result) score.points += 1;
+    scores.set(uid, score);
+  }
+  const rows = [...scores.values()].sort((a, b) => b.points - a.points || b.typed - a.typed || a.joinedAt - b.joinedAt || a.uid.localeCompare(b.uid));
+  const liveSignature = fixtures.filter((fixture) => LIVE_STATUSES.has(fixture.status))
+    .map((fixture) => `${fixture.localMatchId}:${fixture.status}:${fixture.score?.home}-${fixture.score?.away}`)
+    .sort().join("|");
+  const finalSignature = [...results].filter(([matchId]) => !fixtures.some((fixture) => LIVE_STATUSES.has(fixture.status) && fixture.localMatchId === matchId))
+    .map(([matchId, result]) => `${matchId}:${result}`).sort().join("|");
+  return { signature: `${finalSignature}||${liveSignature}`, leader: rows[0]?.uid || "", rows };
+}
+
+async function processRankingMovementNotifications(env, fixtures, enqueueBudget) {
+  const current = await currentRankingSnapshot(env, fixtures);
+  const previous = parsedRankingSnapshot(await stateValue(env, RANKING_SNAPSHOT_STATE_KEY));
+  if (!previous) {
+    await setStateValue(env, RANKING_SNAPSHOT_STATE_KEY, JSON.stringify(current));
+    return;
+  }
+  if (previous.signature === current.signature) return;
+  const previousPositions = new Map(previous.rows.map((row, index) => [row.uid, index + 1]));
+  const currentPositions = new Map(current.rows.map((row, index) => [row.uid, index + 1]));
+  const signatureKey = (await sha256(current.signature)).slice(0, 18);
+  let pending = false;
+  for (const row of current.rows) {
+    const before = previousPositions.get(row.uid);
+    const after = currentPositions.get(row.uid);
+    if (!before || !after || before === after) continue;
+    if (enqueueBudget.remaining <= 0) {
+      pending = true;
+      break;
+    }
+    const movement = before - after;
+    const inserted = await enqueueEvent(env, `ranking-movement:${signatureKey}:${row.uid}`, "ranking-movement", {
+      type: "ranking-movement",
+      title: movement > 0 ? `Awansujesz na ${after}. miejsce!` : `Spadasz na ${after}. miejsce`,
+      body: `${movement > 0 ? "Awans" : "Spadek"} o ${Math.abs(movement)} ${Math.abs(movement) === 1 ? "pozycję" : "pozycje"} po najnowszej zmianie wyniku.`,
+      url: appUrl(env, "#ranking"),
+      position: after,
+      movement
+    }, { uid: row.uid });
+    if (inserted) enqueueBudget.remaining -= 1;
+  }
+  if (!pending && previous.leader && current.leader && previous.leader !== current.leader) {
+    if (enqueueBudget.remaining <= 0) pending = true;
+    else {
+      const identity = await env.DB.prepare("SELECT google_full_name FROM player_identities WHERE uid = ?1 LIMIT 1").bind(current.leader).first();
+      const leaderName = compactText(identity?.google_full_name || "Nowy gracz", 60);
+      const inserted = await enqueueEvent(env, `ranking-leader:${signatureKey}:${current.leader}`, "ranking-leader", {
+        type: "ranking-leader",
+        title: "Nowy lider rankingu!",
+        body: `${leaderName} wskakuje na pierwsze miejsce w typerze.`,
+        url: appUrl(env, "#ranking"),
+        leaderUid: current.leader
+      });
+      if (inserted) enqueueBudget.remaining -= 1;
+    }
+  }
+  if (!pending) await setStateValue(env, RANKING_SNAPSHOT_STATE_KEY, JSON.stringify(current));
+}
+
+async function matchPicks(request, env, url) {
+  await authenticatedParticipant(request, env);
+  const matchId = String(url.searchParams.get("match") || "").trim();
+  if (!MATCH_BY_ID.has(matchId)) throw new HttpError(400, "invalid-match-id", "Nieprawidłowy identyfikator meczu.");
+  const final = await env.DB.prepare("SELECT 1 AS ready FROM match_results WHERE match_id = ?1 LIMIT 1").bind(matchId).first();
+  let visible = Boolean(final?.ready);
+  if (!visible) {
+    try {
+      const stored = JSON.parse(await stateValue(env, LIVE_FIXTURES_STATE_KEY) || "[]");
+      const fixture = Array.isArray(stored) ? stored.find((item) => item?.localMatchId === matchId) : null;
+      visible = Boolean(fixture && (LIVE_STATUSES.has(fixture.status) || FINAL_STATUSES.has(fixture.status)));
+    } catch {
+      visible = false;
+    }
+  }
+  if (!visible) throw new HttpError(409, "picks-hidden", "Typy graczy będą widoczne po rozpoczęciu meczu.");
+  const result = await env.DB.prepare(`
+    SELECT uid, pick FROM picks WHERE match_id = ?1 ORDER BY uid
+  `).bind(matchId).all();
+  return {
+    seasonId: SEASON_ID,
+    matchId,
+    picks: (result.results || []).map((row) => ({ uid: String(row.uid || ""), pick: String(row.pick || "") }))
+      .filter((row) => row.uid && VALID_PICKS.has(row.pick))
   };
 }
 
@@ -2586,12 +2718,19 @@ async function runQueueTick(env) {
   if (Date.now() >= nextPollAt) {
     try {
       payload = await getOfficialLivePayload();
+      await setStateValue(env, LIVE_FIXTURES_STATE_KEY, JSON.stringify((payload.fixtures || []).map((fixture) => ({
+        localMatchId: fixture.localMatchId,
+        status: fixture.status,
+        score: fixture.score,
+        elapsed: fixture.elapsed
+      }))));
       const requestedNext = new Date(payload.nextPollAt || 0).getTime();
       const next = Number.isFinite(requestedNext) && requestedNext > Date.now()
         ? requestedNext
         : Date.now() + Math.max(45, Number(payload.pollIntervalSeconds) || 300) * 1000;
       await setStateValue(env, "next_live_poll_at", next);
       await storeChangedFinalMatches(env, payload.fixtures || []);
+      await processRankingMovementNotifications(env, payload.fixtures || [], enqueueBudget);
       if (baselineAt <= 0) {
         // The first successful poll establishes a baseline. Results already in
         // D1 (for example after a mid-season deploy) must not flood players.
@@ -2726,6 +2865,9 @@ async function handleRequest(request, env) {
   }
   if (request.method === "GET" && url.pathname === "/api/leaderboard") {
     return jsonResponse(request, env, await leaderboard(request, env));
+  }
+  if (request.method === "GET" && url.pathname === "/api/match-picks") {
+    return jsonResponse(request, env, await matchPicks(request, env, url));
   }
   if (request.method !== "POST") throw new HttpError(404, "not-found", "Nie znaleziono endpointu.");
 
