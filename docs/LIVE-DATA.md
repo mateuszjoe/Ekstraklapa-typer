@@ -17,6 +17,10 @@ Kanał LIVE pobiera tylko termin, status i wynik. Osobny adapter ligi pobiera ta
 
 ## Korekty opóźnionych rozpoczęć
 
+Przełożony mecz zachowuje kolejkę z pola `week` i dotychczasowe ID typów.
+`postponed_datetime` zmienia godzinę rozegrania; `postponed_week` nie przenosi
+spotkania do innej kolejki rozgrywek.
+
 Oficjalny feed może zachować planowaną godzinę mimo ogłoszonego opóźnienia.
 Potwierdzone wyjątki zapisujemy w `kickoff-corrections.js` z lokalnym i oficjalnym ID,
 godziną ze strefą czasową oraz źródłem. Korekta ma pierwszeństwo przed feedem i jego

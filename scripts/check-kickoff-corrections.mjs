@@ -42,4 +42,20 @@ assert.equal(normalizedOfficialMatchStatus(played, Date.parse("2026-09-18T19:50:
   "The final-result guard must measure match age from the delayed kickoff.");
 assert.equal(normalizedOfficialMatchStatus(played, Date.parse("2026-09-18T20:05:00+02:00")), "FT");
 
-console.log("OK: delayed kickoff survives stale feeds, caches and offline fallback; final-result timing follows the correction.");
+for (const rescheduled of [
+  { match_id: "f9842734-5bd2-4e6d-918f-6f6c3afe7602", week: 2, postponed_week: 8,
+    home_team_code: "KOR", away_team_code: "GÓR", postponed_datetime: "2026-09-15T20:30:00+02:00",
+    expectedId: "2-korona-gornik-zabrze" },
+  { match_id: "1dd7e99b-6754-4e60-b11e-0cfff498471d", week: 4, postponed_week: 18,
+    home_team_code: "JAG", away_team_code: "POG", postponed_datetime: "2026-12-16T00:00:00+01:00",
+    expectedId: "4-jagiellonia-pogon" }
+]) {
+  for (const normalize of [normalizeOfficialFixture, normalizeOfficialLeagueMatch]) {
+    const result = normalize({ ...item, ...rescheduled });
+    assert.equal(result.localMatchId, rescheduled.expectedId, "Postponement must preserve the ID used by saved picks.");
+    assert.equal(result.kickoffAt, rescheduled.postponed_datetime, "Use the rescheduled date within the original round.");
+    if (result.matchday !== undefined) assert.equal(result.matchday, rescheduled.week);
+  }
+}
+
+console.log("OK: corrected kickoff survives stale feeds and caches; postponed matches retain their original round and pick ID.");

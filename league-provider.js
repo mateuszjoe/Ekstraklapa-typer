@@ -175,7 +175,8 @@ export function normalizeOfficialLeagueMatch(item) {
     team_short_name: item.away_team_short_name,
     team_official_name: item.away_team_official_name
   });
-  const matchday = integerOrNull(item.postponed_week) || integerOrNull(item.week);
+  // A new playing date does not change the fixture's competition round or pick ID.
+  const matchday = integerOrNull(item.week);
   if (!home || !away || home === away || !matchday || matchday < 1 || matchday > EXPECTED_MATCHDAY_COUNT) return null;
 
   const localMatch = localMatchByTeamsAndWeek.get(`${matchday}:${home}:${away}`) || null;
