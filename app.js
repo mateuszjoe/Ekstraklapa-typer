@@ -8,6 +8,7 @@ import {
 } from "./league-provider.js";
 import { formatRecentPlayerRating } from "./player-rating.js";
 import { notificationPrimerDecision } from "./notification-primer-policy.js?v=1";
+import { currentMatchday, initialMatchdayFor } from "./matchday-selection.js";
 
 const bootStartedAt = performance.now();
 const app = document.querySelector("#app");
@@ -29,7 +30,7 @@ const NOTIFICATION_OUTBOX_CHAT_TTL_MS = 9 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PLAYER_TTL_MS = 14 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PICK_TTL_MS = 45 * 24 * 60 * 60 * 1000;
 const NOTIFICATION_OUTBOX_NAME_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const APP_SERVICE_WORKER_VERSION = "42";
+const APP_SERVICE_WORKER_VERSION = "43";
 const FINAL = new Set(["FT", "AET", "PEN", "AWD", "WO", "FINISHED", "AWARDED"]);
 const LIVE = new Set(["1H", "HT", "2H", "ET", "BT", "P", "LIVE", "IN_PLAY", "PAUSED"]);
 const VIEWS = new Set(["matches", "ekstraklasa", "ranking", "rules", "settings", "admin"]);
@@ -135,22 +136,15 @@ if (deprecatedLocalKeys.some((key) => key in saved)) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
 }
 const initialRoute = parseAppRoute();
-function nearestScheduledMatchday(referenceTime = Date.now()) {
-  const scheduled = baseMatches
-    .filter((match) => match.kickoffConfirmed && Number.isFinite(new Date(match.kickoffAt).getTime()))
-    .sort((a, b) => new Date(a.kickoffAt) - new Date(b.kickoffAt));
-  const next = scheduled.find((match) => new Date(match.kickoffAt).getTime() >= referenceTime);
-  return next?.matchday || scheduled.at(-1)?.matchday || 1;
-}
-const initialMatchday = Number.isInteger(notificationMatchday) && notificationMatchday >= 1 && notificationMatchday <= LAST_MATCHDAY
-  ? notificationMatchday
-  : Number.isInteger(initialRoute.matchday)
-    ? initialRoute.matchday
-    : nearestScheduledMatchday();
+const initialMatchday = initialMatchdayFor({
+  roundDates: roundDatesByNumber, notificationMatchday, routeMatchday: initialRoute.matchday
+});
+let autoSelectMatchday = !Number.isInteger(initialRoute.matchday) && !launchedFromNotification;
 const typerMatchIds = new Set(baseMatches.map((match) => match.id));
 const state = {
   view: initialRoute.valid ? initialRoute.view : "matches",
   matchday: initialMatchday,
+  currentWeek: null,
   leagueTeamId: initialRoute.valid ? initialRoute.teamId || "" : "",
   leagueMatchId: initialRoute.valid ? initialRoute.matchId || "" : "",
   leagueData: null,
@@ -617,6 +611,7 @@ function applyAppRoute(route, { historyMode = "none", focus = true } = {}) {
   const view = VIEWS.has(route?.view) ? route.view : "matches";
   state.view = view;
   if (view === "matches" && Number.isInteger(route.matchday) && route.matchday >= 1 && route.matchday <= LAST_MATCHDAY) {
+    autoSelectMatchday = false;
     state.matchday = route.matchday;
     save();
   }
@@ -943,7 +938,7 @@ function matchesView() {
         <div class="stats-inline"><span><b>${typerMatches.filter((match) => state.predictions[match.id]).length}</b> oddanych typów</span><span><b>${typerMatches.reduce((sum, match) => sum + pointsFor(match), 0)}</b> punktów</span></div>
       </div>
       <div class="filters">
-        <div class="stage-label"><strong>Runda jesienna</strong><small>kolejki 1–17</small></div>
+        <div class="stage-label"><strong>Runda jesienna</strong><small>kolejki 1–17</small>${state.matchday !== currentMatchday(roundDatesByNumber, { currentWeek: state.currentWeek }) ? `<button type="button" class="text-button" data-current-matchday>Bieżąca kolejka</button>` : ""}</div>
         <nav class="matchday-switcher" aria-label="Przełączanie kolejek">
           <button type="button" class="matchday-switch-button is-previous" data-matchday-step="-1" aria-label="${state.matchday === 1 ? "To jest pierwsza kolejka" : `Pokaż ${state.matchday - 1}. kolejkę`}" ${state.matchday === 1 ? "disabled" : ""}>${icon("arrow")}<span>Poprzednia</span></button>
           <div class="matchday-current" aria-live="polite" aria-atomic="true">${icon("calendar")}<span><strong>${state.matchday}. kolejka</strong><small>${matchdayDate}</small></span></div>
@@ -2054,7 +2049,10 @@ function render() {
           ? adminView()
           : matchesView();
   document.title = currentDocumentTitle();
-  document.querySelectorAll(".nav-link").forEach((node) => node.classList.toggle("is-active", node.dataset.view === state.view));
+  document.querySelectorAll(".nav-link").forEach((node) => {
+    node.classList.toggle("is-active", node.dataset.view === state.view);
+    if (node.dataset.view === "matches") node.setAttribute("href", `#matches/${state.matchday}`);
+  });
   updateAuthButton();
   updateMembershipSurface();
   bindRendered();
@@ -2063,6 +2061,10 @@ function render() {
 }
 
 function bindRendered() {
+  app.querySelector("[data-current-matchday]")?.addEventListener("click", () => {
+    applyAppRoute({ view: "matches", matchday: currentMatchday(roundDatesByNumber, { currentWeek: state.currentWeek }) }, { historyMode: "push", focus: false });
+    document.querySelector("#mecze")?.scrollIntoView({ behavior: "smooth" });
+  });
   app.querySelectorAll("[data-pick]").forEach((button) => button.addEventListener("click", () => setPrediction(button.dataset.match, button.dataset.pick)));
   app.querySelectorAll("[data-matchday-step]").forEach((button) => button.addEventListener("click", (event) => {
     const step = Number(button.dataset.matchdayStep);
@@ -6600,6 +6602,17 @@ async function pollLive({ force = false } = {}) {
   let nextDelay = 5 * 60_000;
   try {
     const payload = await loadLivePayloadForClient({ force });
+    const previousCurrentWeek = state.currentWeek;
+    const previousMatchday = state.matchday;
+    if (Number.isInteger(payload.currentWeek) && payload.currentWeek >= 1) {
+      state.currentWeek = payload.currentWeek;
+      if (autoSelectMatchday) {
+        state.matchday = currentMatchday(roundDatesByNumber, { currentWeek: state.currentWeek });
+        state.playerPicksMatchday = state.matchday;
+        if (state.view === "matches") writeAppRoute(currentAppRoute(), "replace");
+        autoSelectMatchday = false;
+      }
+    }
     const settledResultsBefore = settledResultsSignature();
     const providerInterval = Number(payload.pollIntervalSeconds) * 1000;
     if (Number.isFinite(providerInterval)) {
@@ -6618,7 +6631,8 @@ async function pollLive({ force = false } = {}) {
       fixture.providerId, fixture.status, fixture.elapsed, fixture.score?.home,
       fixture.score?.away, fixture.kickoffAt, fixture.source
     ].join(":")).join("|");
-    const dataChanged = signature !== state.liveSignature;
+    const dataChanged = signature !== state.liveSignature
+      || previousCurrentWeek !== state.currentWeek || previousMatchday !== state.matchday;
     state.liveSignature = signature;
     payload.fixtures?.forEach((fixture) => {
       const target = state.matches.find((match) => match.id === fixture.localMatchId) || state.matches.find((match) => {
