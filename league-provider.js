@@ -1,4 +1,5 @@
 import { matches as localMatches, teams as localTeams } from "./data.js";
+import { correctedKickoffAt } from "./kickoff-corrections.js";
 
 export const OFFICIAL_LEAGUE_API_BASE = "https://api.centrum-meczowe.ekstraklasa.org";
 export const OFFICIAL_LEAGUE_SOURCE = "ekstraklasa-match-center";
@@ -180,7 +181,7 @@ export function normalizeOfficialLeagueMatch(item) {
   const localMatch = localMatchByTeamsAndWeek.get(`${matchday}:${home}:${away}`) || null;
   const providerId = String(item.match_id);
   const status = normalizedStatus(item);
-  const kickoffAt = item.postponed_datetime || item.match_datetime || null;
+  const kickoffAt = correctedKickoffAt(localMatch?.id || providerId, item.postponed_datetime || item.match_datetime || null);
   const hasScore = !NO_SCORE_STATUSES.has(status);
   return {
     id: localMatch?.id || `official-${providerId}`,

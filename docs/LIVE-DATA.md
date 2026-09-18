@@ -15,6 +15,23 @@ To ten sam kanał, którego używa oficjalna strona `ekstraklasa.org`. Zwraca 30
 
 Kanał LIVE pobiera tylko termin, status i wynik. Osobny adapter ligi pobiera tabelę i oficjalne składy, ale nadal nie pobiera strzelców, kartek, zmian, kontuzji ani innych zdarzeń meczowych.
 
+## Korekty opóźnionych rozpoczęć
+
+Oficjalny feed może zachować planowaną godzinę mimo ogłoszonego opóźnienia.
+Potwierdzone wyjątki zapisujemy w `kickoff-corrections.js` z lokalnym i oficjalnym ID,
+godziną ze strefą czasową oraz źródłem. Korekta ma pierwszeństwo przed feedem i jego
+cache'em w terminarzu, LIVE oraz synchronizacji terminów Firestore. Nie usuwamy jej
+po meczu, żeby historyczna godzina nie wracała do poprzedniej wartości.
+
+Pierwszy przypadek: Widzew–Wieczysta, 18.09.2026, przesunięcie z 18:00 na 18:30
+po awarii wody na stadionie. To potwierdzona korekta, nie automatyczne wykrywanie
+opóźnień. Następne takie przypadki wymagają potwierdzenia i dodania wpisu.
+
+Po zmianie należy opublikować frontend i Worker oraz zsynchronizować odpowiedni
+dokument `seasons/2026-27/matches/{matchId}` (`closesAt` i `revealsAt`). Istniejące
+typy i ich daty zapisu pozostają bez zmian. Otwarte starsze wersje aplikacji
+administratora trzeba odświeżyć, zanim wznowią synchronizację terminarza.
+
 ## Tabela i składy
 
 `league-provider.js` normalizuje pełny sezon do lokalnych identyfikatorów 18 klubów. Odpowiedź ligi zawiera 306 unikalnych spotkań, aktualną tabelę i formę z pięciu ostatnich wyników. Frontend używa cache'u pięciominutowego i w pierwszej kolejności odpytuje Cloudflare Worker; bezpośredni kanał CORS jest awaryjnym fallbackiem.

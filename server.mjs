@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { matches as baseMatches, teamById } from "./data.js";
+import { correctedKickoffAt, withCorrectedKickoff } from "./kickoff-corrections.js";
 import {
   getOfficialLeaguePayload,
   getOfficialMatchLineup,
@@ -212,14 +213,14 @@ function normalizeFixture(item) {
   const awayId = resolveLocalTeamId(item.away_team_name, item.away_team_code);
   const localMatch = baseMatches.find((match) => match.home === homeId && match.away === awayId);
   if (!localMatch) return null;
-  const kickoffAt = item.postponed && item.postponed_datetime
+  const providerKickoffAt = item.postponed && item.postponed_datetime
     ? item.postponed_datetime
     : item.match_datetime || (item.date && item.local_time ? `${item.date}T${item.local_time}+02:00` : null);
 
   return {
     providerId: item.match_id,
     localMatchId: localMatch.id,
-    kickoffAt,
+    kickoffAt: correctedKickoffAt(localMatch.id, providerKickoffAt),
     status: normalizeProviderStatus(item.status, item.postponed),
     elapsed: null,
     home: {
@@ -460,7 +461,7 @@ async function fixturesWithManualResults() {
     if (index >= 0) fixtures[index] = override;
     else fixtures.push(override);
   }
-  return fixtures;
+  return fixtures.map(withCorrectedKickoff);
 }
 
 async function publicPayload() {

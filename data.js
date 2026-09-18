@@ -1,3 +1,5 @@
+import { correctedKickoffAt } from "./kickoff-corrections.js";
+
 export const teams = [
   ["cracovia", "Cracovia", "CRA", "cracovia.png"],
   ["gks-katowice", "GKS Katowice", "GKS", "gks-katowice.png"],
@@ -88,7 +90,7 @@ export const matches = autumnRounds.flatMap((round, roundIndex) => {
   const matchday = roundIndex + 1;
   return round.map(([home, away], index) => {
     const id = `${matchday}-${home}-${away}`;
-    const exact = exactKickoffs[id];
+    const exact = correctedKickoffAt(id, exactKickoffs[id]);
     return {
       id,
       matchday,

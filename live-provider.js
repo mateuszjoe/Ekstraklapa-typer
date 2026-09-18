@@ -1,4 +1,5 @@
 import { matches as baseMatches, teams } from "./data.js";
+import { correctedKickoffAt } from "./kickoff-corrections.js";
 
 const PROVIDER = "ekstraklasa-match-center";
 const API_BASE = "https://api.centrum-meczowe.ekstraklasa.org";
@@ -39,7 +40,7 @@ export function normalizedOfficialMatchStatus(item, nowMs = Date.now()) {
   const mappedStatus = STATUS_MAP[providerStatus] || String(item?.status || "NS").toUpperCase();
   if (mappedStatus !== "FT") return mappedStatus;
 
-  const kickoffMs = new Date(item?.postponed_datetime || item?.match_datetime || 0).getTime();
+  const kickoffMs = new Date(correctedKickoffAt(item?.match_id, item?.postponed_datetime || item?.match_datetime || 0)).getTime();
   const hasScore = numberOrNull(item?.home_score) !== null && numberOrNull(item?.away_score) !== null;
   if (hasScore
     && Number.isFinite(kickoffMs)
@@ -74,7 +75,7 @@ export function normalizeOfficialFixture(item) {
 
   const localMatch = localMatchByTeamsAndWeek.get(`${week}:${home.id}:${away.id}`);
   if (!localMatch) return null;
-  const kickoffAt = item.postponed_datetime || item.match_datetime || null;
+  const kickoffAt = correctedKickoffAt(localMatch.id, item.postponed_datetime || item.match_datetime || null);
   const status = normalizedOfficialMatchStatus(item);
 
   return {

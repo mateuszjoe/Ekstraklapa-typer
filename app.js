@@ -1,6 +1,6 @@
 import { matches as baseMatches, teamById, teams, roundDatesByNumber } from "./data.js";
 import { firebaseConfig, notificationApiBase, webPushPublicKey } from "./firebase-config.js";
-import { getOfficialLivePayload } from "./live-provider.js?v=2";
+import { getOfficialLivePayload } from "./live-provider.js?v=3";
 import {
   getOfficialLeaguePayload,
   getOfficialMatchLineup,
@@ -9,6 +9,7 @@ import {
 import { formatRecentPlayerRating } from "./player-rating.js";
 import { notificationPrimerDecision } from "./notification-primer-policy.js?v=1";
 import { currentMatchday, initialMatchdayFor } from "./matchday-selection.js";
+import { withCorrectedKickoff } from "./kickoff-corrections.js";
 
 const bootStartedAt = performance.now();
 const app = document.querySelector("#app");
@@ -30,7 +31,7 @@ const NOTIFICATION_OUTBOX_CHAT_TTL_MS = 9 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PLAYER_TTL_MS = 14 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PICK_TTL_MS = 45 * 24 * 60 * 60 * 1000;
 const NOTIFICATION_OUTBOX_NAME_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const APP_SERVICE_WORKER_VERSION = "43";
+const APP_SERVICE_WORKER_VERSION = "44";
 const FINAL = new Set(["FT", "AET", "PEN", "AWD", "WO", "FINISHED", "AWARDED"]);
 const LIVE = new Set(["1H", "HT", "2H", "ET", "BT", "P", "LIVE", "IN_PLAY", "PAUSED"]);
 const VIEWS = new Set(["matches", "ekstraklasa", "ranking", "rules", "settings", "admin"]);
@@ -1310,7 +1311,7 @@ async function loadLeagueData({ force = false } = {}) {
       state.leagueSource = "official-direct";
     }
     if (!payload || !Array.isArray(payload.standings) || !Array.isArray(payload.matches)) throw new Error("Nieprawidłowa odpowiedź źródła ligi");
-    state.leagueData = payload;
+    state.leagueData = { ...payload, matches: payload.matches.map(withCorrectedKickoff) };
     state.leagueStatus = "ready";
     state.leagueError = "";
     state.leagueLoadedAt = Date.now();
@@ -6602,6 +6603,7 @@ async function pollLive({ force = false } = {}) {
   let nextDelay = 5 * 60_000;
   try {
     const payload = await loadLivePayloadForClient({ force });
+    payload.fixtures = (payload.fixtures || []).map(withCorrectedKickoff);
     const previousCurrentWeek = state.currentWeek;
     const previousMatchday = state.matchday;
     if (Number.isInteger(payload.currentWeek) && payload.currentWeek >= 1) {

@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Ekstraklapa Typer 2026/27 — typowanie 1X2 z wynikami LIVE",
   "scripts": {
-    "precheck": "node scripts/check-matchday-selection.mjs",
+    "precheck": "node scripts/check-matchday-selection.mjs && node scripts/check-kickoff-corrections.mjs",
     "dev": "node server.mjs",
     "start": "node server.mjs",
     "build": "node scripts/prepare-vinext.mjs && vite build && node scripts/finalize-vinext.mjs",
