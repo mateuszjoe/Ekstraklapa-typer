@@ -68,21 +68,26 @@ npx wrangler deploy --config notifications-wrangler.jsonc
 
 Endpoint rejestracji wymaga zalogowanego, zweryfikowanego konta Google i uczestnictwa w sezonie. Typy trafiają do D1 dopiero po porównaniu z własnym dokumentem w Firestore, a wiadomość chatu może zgłosić wyłącznie jej autor.
 
-Potwierdzone terminy, na których Firestore opiera zamykanie i odkrywanie typów, synchronizuje administrator:
+Terminy, na których Firestore opiera zamykanie i odkrywanie typów, synchronizuje backend co 5 minut. Cron Cloudflare zleca osobne zadanie kolejki, które pobiera pełny oficjalny terminarz i sprawdza wszystkie 153 mecze rundy jesiennej, również przyszłe kolejki i spotkania przełożone. Synchronizacja działa także przy zamkniętej stronie i bez zalogowanego administratora. Przygotowanie dedykowanego konta automatu, wdrożenie i kontrolę jego stanu opisuje [Automatyczny terminarz typowania](docs/SCHEDULE-SYNC.md).
+
+Do kontroli lub awaryjnej synchronizacji można użyć CLI:
 
 ```powershell
+npm run sync:schedule -- --dry-run
 npm run sync:schedule
 ```
 
-Skrypt korzysta z zalogowanej sesji Firebase CLI i nie zapisuje żadnych sekretów w repozytorium. Jednorazową migrację starego układu dokumentów wykonuje `npm run migrate:picks`.
+Skrypt korzysta z tego samego pełnego terminarza i mechanizmu porównania co backend. `--dry-run` pokazuje liczbę zmian, ID meczów oraz potwierdzoną godzinę lub oczekiwanie na termin bez zapisu. Synchronizacja aktualizuje wyłącznie zmienione pola dokumentów terminarza, w tym status i zakończony wynik z oficjalnego źródła; nie usuwa dokumentów ani nie zmienia typów graczy. Brak potwierdzonej godziny zamyka możliwość typowania do czasu jej publikacji. Po zapisie każdy zmieniony dokument jest odczytywany i weryfikowany. Równoczesna zmiana dokumentu przerywa zapis zamiast nadpisywać nowszą wersję.
+
+Ręczne polecenie wymaga zalogowanej sesji Firebase CLI; automatyczny backend używa własnego konta z ograniczonym dostępem do terminarza. Skrypt nie zapisuje żadnych sekretów w repozytorium. Jednorazową migrację starego układu dokumentów wykonuje `npm run migrate:picks`.
 
 ## Dane LIVE
 
-Wyniki pochodzą z publicznego API oficjalnego Centrum Meczowego Ekstraklasy. Kanał nie wymaga klucza, konta ani płatnego planu. Aplikacja mapuje wyłącznie 153 mecze rundy jesiennej (kolejki 1–17).
+Wyniki pochodzą z publicznego API oficjalnego Centrum Meczowego Ekstraklasy. Kanał nie wymaga klucza, konta ani płatnego planu. Adapter pobiera wszystkie strony odpowiedzi po kursorze `page_token`, dzięki czemu otrzymuje 306 meczów sezonu zamiast samej pierwszej strony 50 spotkań. Typowanie obejmuje wyłącznie 153 mecze rundy jesiennej (kolejki 1–17).
 
 - na GitHub Pages przeglądarka korzysta bezpośrednio z oficjalnego kanału CORS; lokalny serwer nadal udostępnia kompatybilny adapter `/api/live`;
 - podczas meczów dane są odświeżane co 45 sekund, a poza nimi co 5 minut;
-- zakończone wyniki są odświeżane co najwyżej co 5 minut, a bieżąca i poprzednia kolejka stanowią świeżą nakładkę;
+- pełny terminarz, przyszłe potwierdzone godziny i zakończone wyniki są odświeżane co 5 minut, a bieżąca i poprzednia kolejka oraz trwające mecze stanowią świeżą nakładkę;
 - równoczesne odświeżenia są łączone w jedno zapytanie;
 - po chwilowej awarii przez maksymalnie 5 minut dostępny jest ostatni poprawny zapis; starszy status LIVE jest wygaszany;
 - blok LIVE pojawia się na głównej stronie wyłącznie podczas meczu;
@@ -148,10 +153,11 @@ Adres produkcyjny:
 
 - Kolejki 1–17: runda jesienna.
 - Wszystkie 153 mecze pochodzą z oficjalnego terminarza Ekstraklasy.
-- Dokładne godziny pierwszych czterech kolejek są potwierdzone oficjalnie.
-- Kolejne spotkania mają datę ramową i są wyraźnie oznaczone jako „godz. do ustalenia”; typowanie uruchamia się dopiero po potwierdzeniu dokładnej godziny.
+- Dokładne godziny wszystkich opublikowanych kolejek są pobierane automatycznie z oficjalnego źródła.
+- Spotkania bez opublikowanej godziny mają datę ramową i oznaczenie „godz. do ustalenia”; typowanie jest dostępne dopiero po potwierdzeniu dokładnej godziny i synchronizacji z serwerem. Puste daty, `None` i techniczna godzina `00:00` nie są potwierdzeniem terminu.
+- Przełożenie zmienia termin, ale zachowuje pierwotną kolejkę i identyfikator meczu używany przez zapisane typy. Godziny zachowują oficjalną strefę czasową, także przy zmianie czasu letniego na zimowy.
 
-Po publikacji dokładnych godzin należy uzupełnić mapę `exactKickoffs` w `data.js` i wykonać `npm run sync:schedule`; zalogowane konto administratora synchronizuje też nowe oficjalne terminy otrzymane z kanału LIVE.
+Nowe kolejki i zmiany terminów obsługuje automatyczny synchronizator backendu. Nie trzeba przepisywać godzin do `data.js` ani otwierać strony administratora przed każdym weekendem. W przypadku problemu należy sprawdzić stan synchronizacji według [instrukcji terminarza](docs/SCHEDULE-SYNC.md); ręczne `npm run sync:schedule -- --dry-run` pozwala porównać oficjalne dane z Firestore.
 
 ## Co przeniesiono z WC 2026 Buk
 

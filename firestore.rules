@@ -15,6 +15,13 @@ service cloud.firestore {
       return googleSignedIn() && request.auth.token.email == 'mateuszjoe@gmail.com';
     }
 
+    function isScheduleSyncService() {
+      return signedIn()
+        && request.auth.uid == 'trusted-schedule-sync-2026-27'
+        && request.auth.token.firebase.sign_in_provider == 'custom'
+        && request.auth.token.scheduleSync == true;
+    }
+
     function participantAccessAllowed(data) {
       return data.get('disabled', false) == false
         && data.get('status', 'active') in ['active', 'approved'];
@@ -114,10 +121,22 @@ service cloud.firestore {
         && request.resource.data.matchday <= 17
         && request.resource.data.closesAt is timestamp
         && request.resource.data.revealsAt is timestamp
-        && request.resource.data.revealsAt == request.resource.data.closesAt
+        && request.resource.data.kickoffConfirmed is bool
+        && (
+          (request.resource.data.kickoffConfirmed == true
+            && request.resource.data.revealsAt == request.resource.data.closesAt)
+          || (request.resource.data.kickoffConfirmed == false
+            && request.resource.data.closesAt == timestamp.date(1970, 1, 1)
+            && request.resource.data.revealsAt >= timestamp.date(2100, 1, 1))
+        )
+        && request.resource.data.status in ['NS', 'LIVE', 'FT', 'AWD', 'PST', 'SUSP', 'CANC']
+        && request.resource.data.source == 'ekstraklasa-match-center'
         && request.resource.data.get('result', '') in ['', '1', 'X', '2']
         && request.resource.data.updatedAt == request.time
-        && request.resource.data.keys().hasOnly(['matchday', 'closesAt', 'revealsAt', 'result', 'updatedAt']);
+        && request.resource.data.keys().hasOnly([
+          'matchday', 'closesAt', 'revealsAt', 'result', 'updatedAt',
+          'kickoffConfirmed', 'status', 'source'
+        ]);
     }
 
     function validScheduleMeta(seasonId) {
@@ -915,14 +934,16 @@ service cloud.firestore {
     }
 
     match /seasons/{seasonId}/matches/{matchId} {
-      allow get, list: if isAdmin();
-      allow create, update: if isAdmin() && validTrustedMatch(seasonId, matchId);
+      allow get, list: if isAdmin() || (seasonId == '2026-27' && isScheduleSyncService());
+      // Only the dedicated server identity may maintain official deadlines/results.
+      // This also blocks older cached admin clients from restoring stale dates.
+      allow create, update: if isScheduleSyncService() && validTrustedMatch(seasonId, matchId);
       allow delete: if false;
     }
 
     match /scheduleMeta/{seasonId} {
-      allow get, list: if isAdmin();
-      allow create, update: if isAdmin() && validScheduleMeta(seasonId);
+      allow get, list: if isAdmin() || (seasonId == '2026-27' && isScheduleSyncService());
+      allow create, update: if isScheduleSyncService() && validScheduleMeta(seasonId);
       allow delete: if false;
     }
 

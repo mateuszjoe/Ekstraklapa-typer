@@ -1,11 +1,11 @@
 import { matches as baseMatches, teamById, teams, roundDatesByNumber } from "./data.js";
 import { firebaseConfig, notificationApiBase, webPushPublicKey } from "./firebase-config.js";
-import { getOfficialLivePayload } from "./live-provider.js?v=3";
+import { getOfficialLivePayload } from "./live-provider.js?v=4";
 import {
   getOfficialLeaguePayload,
   getOfficialMatchLineup,
   getOfficialTeamSquad
-} from "./league-provider.js?v=2";
+} from "./league-provider.js?v=3";
 import { formatRecentPlayerRating } from "./player-rating.js";
 import { notificationPrimerDecision } from "./notification-primer-policy.js?v=1";
 import { currentMatchday, initialMatchdayFor } from "./matchday-selection.js";
@@ -31,7 +31,7 @@ const NOTIFICATION_OUTBOX_CHAT_TTL_MS = 9 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PLAYER_TTL_MS = 14 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PICK_TTL_MS = 45 * 24 * 60 * 60 * 1000;
 const NOTIFICATION_OUTBOX_NAME_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const APP_SERVICE_WORKER_VERSION = "45";
+const APP_SERVICE_WORKER_VERSION = "46";
 const FINAL = new Set(["FT", "AET", "PEN", "AWD", "WO", "FINISHED", "AWARDED"]);
 const LIVE = new Set(["1H", "HT", "2H", "ET", "BT", "P", "LIVE", "IN_PLAY", "PAUSED"]);
 const VIEWS = new Set(["matches", "ekstraklasa", "ranking", "rules", "settings", "admin"]);
@@ -528,12 +528,14 @@ function playerAvatarButton(uid, className = "chat-avatar") {
 }
 
 function formatDay(match) {
+  if (!match?.kickoffAt) return "termin do ustalenia";
   const date = new Date(match.kickoffAt);
-  return new Intl.DateTimeFormat("pl-PL", { weekday: "short", day: "2-digit", month: "2-digit" }).format(date).replace(",", "");
+  if (!Number.isFinite(date.getTime())) return "termin do ustalenia";
+  return new Intl.DateTimeFormat("pl-PL", { weekday: "short", day: "2-digit", month: "2-digit", timeZone: "Europe/Warsaw" }).format(date).replace(",", "");
 }
 
 function formatTime(match) {
-  if (!match.kickoffConfirmed) return "godz. do ustalenia";
+  if (!hasConfirmedKickoff(match)) return "godz. do ustalenia";
   return new Intl.DateTimeFormat("pl-PL", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Warsaw" }).format(new Date(match.kickoffAt));
 }
 
@@ -542,12 +544,18 @@ function resultOf(match) {
   return match.homeScore === match.awayScore ? "X" : match.homeScore > match.awayScore ? "1" : "2";
 }
 
+function hasConfirmedKickoff(match) {
+  return Boolean(match?.kickoffConfirmed && match.kickoffAt
+    && Number.isFinite(Date.parse(match.kickoffAt)));
+}
+
 function isLocked(match) {
-  return match.kickoffConfirmed && Date.now() >= new Date(match.kickoffAt).getTime();
+  return Boolean(LIVE.has(match?.status) || FINAL.has(match?.status)
+    || (hasConfirmedKickoff(match) && Date.now() >= Date.parse(match.kickoffAt)));
 }
 
 function isPredictionOpen(match) {
-  return Boolean(match?.kickoffConfirmed && !isLocked(match));
+  return hasConfirmedKickoff(match) && !isLocked(match);
 }
 
 function pointsFor(match) {
@@ -862,8 +870,9 @@ function matchCard(match) {
   const home = teamById[match.home];
   const away = teamById[match.away];
   const prediction = state.predictions[match.id];
+  const predictionPending = Boolean(state.user && predictionWriteQueues.has(`${state.user.uid}:${match.id}`));
   const locked = isLocked(match);
-  const waitingForKickoff = !match.kickoffConfirmed;
+  const waitingForKickoff = !hasConfirmedKickoff(match);
   const waitingForPlayer = Boolean(state.user && (!state.userDataReady || !state.participantReady));
   const playerAccessLabel = state.membershipStatus === "pending"
     ? "oczekuje na akceptację"
@@ -876,14 +885,14 @@ function matchCard(match) {
   return `<article class="match-card ${prediction ? "is-typed" : ""} ${live ? "is-live" : ""}">
     <div class="match-meta">
       <span>${live ? `<b class="live-label">LIVE${Number.isFinite(match.liveElapsed) ? ` ${match.liveElapsed}'` : ""}</b>` : `${formatDay(match)} · ${formatTime(match)}`}</span>
-      <span>${locked ? `${icon("lock")} zamknięty` : waitingForKickoff ? `${icon("calendar")} czeka na termin` : waitingForPlayer ? `${icon("calendar")} ${playerAccessLabel}` : prediction ? `${icon("check")} typ zapisany` : "1 pkt do zdobycia"}</span>
+      <span>${locked ? `${icon("lock")} zamknięty` : waitingForKickoff ? `${icon("calendar")} czeka na termin` : waitingForPlayer ? `${icon("calendar")} ${playerAccessLabel}` : predictionPending ? "zapisywanie typu…" : prediction ? `${icon("check")} typ zapisany` : "1 pkt do zdobycia"}</span>
     </div>
     <div class="match-teams">
       <div class="team home"><a class="team-route-link" href="${teamRouteHref(home.id)}" data-team-route="${home.id}"><span>${home.name}</span><img src="${home.crest}" alt="Herb ${home.name}"></a></div>
       <div class="score-zone">${score ? `<strong>${score}</strong>` : `<span>VS</span>`}</div>
       <div class="team away"><a class="team-route-link" href="${teamRouteHref(away.id)}" data-team-route="${away.id}"><img src="${away.crest}" alt="Herb ${away.name}"><span>${away.name}</span></a></div>
     </div>
-    <div class="prediction-row" role="group" aria-label="Typ na mecz ${home.name} — ${away.name}">
+    <div class="prediction-row" role="group" aria-busy="${predictionPending}" aria-label="Typ na mecz ${home.name} — ${away.name}">
       ${[["1",home.short],["X","REMIS"],["2",away.short]].map(([pick,label]) => `<button data-pick="${pick}" data-match="${match.id}" class="pick ${prediction === pick ? "selected" : ""}" aria-pressed="${prediction === pick}" ${locked || waitingForKickoff || waitingForPlayer ? "disabled" : ""}><b>${pick}</b><small>${label}</small></button>`).join("")}
     </div>
     ${(live || final) ? `<button class="match-centre-link" data-match-centre="${match.id}">Szczegóły wyniku ${icon("arrow")}</button>` : ""}
@@ -2148,14 +2157,13 @@ function setPrediction(matchId, pick) {
   const match = state.matches.find((item) => item.id === matchId);
   if (!match) return;
   if (!typerMatchIds.has(match.id) || match.matchday > LAST_MATCHDAY) return notify("Ten mecz nie należy do rundy jesiennej typera.");
-  if (!match.kickoffConfirmed) return notify("Typowanie ruszy po potwierdzeniu dokładnego terminu meczu.");
+  if (!hasConfirmedKickoff(match)) return notify("Typowanie ruszy po potwierdzeniu dokładnego terminu meczu.");
   if (!isPredictionOpen(match)) return notify("Ten mecz już się rozpoczął — typ jest zamknięty.");
   const uid = state.user.uid;
   const queueKey = `${uid}:${matchId}`;
   const version = (predictionWriteVersions.get(queueKey) || 0) + 1;
   predictionWriteVersions.set(queueKey, version);
   state.predictions[matchId] = pick;
-  refreshPredictionUi();
 
   const previousWrite = predictionWriteQueues.get(queueKey) || Promise.resolve();
   const operation = previousWrite.catch(() => {}).then(async () => {
@@ -2163,9 +2171,9 @@ function setPrediction(matchId, pick) {
     if (state.user?.uid === uid) state.confirmedPredictions[matchId] = pick;
   });
   predictionWriteQueues.set(queueKey, operation);
+  refreshPredictionUi();
   operation.then(() => {
     if (state.user?.uid === uid && predictionWriteVersions.get(queueKey) === version) {
-      refreshPredictionUi();
       notify(`Typ ${pick} zapisany`);
     }
   }).catch((error) => {
@@ -2174,12 +2182,14 @@ function setPrediction(matchId, pick) {
     const confirmed = state.confirmedPredictions[matchId];
     if (["1", "X", "2"].includes(confirmed)) state.predictions[matchId] = confirmed;
     else delete state.predictions[matchId];
-    refreshPredictionUi();
     notify(error?.code === "permission-denied"
-      ? "Serwer zamknął już ten mecz — typ nie został zmieniony."
+      ? "Serwer nie przyjął typu. Odśwież mecze i spróbuj ponownie; jeśli problem wróci, zgłoś go administratorowi."
       : "Nie udało się zapisać typu. Sprawdź internet i spróbuj ponownie.");
   }).finally(() => {
-    if (predictionWriteQueues.get(queueKey) === operation) predictionWriteQueues.delete(queueKey);
+    if (predictionWriteQueues.get(queueKey) === operation) {
+      predictionWriteQueues.delete(queueKey);
+      if (state.user?.uid === uid) refreshPredictionUi();
+    }
   });
 }
 
@@ -6532,36 +6542,9 @@ async function migrateLegacyLocalPredictions(uid) {
 async function syncTrustedMatchTimes() {
   if (trustedMatchesSyncPromise) return trustedMatchesSyncPromise;
   if (state.user?.email !== "mateuszjoe@gmail.com" || state.auth?.currentUser?.uid !== state.user.uid || !state.db || !state.firebaseModules) return;
-  const confirmedMatches = state.matches
-    .filter((match) => typerMatchIds.has(match.id) && match.matchday <= LAST_MATCHDAY && match.kickoffConfirmed && Number.isFinite(new Date(match.kickoffAt).getTime()))
-    .sort((a, b) => a.id.localeCompare(b.id));
-  if (!confirmedMatches.length) return;
-  const signature = confirmedMatches.map((match) => `${match.id}:${match.matchday}:${new Date(match.kickoffAt).toISOString()}:${resultOf(match) || ""}`).join("|");
-
-  trustedMatchesSyncPromise = (async () => {
-    const { doc, getDoc, serverTimestamp, Timestamp, writeBatch } = state.firebaseModules;
-    const metaReference = doc(state.db, "scheduleMeta", SEASON_ID);
-    const metaSnapshot = await getDoc(metaReference);
-    if (metaSnapshot.exists() && metaSnapshot.data().signature === signature) return;
-    const batch = writeBatch(state.db);
-    confirmedMatches.forEach((match) => {
-      const kickoff = Timestamp.fromDate(new Date(match.kickoffAt));
-      batch.set(doc(state.db, "seasons", SEASON_ID, "matches", match.id), {
-        matchday: match.matchday,
-        closesAt: kickoff,
-        revealsAt: kickoff,
-        result: resultOf(match) || "",
-        updatedAt: serverTimestamp()
-      });
-    });
-    batch.set(metaReference, {
-      seasonId: SEASON_ID,
-      signature,
-      matchCount: confirmedMatches.length,
-      updatedAt: serverTimestamp()
-    });
-    await batch.commit();
-  })().catch((error) => {
+  // The server fetches the official source. A cached browser must never replace
+  // trusted deadlines or results with its bundled or stale match data.
+  trustedMatchesSyncPromise = notificationApiRequest("/api/admin/schedule/sync", {}).catch((error) => {
     console.error("Nie udało się zsynchronizować bezpiecznych terminów meczów:", error);
   }).finally(() => {
     trustedMatchesSyncPromise = null;
@@ -6631,7 +6614,7 @@ async function pollLive({ force = false } = {}) {
     });
     const signature = (payload.fixtures || []).map((fixture) => [
       fixture.providerId, fixture.status, fixture.elapsed, fixture.score?.home,
-      fixture.score?.away, fixture.kickoffAt, fixture.source
+      fixture.score?.away, fixture.kickoffAt, fixture.kickoffConfirmed, fixture.scheduledDate, fixture.source
     ].join(":")).join("|");
     const dataChanged = signature !== state.liveSignature
       || previousCurrentWeek !== state.currentWeek || previousMatchday !== state.matchday;
@@ -6649,8 +6632,8 @@ async function pollLive({ force = false } = {}) {
         liveElapsed: fixture.elapsed,
         homeScore: fixture.score.home,
         awayScore: fixture.score.away,
-        kickoffAt: fixture.kickoffAt || target.kickoffAt,
-        kickoffConfirmed: Boolean(fixture.kickoffAt),
+        kickoffAt: fixture.kickoffAt || fixture.scheduledDate || target.kickoffAt,
+        kickoffConfirmed: fixture.kickoffConfirmed === true,
         resultSource: fixture.source
       });
     });
@@ -6666,7 +6649,6 @@ async function pollLive({ force = false } = {}) {
       playerFormLoadRevision += 1;
       playerFormLoadPromise = null;
     }
-    const trustedMatchSync = syncTrustedMatchTimes();
     if (dataChanged || state.matches.some((match) => typerMatchIds.has(match.id) && LIVE.has(match.status))) render();
     if (dataChanged && ["matches", "ranking"].includes(state.view) && state.user && state.userDataReady && state.participantReady) {
       void loadRankingData();
@@ -6674,10 +6656,8 @@ async function pollLive({ force = false } = {}) {
     const openMatchDialog = document.querySelector("#matchDialog[open]");
     if (dataChanged && openMatchDialog?.dataset.matchId) showMatchCentre(openMatchDialog.dataset.matchId);
     if (settledResultsChanged && ["matches", "ranking"].includes(state.view) && state.user && state.userDataReady && state.participantReady) {
-      Promise.resolve(trustedMatchSync).finally(() => {
-        if (state.view === "ranking" && state.user && state.participantReady) void loadRankingData();
-        if (state.view === "matches" && state.user && state.userDataReady && state.participantReady) void loadPlayerDashboardData();
-      });
+      if (state.view === "ranking") void loadRankingData();
+      if (state.view === "matches") void loadPlayerDashboardData();
     }
   } catch (error) {
     let liveStateChanged = false;

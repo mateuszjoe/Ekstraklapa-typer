@@ -1,5 +1,6 @@
 import { matches as localMatches, teams as localTeams } from "./data.js";
-import { correctedKickoffAt } from "./kickoff-corrections.js";
+import { fetchOfficialPages } from "./official-api.js";
+import { officialKickoff } from "./official-kickoff.js";
 
 export const OFFICIAL_LEAGUE_API_BASE = "https://api.centrum-meczowe.ekstraklasa.org";
 export const OFFICIAL_LEAGUE_SOURCE = "ekstraklasa-match-center";
@@ -182,14 +183,14 @@ export function normalizeOfficialLeagueMatch(item) {
   const localMatch = localMatchByTeamsAndWeek.get(`${matchday}:${home}:${away}`) || null;
   const providerId = String(item.match_id);
   const status = normalizedStatus(item);
-  const kickoffAt = correctedKickoffAt(localMatch?.id || providerId, item.postponed_datetime || item.match_datetime || null);
+  const kickoff = officialKickoff(item, localMatch?.id || providerId);
   const hasScore = !NO_SCORE_STATUSES.has(status);
   return {
     id: localMatch?.id || `official-${providerId}`,
     providerId,
     localMatchId: localMatch?.id || null,
     matchday,
-    kickoffAt,
+    ...kickoff,
     status,
     home,
     away,
@@ -396,7 +397,7 @@ async function loadOfficialLeaguePayload(fetchImpl) {
   if (!seasonId) throw new Error("Official league API did not return current season id");
   const encodedSeasonId = encodeURIComponent(seasonId);
   const [matchesPayload, standingsPayload] = await Promise.all([
-    fetchOfficialJson(`/v1/matches?season_id=${encodedSeasonId}`, fetchImpl),
+    fetchOfficialPages(`/v1/matches?season_id=${encodedSeasonId}`, (path) => fetchOfficialJson(path, fetchImpl)),
     fetchOfficialJson(`/v1/team_season_standings?standing_type=total&season_id=${encodedSeasonId}`, fetchImpl)
   ]);
   return normalizeOfficialLeaguePayload({ seasonPayload, matchesPayload, standingsPayload });
