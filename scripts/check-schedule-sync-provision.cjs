@@ -1,5 +1,5 @@
 const assert = require("node:assert/strict");
-const { parseArguments, assertMachineAccount, customTokenPayload, addTemporarySigner, removeTemporarySigner, wranglerEnvironment, parseSecretNames, getSignerPolicy, retryableSigningError } = require("./provision-schedule-sync.cjs");
+const { parseArguments, assertMachineAccount, customTokenPayload, addTemporarySigner, removeTemporarySigner, wranglerEnvironment, parseSecretNames, getSignerPolicy, retryableSigningError, createMachineAccount } = require("./provision-schedule-sync.cjs");
 
 assert.equal(parseArguments([]).mode, "check", "The default invocation must not provision credentials.");
 assert.equal(parseArguments(["--check"]).mode, "check");
@@ -33,6 +33,16 @@ assert.equal(retryableSigningError({ status: 403, apiCode: "PERMISSION_DENIED", 
   "OAuth scope errors cannot be repaired by waiting for an IAM binding.");
 assert.equal(retryableSigningError({ status: 401, apiCode: "UNAUTHENTICATED" }), false);
 assert.equal(retryableSigningError({ status: 404, apiCode: "NOT_FOUND" }), false);
+
+const createRequests = [];
+createMachineAccount((...args) => { createRequests.push(args); return {}; });
+assert.equal(createRequests.length, 1);
+assert.equal(createRequests[0][0], "https://identitytoolkit.googleapis.com/v1/projects/ekstraklasa-typer-2026-27/accounts",
+  "Administrator account creation must use the same project-scoped /accounts route as Firebase Admin SDK, without the public API-key signup route.");
+assert.equal(createRequests[0][3], "POST");
+assert.deepEqual(createRequests[0][2], {
+  localId: "trusted-schedule-sync-2026-27", displayName: "Trusted schedule sync 2026-27"
+}, "Only the reserved UID and recovery marker are set at account creation; claims are set and verified separately.");
 
 const machine = {
   localId: "trusted-schedule-sync-2026-27",
