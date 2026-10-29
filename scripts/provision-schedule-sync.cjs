@@ -243,6 +243,13 @@ function retryableSigningError(error) {
     && (!error.apiReasons?.length || error.apiReasons.includes("IAM_PERMISSION_DENIED"));
 }
 
+function createMachineAccount(adminRequest) {
+  // Match Firebase Admin SDK's signupNewUser route. The public accounts:signUp
+  // endpoint is not the project-scoped administrator account-creation route.
+  return adminRequest(`https://identitytoolkit.googleapis.com/v1/projects/${PROJECT_ID}/accounts`,
+    "Utworzenie konta automatu", { localId: MACHINE_UID, displayName: MACHINE_NAME }, "POST");
+}
+
 async function main(args = process.argv.slice(2)) {
   const options = parseArguments(args);
   const configuredProject = JSON.parse(readFileSync(join(ROOT, ".firebaserc"), "utf8")).projects?.default;
@@ -344,8 +351,8 @@ async function main(args = process.argv.slice(2)) {
   });
 
   if (!machine) {
-    await adminRequest(`https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${encodeURIComponent(firebaseConfig.apiKey)}`,
-      "Utworzenie konta automatu", { targetProjectId: PROJECT_ID, localId: MACHINE_UID, displayName: MACHINE_NAME });
+    const created = await createMachineAccount(adminRequest);
+    if (created.localId !== MACHINE_UID) throw new Error("Firebase nie potwierdził utworzenia oczekiwanego konta automatu.");
   }
   await adminRequest(`${authBase}/accounts:update`, "Ograniczenie roli automatu", {
     localId: MACHINE_UID,
@@ -374,7 +381,7 @@ async function main(args = process.argv.slice(2)) {
   console.log("Następnie wdroż reguły i Worker, a stan synchronizacji potwierdź w jego health endpoint.");
 }
 
-module.exports = { parseArguments, assertMachineAccount, customTokenPayload, addTemporarySigner, removeTemporarySigner, wranglerEnvironment, parseSecretNames, getSignerPolicy, retryableSigningError };
+module.exports = { parseArguments, assertMachineAccount, customTokenPayload, addTemporarySigner, removeTemporarySigner, wranglerEnvironment, parseSecretNames, getSignerPolicy, retryableSigningError, createMachineAccount };
 if (require.main === module) {
   main().catch((error) => {
     console.error(error?.message || "Konfiguracja synchronizacji nie powiodła się.");
