@@ -4,6 +4,7 @@ import { extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { matches as baseMatches, teamById } from "./data.js";
 import { correctedKickoffAt, withCorrectedKickoff } from "./kickoff-corrections.js";
+import { getOfficialLivePayload } from "./live-provider.js";
 import {
   getOfficialLeaguePayload,
   getOfficialMatchLineup,
@@ -379,33 +380,23 @@ async function runPollingCycle() {
   pollInFlight = (async () => {
     try {
       const plannedPoll = new Date(providerState.nextPollAt || 0).getTime();
-      const needsBootstrap = !providerState.seasonId
-        || !providerState.schedule.length
-        || !providerState.fullScheduleUpdatedAt;
+      const needsBootstrap = providerState.providerSchema !== 2
+        || providerState.schedule.length !== baseMatches.length;
       if (!needsBootstrap && Number.isFinite(plannedPoll) && Date.now() < plannedPoll) return;
-
-      let seasonChanged = false;
-      if (!providerState.seasonId || millisecondsSince(providerState.seasonUpdatedAt) >= seasonRefreshMs) {
-        seasonChanged = await refreshCurrentSeason();
-      }
-
-      const fullScheduleDue = !providerState.schedule.length
-        || seasonChanged
-        || millisecondsSince(providerState.fullScheduleUpdatedAt) >= scheduleRefreshMs;
-      if (fullScheduleDue) await refreshFullSchedule();
-
-      const inWindow = isInMatchWindow();
-      if (!fullScheduleDue && inWindow && millisecondsSince(providerState.scheduleUpdatedAt) >= pollIntervalMs) {
-        await pollCurrentWeek();
-      }
-
-      const liveRefreshAfter = inWindow ? pollIntervalMs : backgroundLiveRefreshMs;
-      if (millisecondsSince(providerState.lastLiveCheckAt) >= liveRefreshAfter) {
-        await pollPlayingMatches();
-      }
-
-      providerState.error = null;
-      providerState.nextPollAt = new Date(planNextPoll(isInMatchWindow())).toISOString();
+      // Use the same paginated, timezone-aware schedule as GitHub Pages and
+      // the Worker. The former local loader cached only the first 50 matches.
+      const payload = await getOfficialLivePayload();
+      providerState.schedule = payload.fixtures;
+      providerState.currentWeek = payload.currentWeek;
+      providerState.providerSchema = 2;
+      providerState.scheduleUpdatedAt = payload.scheduleUpdatedAt;
+      providerState.fullScheduleUpdatedAt = payload.scheduleUpdatedAt;
+      providerState.lastSuccessAt = payload.updatedAt;
+      providerState.lastLiveCheckAt = payload.updatedAt;
+      providerState.error = payload.error;
+      providerState.nextPollAt = payload.error
+        ? new Date(Date.now() + pollIntervalMs).toISOString()
+        : payload.nextPollAt;
     } catch (error) {
       providerState.error = error.message;
       providerState.nextPollAt = new Date(Date.now() + pollIntervalMs).toISOString();
@@ -449,7 +440,9 @@ async function fixturesWithManualResults() {
       ...(existing || staticSchedule().find((item) => item.localMatchId === matchId)),
       providerId: existing?.providerId || `manual-${matchId}`,
       localMatchId: matchId,
+      matchday: match.matchday,
       kickoffAt: existing?.kickoffAt || match.kickoffAt,
+      kickoffConfirmed: existing ? existing.kickoffConfirmed === true : match.kickoffConfirmed === true,
       status: result.status || "FT",
       elapsed: null,
       home: existing?.home || { id: match.home, name: teamById[match.home].name, logo: teamById[match.home].crest },
@@ -480,6 +473,7 @@ async function publicPayload() {
     pollIntervalSeconds: (inWindow ? pollIntervalMs : backgroundLiveRefreshMs) / 1000,
     stale: Boolean(providerState.error),
     error: providerState.error,
+    currentWeek: providerState.currentWeek,
     season: {
       id: providerState.seasonId,
       name: providerState.seasonName,

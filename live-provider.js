@@ -1,5 +1,7 @@
 import { matches as baseMatches, teams } from "./data.js";
 import { correctedKickoffAt } from "./kickoff-corrections.js";
+import { fetchOfficialPages } from "./official-api.js";
+import { officialKickoff } from "./official-kickoff.js";
 
 const PROVIDER = "ekstraklasa-match-center";
 const API_BASE = "https://api.centrum-meczowe.ekstraklasa.org";
@@ -28,6 +30,9 @@ let cachedPayload = null;
 let cacheExpiresAt = 0;
 let cachedAt = 0;
 let inFlightRequest = null;
+let cachedSchedule = null;
+let scheduleExpiresAt = 0;
+let scheduleRequest = null;
 
 function numberOrNull(value) {
   if (value === null || value === undefined || value === "") return null;
@@ -52,16 +57,16 @@ export function normalizedOfficialMatchStatus(item, nowMs = Date.now()) {
   return mappedStatus;
 }
 
-async function fetchOfficialJson(path) {
+async function fetchOfficialJson(path, fetchImpl = fetch) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 12_000);
   try {
-    const response = await fetch(`${API_BASE}${path}`, {
+    const response = await fetchImpl(`${API_BASE}${path}`, {
       headers: { Accept: "application/json" },
       signal: controller.signal
     });
     if (!response.ok) throw new Error(`Official match center returned HTTP ${response.status}`);
-    return response.json();
+    return await response.json();
   } finally {
     clearTimeout(timeout);
   }
@@ -75,13 +80,14 @@ export function normalizeOfficialFixture(item) {
 
   const localMatch = localMatchByTeamsAndWeek.get(`${week}:${home.id}:${away.id}`);
   if (!localMatch) return null;
-  const kickoffAt = correctedKickoffAt(localMatch.id, item.postponed_datetime || item.match_datetime || null);
+  const kickoff = officialKickoff(item, localMatch.id);
   const status = normalizedOfficialMatchStatus(item);
 
   return {
     providerId: String(item.match_id),
     localMatchId: localMatch.id,
-    kickoffAt,
+    matchday: localMatch.matchday,
+    ...kickoff,
     status,
     elapsed: null,
     score: {
@@ -94,36 +100,62 @@ export function normalizeOfficialFixture(item) {
   };
 }
 
-async function loadLivePayload() {
-  const season = await fetchOfficialJson("/v1/seasons/current");
+export async function getOfficialTrustedSchedule({ force = false, fetchImpl = fetch } = {}) {
+  if (!force && cachedSchedule && Date.now() < scheduleExpiresAt) return cachedSchedule;
+  if (!scheduleRequest) {
+    scheduleRequest = loadTrustedSchedule(fetchImpl).then((payload) => {
+      cachedSchedule = payload;
+      scheduleExpiresAt = Date.now() + BACKGROUND_TTL_SECONDS * 1000;
+      return payload;
+    }).finally(() => { scheduleRequest = null; });
+  }
+  return scheduleRequest;
+}
+
+async function loadTrustedSchedule(fetchImpl) {
+  const season = await fetchOfficialJson("/v1/seasons/current", fetchImpl);
   const seasonId = season?.data?.season_id;
   const currentWeek = Number(season?.meta?.current_week_number);
-  if (!seasonId || !Number.isInteger(currentWeek)) {
+  if (!seasonId || season?.data?.name !== "2026/2027" || !Number.isInteger(currentWeek) || currentWeek < 1 || currentWeek > 34) {
     throw new Error("Official match center returned an invalid current season");
   }
+  const response = await fetchOfficialPages(`/v1/matches?season_id=${encodeURIComponent(seasonId)}`,
+    (path) => fetchOfficialJson(path, fetchImpl));
+  const fixtures = response.data.map(normalizeOfficialFixture).filter(Boolean);
+  if (response.data.length !== 306 || fixtures.length !== baseMatches.length
+    || new Set(response.data.map((match) => match.match_id)).size !== 306
+    || new Set(fixtures.map((fixture) => fixture.localMatchId)).size !== baseMatches.length
+    || response.data.some((match) => match.season_id && match.season_id !== seasonId)) {
+    throw new Error("Official match center returned an incomplete or inconsistent season schedule");
+  }
+  return { seasonId, currentWeek, updatedAt: new Date().toISOString(), fixtures };
+}
+
+async function loadLivePayload(fetchImpl) {
+  const schedule = await getOfficialTrustedSchedule({ fetchImpl });
+  const { seasonId, currentWeek } = schedule;
 
   const queryPrefix = `/v1/matches?season_id=${encodeURIComponent(seasonId)}`;
   const previousWeekRequest = currentWeek > 1
-    ? fetchOfficialJson(`${queryPrefix}&week=${currentWeek - 1}`)
+    ? fetchOfficialJson(`${queryPrefix}&week=${currentWeek - 1}`, fetchImpl)
     : Promise.resolve({ data: [] });
-  const [resultsResponse, previousWeekResponse, weekResponse, liveResponse] = await Promise.all([
-    fetchOfficialJson(`${queryPrefix}&status=played,awarded`),
+  const [previousWeekResponse, weekResponse, liveResponse] = await Promise.all([
     previousWeekRequest,
-    fetchOfficialJson(`${queryPrefix}&week=${currentWeek}`),
-    fetchOfficialJson(`${queryPrefix}&status=playing`)
+    fetchOfficialJson(`${queryPrefix}&week=${currentWeek}`, fetchImpl),
+    fetchOfficialJson(`${queryPrefix}&status=playing`, fetchImpl)
   ]);
 
-  const matchesById = new Map();
+  const matchesById = new Map(schedule.fixtures.map((fixture) => [fixture.providerId, fixture]));
   [
-    ...(resultsResponse?.data || []),
     ...(previousWeekResponse?.data || []),
     ...(weekResponse?.data || []),
     ...(liveResponse?.data || [])
   ].forEach((match) => {
-    if (match?.match_id) matchesById.set(String(match.match_id), match);
+    const fixture = normalizeOfficialFixture(match);
+    if (fixture) matchesById.set(fixture.providerId, fixture);
   });
 
-  const fixtures = [...matchesById.values()].map(normalizeOfficialFixture).filter(Boolean);
+  const fixtures = [...matchesById.values()];
   const isLive = fixtures.some((fixture) => fixture.status === "LIVE");
   const nowMs = Date.now();
   const isNearKickoff = fixtures.some((fixture) => {
@@ -148,7 +180,7 @@ async function loadLivePayload() {
   };
 }
 
-export async function getOfficialLivePayload({ force = false } = {}) {
+export async function getOfficialLivePayload({ force = false, fetchImpl = fetch } = {}) {
   if (!force && cachedPayload && Date.now() < cacheExpiresAt) return cachedPayload;
 
   if (force && !inFlightRequest) {
@@ -156,7 +188,7 @@ export async function getOfficialLivePayload({ force = false } = {}) {
   }
 
   if (!inFlightRequest) {
-    inFlightRequest = loadLivePayload()
+    inFlightRequest = loadLivePayload(fetchImpl)
       .then((payload) => {
         cachedPayload = payload;
         cachedAt = Date.now();

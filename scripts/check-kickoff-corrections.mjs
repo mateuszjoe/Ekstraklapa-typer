@@ -53,7 +53,10 @@ for (const rescheduled of [
   for (const normalize of [normalizeOfficialFixture, normalizeOfficialLeagueMatch]) {
     const result = normalize({ ...item, ...rescheduled });
     assert.equal(result.localMatchId, rescheduled.expectedId, "Postponement must preserve the ID used by saved picks.");
-    assert.equal(result.kickoffAt, rescheduled.postponed_datetime, "Use the rescheduled date within the original round.");
+    const midnightPlaceholder = rescheduled.postponed_datetime.includes("T00:00:00");
+    assert.equal(result.kickoffAt, midnightPlaceholder ? null : rescheduled.postponed_datetime,
+      "A rescheduled exact time is used; a date-only midnight placeholder stays unconfirmed.");
+    assert.equal(result.kickoffConfirmed, !midnightPlaceholder);
     if (result.matchday !== undefined) assert.equal(result.matchday, rescheduled.week);
   }
 }

@@ -19,6 +19,8 @@ await Promise.all([
   cp(join(root, "data.js"), join(output, "data.js")),
   cp(join(root, "firebase-config.js"), join(output, "firebase-config.js")),
   cp(join(root, "live-provider.js"), join(output, "live-provider.js")),
+  cp(join(root, "official-api.js"), join(output, "official-api.js")),
+  cp(join(root, "official-kickoff.js"), join(output, "official-kickoff.js")),
   cp(join(root, "league-provider.js"), join(output, "league-provider.js")),
   cp(join(root, "player-rating.js"), join(output, "player-rating.js")),
   cp(join(root, "notification-primer-policy.js"), join(output, "notification-primer-policy.js")),

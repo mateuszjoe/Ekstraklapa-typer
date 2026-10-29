@@ -3,6 +3,9 @@ const { join, resolve } = require("node:path");
 const { pathToFileURL } = require("node:url");
 
 async function main() {
+  const args = process.argv.slice(2);
+  if (args.some((arg) => arg !== "--dry-run")) throw new Error("Użycie: npm run sync:schedule -- [--dry-run]");
+  const dryRun = args.includes("--dry-run");
   const root = resolve(__dirname, "..");
   const firebaseToolsLib = join(process.env.APPDATA || "", "npm", "node_modules", "firebase-tools", "lib");
   if (!existsSync(join(firebaseToolsLib, "auth.js"))) {
@@ -11,12 +14,10 @@ async function main() {
 
   const projectId = JSON.parse(readFileSync(join(root, ".firebaserc"), "utf8")).projects?.default;
   if (!projectId) throw new Error("Brak domyślnego projektu w .firebaserc.");
-  const { matches } = await import(pathToFileURL(join(root, "data.js")).href);
-  const allowedMatchIds = new Set(matches.map((match) => match.id));
-  const confirmed = matches
-    .filter((match) => match.kickoffConfirmed && Number.isFinite(new Date(match.kickoffAt).getTime()))
-    .sort((a, b) => a.id.localeCompare(b.id));
-  if (!confirmed.length) throw new Error("W data.js nie ma potwierdzonych terminów.");
+  const { getOfficialTrustedSchedule } = await import(pathToFileURL(join(root, "live-provider.js")).href);
+  const { planTrustedSchedule, verifyTrustedSchedule } = await import(
+    pathToFileURL(join(root, "notifications-worker/trusted-schedule.js")).href
+  );
 
   const auth = require(join(firebaseToolsLib, "auth.js"));
   const { Client } = require(join(firebaseToolsLib, "apiv2.js"));
@@ -26,60 +27,37 @@ async function main() {
 
   const baseName = `projects/${projectId}/databases/(default)/documents`;
   const basePath = `/projects/${projectId}/databases/(default)/documents`;
-  const updatedAt = new Date().toISOString();
-  const signature = confirmed.map((match) => `${match.id}:${match.matchday}:${new Date(match.kickoffAt).toISOString()}`).join("|");
-  const writes = confirmed.map((match) => {
-    const kickoff = new Date(match.kickoffAt).toISOString();
-    return {
-      update: {
-        name: `${baseName}/seasons/2026-27/matches/${match.id}`,
-        fields: {
-          matchday: { integerValue: String(match.matchday) },
-          closesAt: { timestampValue: kickoff },
-          revealsAt: { timestampValue: kickoff },
-          updatedAt: { timestampValue: updatedAt }
-        }
-      },
-      updateMask: { fieldPaths: ["matchday", "closesAt", "revealsAt", "updatedAt"] }
-    };
-  });
   const client = new Client({ urlPrefix: "https://firestore.googleapis.com", apiVersion: "v1" });
-  const trustedDocuments = [];
-  let pageToken = "";
-  do {
-    const response = await client.get(`${basePath}/seasons/2026-27/matches`, {
-      queryParams: { pageSize: 300, ...(pageToken ? { pageToken } : {}) }
-    });
-    trustedDocuments.push(...(response.body?.documents || []));
-    pageToken = response.body?.nextPageToken || "";
-  } while (pageToken);
+  async function readTrustedDocuments() {
+    const documents = [];
+    let pageToken = "";
+    do {
+      const response = await client.get(`${basePath}/seasons/2026-27/matches`, {
+        queryParams: { pageSize: 300, ...(pageToken ? { pageToken } : {}) }
+      });
+      documents.push(...(response.body?.documents || []));
+      pageToken = response.body?.nextPageToken || "";
+    } while (pageToken);
+    return documents;
+  }
+  const [payload, trustedDocuments] = await Promise.all([
+    getOfficialTrustedSchedule({ force: true }),
+    readTrustedDocuments()
+  ]);
+  if (payload.fixtures?.length !== 153) {
+    throw new Error("Brak świeżego oficjalnego terminarza; nie zmieniono terminów w Firestore.");
+  }
+  const changes = planTrustedSchedule(payload.fixtures, trustedDocuments);
+  console.log(`${dryRun ? "Podgląd" : "Synchronizacja"}: ${changes.length} zmian terminów w projekcie ${projectId}.`);
+  for (const change of changes) console.log(`${change.id}: ${change.expected.kickoffConfirmed.booleanValue ? change.expected.closesAt.timestampValue : "oczekuje na dokładną godzinę / typowanie zamknięte"}`);
+  if (dryRun || !changes.length) return;
 
-  const removedDocuments = trustedDocuments.filter((document) => {
-    const matchId = String(document.name || "").split("/").at(-1);
-    const matchday = Number(document.fields?.matchday?.integerValue);
-    return !allowedMatchIds.has(matchId) || !Number.isInteger(matchday) || matchday < 1 || matchday > 17;
-  });
-  writes.push(...removedDocuments.map((document) => ({ delete: document.name })));
-  writes.push({
-    update: {
-      name: `${baseName}/scheduleMeta/2026-27`,
-      fields: {
-        seasonId: { stringValue: "2026-27" },
-        signature: { stringValue: signature },
-        matchCount: { integerValue: String(confirmed.length) },
-        updatedAt: { timestampValue: updatedAt }
-      }
-    }
-  });
-
+  const writes = changes.map((change) => change.write);
   for (let index = 0; index < writes.length; index += 450) {
     await client.post(`${basePath}:commit`, { writes: writes.slice(index, index + 450) });
   }
-  const verification = await client.get(`${basePath}/scheduleMeta/2026-27`);
-  if (Number(verification.body?.fields?.matchCount?.integerValue) !== confirmed.length) {
-    throw new Error("Firestore nie potwierdził pełnego zapisu terminarza.");
-  }
-  console.log(`Zapisano ${confirmed.length} potwierdzonych terminów w projekcie ${projectId}. Usunięto ${removedDocuments.length} dokumentów spoza rundy jesiennej.`);
+  verifyTrustedSchedule(changes, await readTrustedDocuments());
+  console.log(`Zapisano i zweryfikowano ${changes.length} dokumentów terminarza. Typy graczy pozostały bez zmian; zakończone wyniki pochodzą z oficjalnego źródła.`);
 }
 
 main().catch((error) => {

@@ -1,4 +1,5 @@
 import webpushPackage from "web-push";
+import { readScheduleState, syncTrustedSchedule } from "./trusted-schedule.js";
 import { matches, teams } from "../data.js";
 import { getOfficialLivePayload } from "../live-provider.js";
 import {
@@ -406,6 +407,14 @@ async function adminBootstrap(request, env) {
   await upsertPlayerIdentity(env, user);
   const pendingScheduled = await wakePendingAdminEvents(env, user.uid);
   return { status: "ready", uid: user.uid, pendingScheduled };
+}
+
+async function requestScheduleSync(request, env) {
+  const user = await authenticatedAdmin(request, env);
+  await consumeRateLimit(env, user.uid, "admin-schedule-sync", 12);
+  exactBodyFields(await jsonBody(request), []);
+  await requireNotificationQueue(env).send({ type: "schedule-sync", force: true });
+  return { status: "queued" };
 }
 
 async function adminPlayers(request, env) {
@@ -1672,8 +1681,8 @@ function confirmedRounds(fixtures = []) {
     const official = officialById.get(match.id);
     grouped.get(match.matchday).push({
       ...match,
-      kickoffAt: official?.kickoffAt || match.kickoffAt,
-      kickoffConfirmed: Boolean(official?.kickoffAt) || match.kickoffConfirmed
+      kickoffAt: official ? official.kickoffAt : match.kickoffAt,
+      kickoffConfirmed: official ? official.kickoffConfirmed === true : match.kickoffConfirmed
     });
   });
   return [...grouped.entries()]
@@ -1731,6 +1740,7 @@ function leagueFixtureSnapshot(payload) {
       localMatchId: String(match.localMatchId),
       matchday: Number(match.matchday),
       kickoffAt: match.kickoffAt || null,
+      kickoffConfirmed: match.kickoffConfirmed === true,
       status: String(match.status || "NS"),
       home: String(match.home || ""),
       away: String(match.away || "")
@@ -2545,7 +2555,11 @@ async function processPublishedLineupNotifications(env, fixtures, enqueueBudget)
     if (enqueueBudget.remaining <= 0) break;
     const fixture = fixturesById.get(row.match_id);
     const publishedAt = Number(row.published_at) || 0;
-    if (!fixture || publishedAt <= 0) continue;
+    const currentKickoff = Date.parse(fixture?.kickoffAt || "");
+    if (!fixture || publishedAt <= 0 || fixture.kickoffConfirmed !== true
+      || !Number.isFinite(currentKickoff) || currentKickoff <= Date.now()
+      || currentKickoff !== Number(row.kickoff_at)
+      || String(fixture.providerId) !== String(row.provider_match_id)) continue;
     const eventPrefix = `lineup-published:${row.match_id}:`;
     const uids = await subscriberUidsMissingEvent(env, eventPrefix, enqueueBudget.remaining, publishedAt);
     const homeName = TEAM_BY_ID.get(fixture.home)?.name || fixture.home;
@@ -2762,7 +2776,7 @@ async function runQueueTick(env) {
   await publishPendingEventKeys(env);
 }
 
-function health(env) {
+async function health(env) {
   return {
     ok: true,
     service: "ekstraklasa-typer-notifications",
@@ -2771,6 +2785,8 @@ function health(env) {
     vapidConfigured: Boolean(env.VAPID_PRIVATE_KEY),
     queueConfigured: Boolean(env.NOTIFICATION_QUEUE),
     ratingsConfigured: apiFootballConfigured(env.API_FOOTBALL_KEY),
+    scheduleSyncConfigured: Boolean(env.FIREBASE_SCHEDULE_REFRESH_TOKEN),
+    scheduleSync: await readScheduleState(env),
     officialProvider: "ekstraklasa-match-center",
     now: new Date().toISOString()
   };
@@ -2872,6 +2888,7 @@ async function handleRequest(request, env) {
   if (request.method !== "POST") throw new HttpError(404, "not-found", "Nie znaleziono endpointu.");
 
   const routes = {
+    "/api/admin/schedule/sync": requestScheduleSync,
     "/api/profile/sync": profileSync,
     "/api/admin/bootstrap": adminBootstrap,
     "/api/push/register": registerSubscription,
@@ -2899,6 +2916,9 @@ async function consumeQueueMessage(message, env) {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     console.error("Dropping malformed notification Queue message");
     return { status: "invalid-message" };
+  }
+  if (body.type === "schedule-sync") {
+    return syncTrustedSchedule(env, { force: body.force === true });
   }
   if (body.type === "tick") {
     await runQueueTick(env);
@@ -2930,10 +2950,11 @@ export default {
   },
 
   async scheduled(controller, env, context) {
-    context.waitUntil(requireNotificationQueue(env).send({
-      type: "tick",
-      scheduledAt: new Date(controller.scheduledTime || Date.now()).toISOString()
-    }).catch((error) => console.error("Notification tick enqueue failed", error)));
+    const scheduledAt = new Date(controller.scheduledTime || Date.now()).toISOString();
+    context.waitUntil(requireNotificationQueue(env).sendBatch([
+      { body: { type: "schedule-sync", scheduledAt } },
+      { body: { type: "tick", scheduledAt } }
+    ]).catch((error) => console.error("Notification tick enqueue failed", error)));
   },
 
   async queue(batch, env) {
