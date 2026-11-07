@@ -115,6 +115,23 @@ npx wrangler deploy --config notifications-wrangler.jsonc
 
 Lokalnie klucz można umieścić w ignorowanym pliku `.env` zgodnie z `.env.example`. API-Football jest zewnętrznym dostawcą, a nie oficjalnym partnerem Ekstraklasy; dostępność ocen zależy od pokrycia danego meczu i planu dostawcy.
 
+### Korekty typów po awarii
+
+Administrator w panelu graczy wybiera **UZUPEŁNIJ / POPRAW TYPY**, kolejkę i tylko te mecze, które wymagają zmiany. Formularz odczytuje aktualne typy z serwera i wymaga powodu korekty. Umożliwia także uzupełnienie po rozpoczęciu lub zakończeniu meczu; zwykły gracz zachowuje dotychczasową blokadę terminu. Uprawnienie korzysta wyłącznie z istniejącej, zweryfikowanej sesji Google administratora.
+
+Każda korekta jest atomową transakcją Firestore z niezmiennym audytem: gracz, mecz, stary i nowy typ, administrator, powód i rzeczywisty czas serwera. Nie antydatuje zgłoszenia. Równoległa zmiana powoduje konflikt zamiast nadpisania. Rozliczony wynik aktualizuje punkty o różnicę; nie zwiększa ponownie liczby rozliczonych meczów. Nieprawidłowa historia punktacji zatrzymuje zapis.
+
+Ranking D1 synchronizuje oddzielny endpoint administratora `/api/admin/picks/sync` z aktualnym dokumentem Firestore. Wersja dokumentu chroni przed spóźnionymi zapisami. Przy przerwaniu połączenia formularz pokazuje zapisane typy i pozwala ponowić samą synchronizację. Nie należy ponawiać korekty jako nowego zdarzenia, jeśli zapis został już potwierdzony. Standardowy mechanizm może wysłać zwykłe powiadomienie o wyniku po uzupełnieniu brakującego typu zakończonego meczu.
+
+Kolejność pierwszego wdrożenia:
+
+1. Zastosuj raz `notifications-worker/migrations/0005_pick_firestore_versions.sql` w produkcyjnej D1 (przed wdrożeniem Workera).
+2. Wdróż `firestore.rules` do projektu `ekstraklasa-typer-2026-27`.
+3. Wdróż Workera z `notifications-wrangler.jsonc`.
+4. Opublikuj frontend, oba moduły `admin-picks-panel.js` i `admin-pick-transaction.js` oraz nową wersję service workera.
+
+`npm run check` obejmuje testy transakcji, formularza i synchronizacji. Testy autoryzacji wymagają lokalnego emulatora Firestore na `127.0.0.1:8185` i `npm run test:admin-rules` (Node.js 24 dla testów SQLite). Używają wyłącznie projektu `demo-admin-picks` i fikcyjnych danych; nie dotykają produkcji.
+
 ### Składki i wykluczanie graczy
 
 Status wpisowego jest przechowywany w dokumencie uczestnika w Firestore i może go zmienić wyłącznie administrator `mateuszjoe@gmail.com`. Ranking pobiera tylko minimalny publiczny dla uczestników zestaw: UID, informację opłacone/nieopłacone oraz status wykluczenia — bez maila i nazwy konta Google. Każda zmiana składki oraz wykluczenie są zapisywane w audycie D1.

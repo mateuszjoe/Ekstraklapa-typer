@@ -10,6 +10,7 @@ import { formatRecentPlayerRating } from "./player-rating.js";
 import { notificationPrimerDecision } from "./notification-primer-policy.js?v=1";
 import { currentMatchday, initialMatchdayFor } from "./matchday-selection.js";
 import { withCorrectedKickoff } from "./kickoff-corrections.js";
+import { createAdminPicksPanel } from "./admin-picks-panel.js";
 
 const bootStartedAt = performance.now();
 const app = document.querySelector("#app");
@@ -31,7 +32,7 @@ const NOTIFICATION_OUTBOX_CHAT_TTL_MS = 9 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PLAYER_TTL_MS = 14 * 60 * 1000;
 const NOTIFICATION_OUTBOX_PICK_TTL_MS = 45 * 24 * 60 * 60 * 1000;
 const NOTIFICATION_OUTBOX_NAME_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const APP_SERVICE_WORKER_VERSION = "46";
+const APP_SERVICE_WORKER_VERSION = "47";
 const FINAL = new Set(["FT", "AET", "PEN", "AWD", "WO", "FINISHED", "AWARDED"]);
 const LIVE = new Set(["1H", "HT", "2H", "ET", "BT", "P", "LIVE", "IN_PLAY", "PAUSED"]);
 const VIEWS = new Set(["matches", "ekstraklasa", "ranking", "rules", "settings", "admin"]);
@@ -1813,6 +1814,7 @@ function adminPlayerCard(player) {
       </div>
       ${isActiveParticipant ? `<button type="button" class="admin-entry-fee-toggle${entryFeePaid ? " is-revoke" : ""}" data-admin-entry-fee="${escapeHtml(player.uid)}" data-next-paid="${entryFeePaid ? "false" : "true"}" ${busy ? "disabled" : ""}>${busy ? "ZAPISYWANIE…" : entryFeePaid ? "OZNACZ JAKO NIEOPŁACONE" : "OZNACZ JAKO OPŁACONE"}</button>` : ""}
     </div>` : ""}
+    ${isActiveParticipant ? `<button type="button" class="admin-player-picks" data-admin-edit-picks="${escapeHtml(player.uid)}" ${busy ? "disabled" : ""}>UZUPEŁNIJ / POPRAW TYPY</button>` : ""}
     <form class="admin-player-name-form" data-admin-name-form="${escapeHtml(player.uid)}">
       <label><span>Nick w typerze</span><input name="displayName" type="text" maxlength="${MAX_DISPLAY_NAME_LENGTH}" value="${escapeHtml(player.displayName || "")}" autocomplete="off" ${profileEditable ? "" : "disabled"}></label>
       <button type="submit" ${!profileEditable || busy ? "disabled" : ""}>${busy ? "ZAPISYWANIE…" : "ZAPISZ NICK"}</button>
@@ -2105,6 +2107,7 @@ function bindRendered() {
   adminPlayerSearch?.addEventListener("input", filterAdminPlayers);
   if (adminPlayerSearch && state.adminSearch) filterAdminPlayers({ currentTarget: adminPlayerSearch });
   app.querySelectorAll("[data-admin-name-form]").forEach((form) => form.addEventListener("submit", saveAdminDisplayName));
+  app.querySelectorAll("[data-admin-edit-picks]").forEach((button) => button.addEventListener("click", () => openAdminPicks(button.dataset.adminEditPicks)));
   app.querySelectorAll("[data-admin-entry-fee]").forEach((button) => button.addEventListener("click", toggleAdminEntryFee));
   app.querySelectorAll("[data-admin-remove-player]").forEach((button) => button.addEventListener("click", removeAdminPlayer));
   app.querySelectorAll("[data-admin-request-action]").forEach((button) => button.addEventListener("click", decideAdminNameRequest));
@@ -5790,6 +5793,7 @@ function stopAdminJoinRequestsRealtime({ reset = true } = {}) {
 }
 
 function resetAdminClientState() {
+  adminPicksPanel?.reset();
   stopAdminNameRequestsRealtime();
   stopAdminJoinRequestsRealtime();
   state.adminPlayers = [];
@@ -5797,6 +5801,44 @@ function resetAdminClientState() {
   state.adminPlayersError = "";
   state.adminBusyId = "";
   state.adminSearch = "";
+}
+
+let adminPicksPanel = null;
+
+function openAdminPicks(uid) {
+  if (!isCurrentUserAdmin()) return;
+  const player = state.adminPlayers.find((item) => item.uid === uid && item.isParticipant && !item.removed);
+  if (!player) return;
+  if (!adminPicksPanel) {
+    adminPicksPanel = createAdminPicksPanel({
+      lastMatchday: LAST_MATCHDAY,
+      getContext: () => isCurrentUserAdmin() && state.db && state.firebaseModules
+        ? { actorUid: state.user.uid, db: state.db, sdk: state.firebaseModules } : null,
+      getMatches: (matchday) => state.matches.filter((match) => match.matchday === matchday)
+        .sort((a, b) => new Date(a.kickoffAt) - new Date(b.kickoffAt))
+        .map((match) => ({ ...match, closed: isLocked(match),
+          label: `${teamById[match.home]?.name || match.home} – ${teamById[match.away]?.name || match.away}`,
+          when: `${formatDay(match)} · ${formatTime(match)}` })),
+      syncCorrection: (payload) => notificationApiRequest("/api/admin/picks/sync", payload),
+      onChanged: ({ uid: targetUid, matchId, pick }) => {
+        const match = state.matches.find((item) => item.id === matchId);
+        if (match) delete state.playerPicksCache[playerPicksCacheKey(targetUid, match.matchday)];
+        delete state.matchPicksCache[matchId];
+        if (targetUid === state.user?.uid && ["1", "X", "2"].includes(pick)) {
+          state.confirmedPredictions[matchId] = pick;
+          state.predictions[matchId] = pick;
+          save();
+        }
+      },
+      onComplete: () => {
+        if (!isCurrentUserAdmin()) return;
+        if (state.playerPicksUid) void loadPlayerPicksMatchday(state.playerPicksMatchday);
+        void loadRankingData();
+      }
+    });
+  }
+  adminPicksPanel.open({ uid, name: player.displayName || player.googleName || uid,
+    matchday: state.matchday >= 1 && state.matchday <= LAST_MATCHDAY ? state.matchday : defaultPlayerPicksMatchday() });
 }
 
 function startAdminJoinRequestsRealtime({ restart = false } = {}) {

@@ -418,6 +418,8 @@ svg { width: 1.1em; height: 1.1em; fill: none; stroke: currentColor; stroke-widt
 .admin-entry-fee-toggle.is-revoke { color: var(--ink); background: var(--yellow); box-shadow: 3px 3px 0 var(--paper-strong); }
 .admin-entry-fee-toggle:hover { transform: translateY(-1px); }
 .admin-entry-fee-toggle:disabled { cursor: wait; opacity: .55; transform: none; box-shadow: none; }
+.admin-player-picks { min-height: 44px; padding: 10px 13px; color: var(--ink); background: var(--yellow); border: 2px solid var(--ink); border-radius: 7px; font-size: 9px; font-weight: 950; }
+.admin-player-picks:disabled { opacity: .55; cursor: wait; }
 .admin-player-remove { min-height: 40px; padding: 9px 13px; color: white; background: var(--live); border: 2px solid var(--ink); border-radius: 7px; box-shadow: 3px 3px 0 var(--ink); font-size: 8px; font-weight: 950; }
 .admin-player-remove.is-cleanup { color: var(--ink); background: var(--yellow); box-shadow: 3px 3px 0 var(--green); }
 .admin-player-remove:hover { transform: translateY(-1px); }
@@ -1436,4 +1438,40 @@ footer { min-height: 96px; padding: 20px clamp(25px, 7vw, 110px); color: #b7b0a3
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
+}
+
+/* Administrative corrections stay separate from the ordinary prediction cards. */
+.admin-picks-modal { width: min(760px, calc(100vw - 28px)); padding: 30px; }
+.admin-picks-heading { padding-right: 32px; }
+.admin-picks-heading h2 { margin: 8px 0; font-size: 24px; overflow-wrap: anywhere; }
+.admin-picks-heading p:not(.eyebrow) { margin-bottom: 18px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.admin-picks-form { display: grid; gap: 16px; }
+.admin-picks-toolbar { display: flex; align-items: end; justify-content: space-between; gap: 12px; }
+.admin-picks-toolbar label, .admin-picks-row label, .admin-picks-reason { display: grid; gap: 6px; color: var(--ink); font-size: 11px; font-weight: 850; }
+.admin-picks-toolbar select, .admin-picks-row select, .admin-picks-reason textarea { min-height: 44px; padding: 10px; border: 2px solid var(--ink); border-radius: 7px; color: var(--ink); background: var(--white); font: inherit; }
+.admin-picks-toolbar select { min-width: 90px; }
+.admin-picks-reason textarea { width: 100%; resize: vertical; line-height: 1.6; font-size: 13px; font-weight: 500; }
+.admin-picks-list { display: grid; gap: 8px; }
+.admin-picks-row { display: grid; grid-template-columns: minmax(0, 1fr) 165px; align-items: center; gap: 15px; padding: 14px; border: 1px solid var(--paper-strong); border-radius: 8px; background: var(--paper); }
+.admin-picks-row strong { display: block; font-size: 13px; line-height: 1.45; }
+.admin-picks-row small { display: block; margin-top: 5px; font-size: 10px; line-height: 1.5; color: var(--muted); }
+.admin-picks-row p { margin: 7px 0 0; font-size: 11px; }
+.admin-picks-row.has-error { border-color: var(--live); }
+.admin-picks-row-error { color: #a22424; font-size: 11px; line-height: 1.5; }
+.admin-picks-toolbar button, .admin-picks-actions button, .admin-picks-sync button { min-height: 44px; padding: 10px 14px; border: 2px solid var(--ink); border-radius: 7px; color: var(--ink); background: var(--white); font-size: 10px; font-weight: 900; }
+.admin-picks-actions { display: flex; justify-content: flex-end; gap: 10px; }
+.admin-picks-actions button[type=submit] { background: var(--yellow); box-shadow: 3px 3px 0 var(--green); }
+.admin-picks-modal button:disabled, .admin-picks-modal select:disabled { opacity: .55; cursor: wait; box-shadow: none; }
+.admin-picks-modal :is(button, select, textarea):focus-visible { outline: 3px solid var(--green); outline-offset: 3px; }
+.admin-picks-status { margin: 0; font-size: 12px; line-height: 1.6; }
+.admin-picks-sync { padding: 12px; border: 1px solid #af8b14; border-radius: 7px; background: #fff8d5; }
+.admin-picks-sync p { margin: 0 0 10px; font-size: 12px; line-height: 1.5; }
+@media (max-width: 600px) {
+  .admin-picks-modal { padding: 23px 15px; }
+  .admin-picks-heading h2 { font-size: 20px; }
+  .admin-picks-row { grid-template-columns: minmax(0, 1fr); gap: 10px; padding: 12px; }
+  .admin-picks-row label { grid-template-columns: 1fr minmax(140px, 170px); align-items: center; }
+  .admin-picks-row select { width: 100%; font-size: 12px; }
+  .admin-picks-actions { flex-wrap: wrap; }
+  .admin-picks-actions button { flex: 1 1 auto; }
 }

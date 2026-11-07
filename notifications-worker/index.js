@@ -1,4 +1,5 @@
 import webpushPackage from "web-push";
+import { preparePickProjection, firestorePickVersion, readAdminPickProjection, PickCorrectionSyncError } from "./pick-projection.js";
 import { readScheduleState, syncTrustedSchedule } from "./trusted-schedule.js";
 import { matches, teams } from "../data.js";
 import { getOfficialLivePayload } from "../live-provider.js";
@@ -894,7 +895,8 @@ async function syncPicks(request, env) {
           }
         };
       }
-      return { verified: item };
+      firestorePickVersion(document.updateTime);
+      return { verified: { ...item, updateTime: document.updateTime } };
     } catch (error) {
       const httpError = error instanceof HttpError ? error : null;
       return {
@@ -909,21 +911,53 @@ async function syncPicks(request, env) {
   });
   const verified = verificationResults.flatMap((result) => result.verified ? [result.verified] : []);
   rejected.push(...verificationResults.flatMap((result) => result.rejected ? [result.rejected] : []));
-  const now = Date.now();
   if (verified.length) {
-    await env.DB.batch(verified.map((item) => env.DB.prepare(`
-      INSERT INTO picks (uid, match_id, matchday, pick, verified_at)
-      VALUES (?1, ?2, ?3, ?4, ?5)
-      ON CONFLICT(uid, match_id) DO UPDATE SET
-        matchday = excluded.matchday,
-        pick = excluded.pick,
-        verified_at = excluded.verified_at
-    `).bind(user.uid, item.matchId, item.matchday, item.pick, now)));
+    await env.DB.batch(verified.map((item) => preparePickProjection(env.DB, user.uid, item)));
   }
   return {
     status: rejected.length ? (verified.length ? "partial" : "rejected") : "synced",
     count: verified.length,
     rejected
+  };
+}
+
+async function syncAdminPick(request, env) {
+  const user = await authenticatedAdmin(request, env);
+  await consumeRateLimit(env, user.uid, "admin-picks-sync", 60);
+  const body = await jsonBody(request);
+  exactBodyFields(body, ["uid", "matchId", "correctionId"]);
+  let projection;
+  try {
+    projection = await readAdminPickProjection({
+      actorUid: user.uid,
+      ...body,
+      match: MATCH_BY_ID.get(body.matchId),
+      readDocument: (segments) => firestoreDocument(env, user.token, segments, 409),
+      participantIsActive
+    });
+  } catch (error) {
+    if (error instanceof PickCorrectionSyncError) {
+      throw new HttpError(error.status, error.code, error.message);
+    }
+    throw error;
+  }
+  await preparePickProjection(env.DB, body.uid, projection).run();
+  const mirrored = await env.DB.prepare(`
+    SELECT pick, firestore_updated_at FROM picks WHERE uid = ?1 AND match_id = ?2
+  `).bind(body.uid, projection.matchId).first();
+  if (!mirrored || !VALID_PICKS.has(mirrored.pick)) {
+    throw new HttpError(503, "pick-sync-unconfirmed", "Typ jest zapisany, ale nie potwierdzono aktualizacji rankingu. Ponów synchronizację.");
+  }
+  const overtaken = mirrored.firestore_updated_at > firestorePickVersion(projection.updateTime);
+  // Ranking endpoints read these projections directly. This request does not
+  // enqueue pushes; the existing periodic notification policy remains in force.
+  return {
+    status: overtaken ? "superseded" : projection.status,
+    uid: body.uid,
+    matchId: projection.matchId,
+    pick: mirrored.pick,
+    correctionId: body.correctionId,
+    currentCorrectionId: overtaken ? "" : projection.currentCorrectionId
   };
 }
 
@@ -2904,6 +2938,7 @@ async function handleRequest(request, env) {
     "/api/events/admin-name-edited": adminNameEdited,
     "/api/admin/players/payment": adminPlayerPayment,
     "/api/admin/players/remove": removeAdminPlayer,
+    "/api/admin/picks/sync": syncAdminPick,
     "/api/picks/sync": syncPicks
   };
   const handler = routes[url.pathname];

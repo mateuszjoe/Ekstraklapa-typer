@@ -13,7 +13,7 @@ export default function Home() {
     if (!document.querySelector("script[data-ekstraklasa-runtime]")) {
       const script = document.createElement("script");
       script.type = "module";
-      script.src = "/app.js?v=41";
+      script.src = "/app.js?v=52";
       script.dataset.ekstraklasaRuntime = "true";
       document.body.appendChild(script);
     }

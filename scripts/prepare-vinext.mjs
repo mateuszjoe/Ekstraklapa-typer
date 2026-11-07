@@ -14,6 +14,8 @@ await mkdir(output, { recursive: true });
 
 await Promise.all([
   cp(join(root, "app.js"), join(output, "app.js")),
+  cp(join(root, "admin-picks-panel.js"), join(output, "admin-picks-panel.js")),
+  cp(join(root, "admin-pick-transaction.js"), join(output, "admin-pick-transaction.js")),
   cp(join(root, "matchday-selection.js"), join(output, "matchday-selection.js")),
   cp(join(root, "kickoff-corrections.js"), join(output, "kickoff-corrections.js")),
   cp(join(root, "data.js"), join(output, "data.js")),

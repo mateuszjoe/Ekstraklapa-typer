@@ -112,6 +112,125 @@ service cloud.firestore {
         && request.resource.data.keys().hasOnly(['pick', 'updatedAt']);
     }
 
+    // Corrections are explicit administrator operations. The immutable audit,
+    // canonical pick and any settled score/aggregate must agree in one commit.
+    function adminCorrectionTarget(seasonId, uid, matchId) {
+      let participant = get(/databases/$(database)/documents/seasons/$(seasonId)/participants/$(uid)).data;
+      let fixture = get(/databases/$(database)/documents/seasons/$(seasonId)/matches/$(matchId)).data;
+      return isAdmin()
+        && seasonId == '2026-27'
+        && uid.size() > 0 && uid.size() <= 128
+        && matchId.size() > 0 && matchId.size() <= 180
+        && participant.uid == uid && participant.seasonId == seasonId
+        && participantAccessAllowed(participant)
+        && fixture.matchday is int && fixture.matchday >= 1 && fixture.matchday <= 17
+        && fixture.get('result', '') in ['', '1', 'X', '2'];
+    }
+
+    function adminCorrectionProof(seasonId, uid, matchId, correctionId) {
+      let auditPath = /databases/$(database)/documents/seasons/$(seasonId)/adminPickCorrections/$(correctionId);
+      let pickPath = /databases/$(database)/documents/seasons/$(seasonId)/players/$(uid)/picks/$(matchId);
+      let audit = getAfter(auditPath).data;
+      let afterPick = getAfter(pickPath).data;
+      return adminCorrectionTarget(seasonId, uid, matchId)
+        && correctionId is string && correctionId.matches('^[A-Za-z0-9_-]{10,100}$')
+        && !exists(auditPath)
+        && audit.keys().hasOnly(['uid', 'matchId', 'actorUid', 'oldPick', 'newPick', 'reason', 'createdAt'])
+        && audit.uid == uid && audit.matchId == matchId
+        && audit.actorUid == request.auth.uid
+        && audit.oldPick == (exists(pickPath) ? get(pickPath).data.pick : '')
+        && audit.newPick in ['1', 'X', '2']
+        && audit.newPick != audit.oldPick
+        && audit.reason is string && audit.reason.size() >= 5 && audit.reason.size() <= 500
+        && audit.reason.matches('.*[A-Za-z0-9ĄĆĘŁŃÓŚŹŻąćęłńóśźż].*')
+        && audit.createdAt == request.time
+        && afterPick.keys().hasOnly(['pick', 'updatedAt', 'correctionId'])
+        && afterPick.pick == audit.newPick
+        && afterPick.correctionId == correctionId
+        && afterPick.updatedAt == request.time;
+    }
+
+    function adminCorrectionSettlement(seasonId, uid, matchId, newPick) {
+      let scorePath = /databases/$(database)/documents/seasons/$(seasonId)/players/$(uid)/scores/$(matchId);
+      let boardPath = /databases/$(database)/documents/seasons/$(seasonId)/leaderboard/$(uid);
+      let beforeBoard = get(boardPath).data;
+      let afterBoard = getAfter(boardPath).data;
+      let hadScore = exists(scorePath);
+      let afterScore = getAfter(scorePath).data;
+      let oldPoints = hadScore ? get(scorePath).data.points : 0;
+      let points = newPick == get(/databases/$(database)/documents/seasons/$(seasonId)/matches/$(matchId)).data.result ? 1 : 0;
+      return afterScore.keys().hasOnly(['uid', 'matchId', 'pick', 'points', 'settledAt'])
+        && afterScore.uid == uid && afterScore.matchId == matchId
+        && afterScore.pick == newPick && afterScore.points == points
+        && afterScore.settledAt == (hadScore ? get(scorePath).data.settledAt : request.time)
+        && (!hadScore || (
+          get(scorePath).data.uid == uid && get(scorePath).data.matchId == matchId
+          && get(scorePath).data.pick == get(/databases/$(database)/documents/seasons/$(seasonId)/players/$(uid)/picks/$(matchId)).data.pick
+          && get(scorePath).data.points in [0, 1]
+        ))
+        && beforeBoard.uid == uid && afterBoard.uid == uid
+        && beforeBoard.points is int && beforeBoard.typed is int
+        && beforeBoard.points >= 0 && beforeBoard.points <= beforeBoard.typed
+        && beforeBoard.typed >= 0 && beforeBoard.typed <= 153
+        && beforeBoard.settledMatchIds is list
+        && beforeBoard.typed == beforeBoard.settledMatchIds.size()
+        && beforeBoard.settledMatchIds.toSet().size() == beforeBoard.settledMatchIds.size()
+        && hadScore == beforeBoard.settledMatchIds.hasAny([matchId])
+        && afterBoard.diff(beforeBoard).affectedKeys().hasOnly(['points', 'typed', 'lastScoreMatchId', 'settledMatchIds', 'updatedAt'])
+        && afterBoard.points == beforeBoard.points + points - oldPoints
+        && afterBoard.typed == beforeBoard.typed + (hadScore ? 0 : 1)
+        && afterBoard.points >= 0 && afterBoard.points <= afterBoard.typed
+        && afterBoard.typed <= 153
+        && afterBoard.lastScoreMatchId == matchId
+        && afterBoard.updatedAt == request.time
+        && (hadScore
+          ? afterBoard.settledMatchIds == beforeBoard.settledMatchIds
+          : afterBoard.settledMatchIds.size() == beforeBoard.settledMatchIds.size() + 1
+            && afterBoard.settledMatchIds.hasAll(beforeBoard.settledMatchIds)
+            && afterBoard.settledMatchIds.hasAny([matchId]));
+    }
+
+    function adminCorrectionScoresConsistent(seasonId, uid, matchId, newPick) {
+      return get(/databases/$(database)/documents/seasons/$(seasonId)/matches/$(matchId)).data.get('result', '') in ['1', 'X', '2']
+        ? adminCorrectionSettlement(seasonId, uid, matchId, newPick)
+        : !exists(/databases/$(database)/documents/seasons/$(seasonId)/players/$(uid)/scores/$(matchId))
+          && !existsAfter(/databases/$(database)/documents/seasons/$(seasonId)/players/$(uid)/scores/$(matchId));
+    }
+
+    // This small reciprocal link proves both the pick and a new immutable audit
+    // are being written in this commit. Their own rules validate the full proof
+    // and score pair once, rather than evaluating it again for every document.
+    function adminCorrectionLinked(seasonId, uid, matchId) {
+      let pickPath = /databases/$(database)/documents/seasons/$(seasonId)/players/$(uid)/picks/$(matchId);
+      let pick = getAfter(pickPath).data;
+      let correctionId = pick.get('correctionId', '');
+      let auditPath = /databases/$(database)/documents/seasons/$(seasonId)/adminPickCorrections/$(correctionId);
+      let audit = getAfter(auditPath).data;
+      return isAdmin() && seasonId == '2026-27'
+        && !exists(auditPath)
+        && (!exists(pickPath) || get(pickPath).data.get('correctionId', '') != correctionId)
+        && audit.uid == uid && audit.matchId == matchId
+        && audit.newPick == pick.pick && audit.createdAt == request.time
+        && pick.updatedAt == request.time;
+    }
+
+    function validAdminPickCorrection(seasonId, uid, matchId) {
+      return isAdmin()
+        && adminCorrectionLinked(seasonId, uid, matchId)
+        && adminCorrectionScoresConsistent(seasonId, uid, matchId, request.resource.data.pick);
+    }
+
+    function validAdminCorrectedScore(seasonId, uid, matchId) {
+      return isAdmin()
+        && adminCorrectionLinked(seasonId, uid, matchId);
+    }
+
+    function validAdminCorrectedLeaderboard(seasonId, uid) {
+      return isAdmin()
+        && get(/databases/$(database)/documents/seasons/$(seasonId)/matches/$(request.resource.data.lastScoreMatchId)).data.get('result', '') in ['1', 'X', '2']
+        && adminCorrectionLinked(seasonId, uid, request.resource.data.lastScoreMatchId);
+    }
+
     function validTrustedMatch(seasonId, matchId) {
       return seasonId == '2026-27'
         && matchId.size() > 0
@@ -889,30 +1008,39 @@ service cloud.firestore {
     }
 
     match /seasons/{seasonId}/players/{uid}/picks/{matchId} {
-      allow get: if googleSignedIn()
+      allow get: if (seasonId == '2026-27' && isAdmin()) || (googleSignedIn()
         && isSeasonParticipant()
         && (uid == request.auth.uid
-          || matchRevealed(seasonId, matchId));
+          || matchRevealed(seasonId, matchId)));
       allow list: if googleSignedIn()
         && isSeasonParticipant()
         && uid == request.auth.uid;
-      allow create: if isSeasonParticipant()
+      allow create: if validAdminPickCorrection(seasonId, uid, matchId) || (isSeasonParticipant()
         && uid == request.auth.uid
         && matchOpen(seasonId, matchId)
-        && validPlayerPick();
-      allow update: if isSeasonParticipant()
+        && validPlayerPick());
+      allow update: if validAdminPickCorrection(seasonId, uid, matchId) || (isSeasonParticipant()
         && uid == request.auth.uid
         && matchOpen(seasonId, matchId)
-        && validPlayerPick();
+        && validPlayerPick());
       allow delete: if false;
     }
 
     match /seasons/{seasonId}/players/{uid}/scores/{matchId} {
+      allow get: if seasonId == '2026-27' && isAdmin();
       allow get, list: if googleSignedIn()
         && isSeasonParticipant()
         && seasonId == '2026-27'
         && uid == request.auth.uid;
-      allow create: if validPlayerScore(seasonId, uid, matchId);
+      allow create: if validAdminCorrectedScore(seasonId, uid, matchId) || validPlayerScore(seasonId, uid, matchId);
+      allow update: if validAdminCorrectedScore(seasonId, uid, matchId);
+      allow delete: if false;
+    }
+
+    match /seasons/{seasonId}/adminPickCorrections/{correctionId} {
+      allow get, list: if seasonId == '2026-27' && isAdmin();
+      allow create: if isAdmin()
+        && adminCorrectionProof(seasonId, request.resource.data.uid, request.resource.data.matchId, correctionId);
       allow update, delete: if false;
     }
 
@@ -924,7 +1052,8 @@ service cloud.firestore {
         && (isSeasonParticipant() || isAdmin());
       allow create: if validAdminLeaderboardCreateFromJoin(seasonId, uid)
         || validExistingParticipantLeaderboardRepair(seasonId, uid);
-      allow update: if validLeaderboardIdentityUpdate(seasonId, uid)
+      allow update: if validAdminCorrectedLeaderboard(seasonId, uid)
+        || validLeaderboardIdentityUpdate(seasonId, uid)
         || validAdminLeaderboardIdentityUpdate(seasonId, uid)
         || validLeaderboardScoreUpdate(seasonId, uid);
       allow delete: if isAdmin()

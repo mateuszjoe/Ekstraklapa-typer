@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS picks (
   matchday INTEGER NOT NULL,
   pick TEXT NOT NULL,
   verified_at INTEGER NOT NULL,
+  firestore_updated_at TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (uid, match_id),
   CHECK (matchday BETWEEN 1 AND 17),
   CHECK (pick IN ('1', 'X', '2'))
